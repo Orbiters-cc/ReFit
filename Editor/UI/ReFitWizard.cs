@@ -14,6 +14,19 @@ namespace Orbiters.ReFit.Editor
     /// </summary>
     public class ReFitWizard : EditorWindow
     {
+        /// <summary>One re-fit performed during this editor session (for the reversible list on the first page).</summary>
+        public class RefitLogEntry
+        {
+            public string assetName;
+            public string meshAssetPath;
+            public SkinnedMeshRenderer sceneRenderer;
+            public Mesh originalMesh;
+            public Mesh refitMesh;
+        }
+
+        /// <summary>All re-fits performed this session (survives reopening the window, cleared on assembly reload).</summary>
+        private static readonly List<RefitLogEntry> SessionLog = new List<RefitLogEntry>();
+
         private enum Step
         {
             AssetLocation,
@@ -156,6 +169,67 @@ namespace Orbiters.ReFit.Editor
             var cards = Cards();
             cards.Add(Card("On my avatar", null, () => Go(Step.AvatarSelect)));
             cards.Add(Card("In my project files", null, () => Go(Step.AssetFileInput)));
+            BuildSessionLog();
+        }
+
+        /// <summary>Lists every asset re-fitted this session, each with a Revert button that restores its original mesh.</summary>
+        private void BuildSessionLog()
+        {
+            SessionLog.RemoveAll(e => e == null || e.sceneRenderer == null);
+            if (SessionLog.Count == 0) return;
+
+            var section = new Label("Re-fitted this session");
+            section.AddToClassList("refit-section");
+            section.style.marginTop = 28;
+            content.Add(section);
+
+            for (int i = SessionLog.Count - 1; i >= 0; i--)
+            {
+                var entry = SessionLog[i];
+                bool active = entry.sceneRenderer != null && entry.refitMesh != null && entry.sceneRenderer.sharedMesh == entry.refitMesh;
+
+                var row = new VisualElement();
+                row.AddToClassList("refit-summary-row");
+                row.style.alignItems = Align.Center;
+                row.style.marginTop = 4;
+
+                var name = new Label(entry.assetName + (active ? string.Empty : "  (reverted)"));
+                name.AddToClassList("refit-summary-value");
+                name.style.flexGrow = 1;
+                row.Add(name);
+
+                var captured = entry;
+                if (active && entry.originalMesh != null)
+                {
+                    var revert = new Button(() => RevertEntry(captured)) { text = "Revert" };
+                    revert.AddToClassList("refit-back");
+                    row.Add(revert);
+                }
+                var ping = new Button(() =>
+                {
+                    if (captured.sceneRenderer != null)
+                    {
+                        Selection.activeGameObject = captured.sceneRenderer.gameObject;
+                        EditorGUIUtility.PingObject(captured.sceneRenderer.gameObject);
+                    }
+                }) { text = "Select" };
+                ping.AddToClassList("refit-back");
+                ping.style.marginLeft = 6;
+                row.Add(ping);
+
+                content.Add(row);
+            }
+        }
+
+        private void RevertEntry(RefitLogEntry entry)
+        {
+            if (entry?.sceneRenderer != null && entry.originalMesh != null)
+            {
+                Undo.RecordObject(entry.sceneRenderer, "ReFit revert");
+                entry.sceneRenderer.sharedMesh = entry.originalMesh;
+                EditorUtility.SetDirty(entry.sceneRenderer);
+            }
+            Render();
         }
 
         private void BuildAvatarSelect()
@@ -496,6 +570,17 @@ namespace Orbiters.ReFit.Editor
             finally
             {
                 EditorUtility.ClearProgressBar();
+            }
+            if (lastResult != null && lastResult.success)
+            {
+                SessionLog.Add(new RefitLogEntry
+                {
+                    assetName = asset != null ? asset.name : "asset",
+                    meshAssetPath = lastResult.meshAssetPath,
+                    sceneRenderer = lastResult.sceneRenderer,
+                    originalMesh = lastResult.originalMesh,
+                    refitMesh = lastResult.mesh
+                });
             }
             Go(Step.Result);
         }

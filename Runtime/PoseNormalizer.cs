@@ -245,23 +245,38 @@ namespace Orbiters.ReFit
 
         private static void ScaleAndAlign(NormalizedStage stage, ReFitReport report)
         {
+            // 1) Scale: prefer humanoid landmarks, fall back to the body meshes' world height so that
+            //    non-humanoid rigs (and FBX imported at a different unit scale) are still matched.
             float ms = Measure(stage.sourceHumanMap);
             float mt = Measure(stage.targetHumanMap);
+            bool usedBounds = false;
+            if (ms <= 1e-5f || mt <= 1e-5f)
+            {
+                var sb = BakedWorldBounds(stage.sourceBody);
+                var tb = BakedWorldBounds(stage.targetBody);
+                ms = sb.HasValue ? sb.Value.size.y : -1f;
+                mt = tb.HasValue ? tb.Value.size.y : -1f;
+                usedBounds = true;
+            }
+
             if (ms > 1e-5f && mt > 1e-5f)
             {
                 stage.appliedScale = mt / ms;
-                if (Mathf.Abs(stage.appliedScale - 1f) > 1e-4f)
+                if (Mathf.Abs(stage.appliedScale - 1f) > 1e-3f)
                 {
                     stage.sourceRoot.transform.localScale *= stage.appliedScale;
                     if (stage.assetStageRoot != null) stage.assetStageRoot.localScale *= stage.appliedScale;
-                    report.Info("scale-matched", $"Scaled the source side by x{stage.appliedScale:0.###} to match the target size.");
+                    report.Info("scale-matched",
+                        $"Scaled the source side by x{stage.appliedScale:0.###} to match the target size" +
+                        (usedBounds ? " (measured from the body meshes)." : "."));
                 }
             }
             else
             {
-                report.Warn("scale-unmeasured", "Could not measure comparable landmarks on both avatars; skipping scale matching.");
+                report.Warn("scale-unmeasured", "Could not measure either avatar; skipping scale matching.");
             }
 
+            // 2) Alignment: prefer hips, fall back to the body meshes' centers (recomputed after scaling).
             if (stage.sourceHumanMap.TryGetValue(HumanBodyBones.Hips, out var srcHips) && srcHips != null &&
                 stage.targetHumanMap.TryGetValue(HumanBodyBones.Hips, out var tgtHips) && tgtHips != null)
             {
@@ -269,10 +284,10 @@ namespace Orbiters.ReFit
             }
             else
             {
-                // Fall back to aligning body bounds centers.
-                if (stage.sourceBody != null && stage.targetBody != null)
-                    stage.sourceRoot.transform.position += stage.targetBody.bounds.center - stage.sourceBody.bounds.center;
-                report.Warn("hips-align-fallback", "Hips not found on both avatars; aligned body bounds centers instead.");
+                var sb = BakedWorldBounds(stage.sourceBody);
+                var tb = BakedWorldBounds(stage.targetBody);
+                if (sb.HasValue && tb.HasValue)
+                    stage.sourceRoot.transform.position += tb.Value.center - sb.Value.center;
             }
         }
 
@@ -284,6 +299,35 @@ namespace Orbiters.ReFit
             if (TryGet(map, HumanBodyBones.Hips, out var hips) && TryGet(map, HumanBodyBones.Head, out var head))
                 return Vector3.Distance(hips.position, head.position);
             return -1f;
+        }
+
+        /// <summary>World-space AABB of a skinned renderer in its current pose, baked deterministically.</summary>
+        private static Bounds? BakedWorldBounds(SkinnedMeshRenderer smr)
+        {
+            if (smr == null || smr.sharedMesh == null) return null;
+            var baked = new Mesh();
+            try
+            {
+                smr.BakeMesh(baked);
+                var verts = baked.vertices;
+                if (verts.Length == 0) return null;
+                var l2w = smr.transform.localToWorldMatrix; // BakeMesh output is in the renderer's local space
+                var min = new Vector3(float.MaxValue, float.MaxValue, float.MaxValue);
+                var max = new Vector3(float.MinValue, float.MinValue, float.MinValue);
+                foreach (var v in verts)
+                {
+                    var w = l2w.MultiplyPoint3x4(v);
+                    min = Vector3.Min(min, w);
+                    max = Vector3.Max(max, w);
+                }
+                var b = new Bounds();
+                b.SetMinMax(min, max);
+                return b;
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(baked);
+            }
         }
 
         private static bool TryGet(Dictionary<HumanBodyBones, Transform> map, HumanBodyBones b, out Transform t)

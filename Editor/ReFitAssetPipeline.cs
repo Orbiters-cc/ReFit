@@ -17,6 +17,8 @@ namespace Orbiters.ReFit.Editor
         public string prefabAssetPath;
         /// <summary>The scene renderer now using the re-fitted mesh.</summary>
         public SkinnedMeshRenderer sceneRenderer;
+        /// <summary>The mesh the renderer used before the re-fit (assign it back to revert).</summary>
+        public Mesh originalMesh;
     }
 
     /// <summary>
@@ -68,6 +70,7 @@ namespace Orbiters.ReFit.Editor
             if (renderer == null) return null;
 
             Undo.RecordObject(renderer, "ReFit");
+            comp.appliedOriginalMesh = renderer.sharedMesh;
             renderer.sharedMesh = comp.mesh;
 
             // --- armature replacement ------------------------------------------------------
@@ -94,10 +97,17 @@ namespace Orbiters.ReFit.Editor
                 int idx = comp.mesh.GetBlendShapeIndex(comp.primaryShapeName);
                 if (idx >= 0) renderer.SetBlendShapeWeight(idx, 100f);
             }
-            if (!string.IsNullOrEmpty(comp.secondaryShapeName))
+            if (comp.secondaryShapeNames != null)
             {
-                int idx = comp.mesh.GetBlendShapeIndex(comp.secondaryShapeName);
-                if (idx >= 0) renderer.SetBlendShapeWeight(idx, MirroredShapeWeight(request, targetInstance));
+                for (int s = 0; s < comp.secondaryShapeNames.Length; s++)
+                {
+                    int idx = comp.mesh.GetBlendShapeIndex(comp.secondaryShapeNames[s]);
+                    if (idx < 0) continue;
+                    float weight = comp.secondaryMirrorWeights != null && s < comp.secondaryMirrorWeights.Length
+                        ? comp.secondaryMirrorWeights[s]
+                        : 100f;
+                    renderer.SetBlendShapeWeight(idx, weight);
+                }
             }
 
             Selection.activeGameObject = renderer.gameObject;
@@ -298,18 +308,6 @@ namespace Orbiters.ReFit.Editor
             }
             report.Warn("prefab-unpack-failed", $"Could not unpack the prefab instance containing '{t.name}'.");
             return false;
-        }
-
-        private static float MirroredShapeWeight(ReFitRequest request, GameObject targetInstance)
-        {
-            if (string.IsNullOrEmpty(request.targetBlendshape)) return 100f;
-            foreach (var smr in targetInstance.GetComponentsInChildren<SkinnedMeshRenderer>(true))
-            {
-                if (smr.sharedMesh == null) continue;
-                int idx = smr.sharedMesh.GetBlendShapeIndex(request.targetBlendshape);
-                if (idx >= 0) return smr.GetBlendShapeWeight(idx);
-            }
-            return 100f;
         }
 
         // ------------------------------------------------------------------

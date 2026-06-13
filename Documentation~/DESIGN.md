@@ -56,6 +56,37 @@ body blendshape of B), delivered as a non-destructive `refit` blendshape at 100%
 - `orbiters.refit.Editor`: `ReFitService` (public facade: `Execute` / `Validate`), `ReFitAssetPipeline`,
   UIToolkit wizard styled after MCB.
 
+## Async & multi-shape
+
+The engine is split into three phases: **Prepare** (main thread: staging, snapshots, regions, bone plan),
+**ComputeGeometry** (thread-safe: BVH, bindings, deltas, smoothing, weight projection — runs in `Task.Run` for
+`RunCoroutine`/`ExecuteCoroutine`) and **Bake** (main thread: Mesh creation). Multiple target blendshapes are
+transferred in one pass by reusing the bindings; per-shape world deltas are `M(v)·frameDelta` evaluated at the
+binding's barycentric coordinates.
+
+## Scale & alignment robustness
+
+Scale matching prefers humanoid landmarks (armspan / hips-to-head) but falls back to the **body meshes' baked
+world height** when an avatar is non-humanoid or imported at a different unit scale — this prevents the
+"result 3× too small" failure on generic/furry rigs. Alignment likewise falls back from hips to baked body
+centers.
+
+## MCB integration (orbiters.mcb, optional dependency via ORBITERS_REFIT)
+
+`ReFitDrawer` (avatar options frame at the top of the version options: a toggle per asset + an integrated-progress
+**Apply** button; Apply re-fits newly-ticked assets and restores un-ticked ones; no message in the nominal case)
++ `MCBReFitIntegration`:
+- **Candidates** = SMRs whose renderer path is not in the version's targeted-FBX renderer set
+  (`SmrPathService.CollectSmrPathsByFbx` matches by mesh name, so version-swapped Body/Tail meshes are excluded).
+- **Model A** = a hidden clone of the *scene avatar* with the targeted body meshes swapped back to the base FBX
+  meshes. Because it shares the scene avatar's exact skeleton, scale and pose, binding is clean and there is no
+  scale/armature mismatch (this replaced the earlier raw-FBX-as-source approach). Model B = the live version body.
+- Blendshapes = the version's exposed `customBlendshapes`, transferred in one pass with their exact names
+  (`prefixTransferredShapes = false`) so MCB's by-name shape drivers animate the asset too.
+- `replaceArmature = false` (the asset already rides the avatar's armature).
+- Original meshes tracked in `MyCustomBase.appliedRefits` (serialized → survives restarts), restored on reset
+  and on un-ticking; Unit Git commit of the generated files when ORBITERS_UNITGIT.
+
 ## Known limits / future work
 
 - Completely different bases rely on closest-point projection; concave regions can need manual cleanup.

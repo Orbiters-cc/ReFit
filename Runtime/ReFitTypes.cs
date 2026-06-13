@@ -52,10 +52,18 @@ namespace Orbiters.ReFit
         [Range(0f, 1f)] public float extraBoneWeightThreshold = 0.4f;
         /// <summary>Name of the generated blendshape carrying the mesh deformation.</summary>
         public string blendshapeName = "refit";
+        /// <summary>
+        /// When true (default), transferred blendshapes are named "&lt;blendshapeName&gt;_&lt;shape&gt;".
+        /// When false they keep the exact body shape name, so animations/links driving the body shape name
+        /// can drive the asset too (used by the MCB integration).
+        /// </summary>
+        public bool prefixTransferredShapes = true;
         /// <summary>How the asset-to-body offset is preserved.</summary>
         public OffsetMode offsetMode = OffsetMode.Translate;
         /// <summary>Also bake per-vertex normal deltas into the generated blendshape for correct lighting at full weight.</summary>
         public bool recalculateNormalDeltas = true;
+        /// <summary>Try to save a standalone prefab of the result when the armature is kept (editor pipeline).</summary>
+        public bool savePrefab = true;
         /// <summary>Normalized landmark mismatch above which a proportion warning is emitted (never blocks).</summary>
         public float proportionWarningThreshold = 0.05f;
 
@@ -81,6 +89,12 @@ namespace Orbiters.ReFit
         public SkinnedMeshRenderer targetBodyRenderer;
         /// <summary>Name of the blendshape on the target body to transfer (Blendshape / MeshAndBlendshape modes).</summary>
         public string targetBlendshape;
+        /// <summary>
+        /// Multiple blendshapes to transfer in one pass (bindings are computed once and reused — much faster
+        /// than running once per shape). When set, takes precedence over <see cref="targetBlendshape"/>.
+        /// Names not found on the target body are skipped with a warning.
+        /// </summary>
+        public List<string> targetBlendshapes;
         /// <summary>What to do.</summary>
         public ReFitMode mode = ReFitMode.MeshToMesh;
         /// <summary>Tuning options.</summary>
@@ -176,10 +190,14 @@ namespace Orbiters.ReFit
         public ReFitReport report = new ReFitReport();
         /// <summary>New mesh instance (not saved to disk) with the generated blendshape(s), and new bindposes/weights when the armature is replaced.</summary>
         public Mesh mesh;
+        /// <summary>The mesh the scene renderer used before the re-fit was applied (for reverting). Set by the editor pipeline.</summary>
+        public Mesh appliedOriginalMesh;
         /// <summary>Name of the generated main "refit" blendshape, null when not generated.</summary>
         public string primaryShapeName;
-        /// <summary>Name of the generated transferred blendshape (MeshAndBlendshape / Blendshape modes), null when not generated.</summary>
-        public string secondaryShapeName;
+        /// <summary>Names of the generated transferred blendshapes (one per requested target shape), null/empty when none.</summary>
+        public string[] secondaryShapeNames;
+        /// <summary>For each transferred shape, the weight it currently has on the target body (used to mirror it on the asset).</summary>
+        public float[] secondaryMirrorWeights;
         /// <summary>True when <see cref="bones"/>/<see cref="rootBoneIndex"/> describe a new skinning that must be applied to the renderer.</summary>
         public bool armatureReplaced;
         /// <summary>New bone list (aligned with the mesh bindposes), null when the armature is kept.</summary>

@@ -1,3 +1,4 @@
+using System.Collections;
 using UnityEditor;
 using UnityEngine;
 
@@ -43,7 +44,8 @@ namespace Orbiters.ReFit.Editor
 
                 progress?.Invoke(0.96f, "Applying to the scene");
                 result.sceneRenderer = ReFitAssetPipeline.ApplyToScene(request, computation, result.report);
-                if (result.sceneRenderer != null)
+                result.originalMesh = computation.appliedOriginalMesh;
+                if (result.sceneRenderer != null && (request.settings == null || request.settings.savePrefab))
                     result.prefabAssetPath = ReFitAssetPipeline.TrySavePrefab(computation, result.sceneRenderer, subfolder, result.report);
 
                 result.success = result.sceneRenderer != null && !result.report.HasErrors;
@@ -55,6 +57,50 @@ namespace Orbiters.ReFit.Editor
                 result.success = false;
             }
             return result;
+        }
+
+        /// <summary>
+        /// Asynchronous variant of <see cref="Execute"/> as an editor coroutine: staging and mesh baking happen
+        /// on the main thread, the heavy geometry runs on a background thread so the editor stays responsive.
+        /// Drive it with any editor coroutine runner (or <c>EditorApplication.update</c>).
+        /// <paramref name="onComplete"/> is invoked on the main thread.
+        /// </summary>
+        public static IEnumerator ExecuteCoroutine(ReFitRequest request, ReFitProgress progress, System.Action<ReFitResult> onComplete)
+        {
+            var result = new ReFitResult();
+            ReFitComputation computation = null;
+            yield return new ReFitEngine().RunCoroutine(request, progress, c => computation = c);
+
+            try
+            {
+                result.report = computation.report;
+                if (computation.success)
+                {
+                    progress?.Invoke(0.94f, "Saving assets");
+                    var subfolder = request.assetRenderer != null ? request.assetRenderer.name : "ReFit";
+                    result.mesh = computation.mesh;
+                    result.meshAssetPath = ReFitAssetPipeline.SaveMesh(computation.mesh, subfolder, result.report);
+
+                    progress?.Invoke(0.97f, "Applying to the scene");
+                    result.sceneRenderer = ReFitAssetPipeline.ApplyToScene(request, computation, result.report);
+                    result.originalMesh = computation.appliedOriginalMesh;
+                    if (result.sceneRenderer != null && (request.settings == null || request.settings.savePrefab))
+                        result.prefabAssetPath = ReFitAssetPipeline.TrySavePrefab(computation, result.sceneRenderer, subfolder, result.report);
+
+                    result.success = result.sceneRenderer != null && !result.report.HasErrors;
+                }
+                else if (computation.mesh != null)
+                {
+                    Object.DestroyImmediate(computation.mesh);
+                }
+            }
+            catch (System.Exception e)
+            {
+                result.report.Error("refit-exception", $"Unexpected error: {e.Message}\n{e.StackTrace}");
+                result.success = false;
+            }
+            progress?.Invoke(1f, "Done");
+            onComplete?.Invoke(result);
         }
 
         /// <summary>

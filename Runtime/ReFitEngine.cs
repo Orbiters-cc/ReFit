@@ -1,3 +1,5 @@
+using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using UnityEngine;
@@ -5,242 +7,102 @@ using UnityEngine;
 namespace Orbiters.ReFit
 {
     /// <summary>
-    /// The ReFit geometry engine. Produces a <see cref="ReFitComputation"/> (new mesh with a "refit"
-    /// blendshape, optional new skinning) from a <see cref="ReFitRequest"/> without saving assets or touching
-    /// the scene — the editor layer applies the result. Safe to call from editor code at any time.
+    /// The ReFit geometry engine. Produces a <see cref="ReFitComputation"/> (new mesh with "refit"
+    /// blendshape(s), optional new skinning) from a <see cref="ReFitRequest"/> without saving assets or
+    /// touching the scene — the editor layer applies the result.
+    ///
+    /// Two entry points:
+    /// <see cref="Run"/> — synchronous (blocks until done);
+    /// <see cref="RunCoroutine"/> — editor-coroutine friendly: scene access happens up front on the main
+    /// thread, the heavy geometry runs on a background thread, and the mesh is baked back on the main thread.
     /// </summary>
     public class ReFitEngine
     {
-        /// <summary>Runs the full computation.</summary>
+        // ------------------------------------------------------------------
+        // Public API
+        // ------------------------------------------------------------------
+
+        /// <summary>Runs the full computation synchronously.</summary>
         public ReFitComputation Run(ReFitRequest request, ReFitProgress progress = null)
         {
-            var comp = new ReFitComputation();
-            var report = comp.report;
-            if (!ValidateRequest(request, report)) return comp;
-            var settings = request.settings ?? new ReFitSettings();
-
-            progress?.Invoke(0.02f, "Staging avatars");
-            using (var stage = PoseNormalizer.CreateStage(request, report))
+            var state = Prepare(request, progress);
+            if (state.failed) return state.comp;
+            try
             {
-                if (stage == null) return comp;
-                comp.assetRendererPath = stage.assetRendererPath;
-
-                ProportionChecker.Check(stage, settings, report);
-
-                bool wantMesh = request.mode != ReFitMode.Blendshape;
-                bool wantShape = request.mode != ReFitMode.MeshToMesh;
-
-                int shapeIndex = -1;
-                if (wantShape)
-                {
-                    shapeIndex = stage.targetBody.sharedMesh.GetBlendShapeIndex(request.targetBlendshape ?? string.Empty);
-                    if (shapeIndex < 0)
-                    {
-                        report.Error("blendshape-not-found",
-                            $"Blendshape '{request.targetBlendshape}' was not found on the target body '{stage.targetBody.name}'.");
-                        return comp;
-                    }
-                }
-
-                // ----------------------------------------------------------
-                // Snapshots
-                // ----------------------------------------------------------
-                progress?.Invoke(0.12f, "Capturing meshes");
-                var assetSnap = MeshSnapshot.Capture(stage.assetRenderer, true, null, report);
-                var basisOverride = wantShape ? new Dictionary<int, float> { { shapeIndex, 0f } } : null;
-                var targetBasis = MeshSnapshot.Capture(stage.targetBody, false, basisOverride, report);
-                MeshSnapshot targetShaped = wantShape
-                    ? MeshSnapshot.Capture(stage.targetBody, false, new Dictionary<int, float> { { shapeIndex, 1f } }, report)
-                    : null;
-                MeshSnapshot sourceSnap = null;
-                if (wantMesh)
-                    sourceSnap = stage.sourceBody == stage.targetBody ? targetBasis : MeshSnapshot.Capture(stage.sourceBody, false, null, report);
-
-                // ----------------------------------------------------------
-                // Spatial indices & body regions
-                // ----------------------------------------------------------
-                progress?.Invoke(0.25f, "Building spatial indices");
-                var bvhTarget = SurfaceBvh.Build(targetBasis);
-                var bvhSource = wantMesh && sourceSnap != targetBasis ? SurfaceBvh.Build(sourceSnap) : bvhTarget;
-
-                var sourceRegions = HumanoidBoneMapper.ClassifyBones(stage.sourceRoot, stage.sourceHumanMap);
-                var targetRegions = stage.sourceIsTarget ? sourceRegions : HumanoidBoneMapper.ClassifyBones(stage.targetRoot, stage.targetHumanMap);
-                var targetTriRegions = TriangleRegions(targetBasis, targetRegions);
-                var sourceTriRegions = wantMesh && sourceSnap != targetBasis ? TriangleRegions(sourceSnap, sourceRegions) : targetTriRegions;
-                var assetGroupRegions = AssetGroupRegions(assetSnap, stage, sourceRegions);
-
-                // ----------------------------------------------------------
-                // Bindings
-                // ----------------------------------------------------------
-                progress?.Invoke(0.35f, "Binding the asset to the body");
-                var firstSnap = wantMesh ? sourceSnap : targetBasis;
-                var firstBvh = wantMesh ? bvhSource : bvhTarget;
-                var firstTriRegions = wantMesh ? sourceTriRegions : targetTriRegions;
-                var bindings = SurfaceBindingSolver.ComputeGroupBindings(
-                    assetSnap, firstSnap, firstBvh, settings, assetGroupRegions, firstTriRegions, report);
-
-                int groupCount = assetSnap.GroupCount;
-                var targetBindings = new SurfaceBinding[groupCount];
-                if (wantMesh)
-                {
-                    progress?.Invoke(0.45f, "Projecting onto the target body");
-                    float cosMax = Mathf.Cos(settings.maxNormalAngle * Mathf.Deg2Rad);
-                    float chainRange = Mathf.Max(settings.maxProjectionDistance * 2f, 0.05f);
-                    Parallel.For(0, groupCount, g =>
-                    {
-                        if (!bindings[g].valid) { targetBindings[g].valid = false; return; }
-                        var nA = firstSnap.BaryNormal(bindings[g].triangle, bindings[g].bary);
-                        var region = assetGroupRegions != null ? assetGroupRegions[g] : BodyRegion.Unknown;
-                        targetBindings[g] = SurfaceBindingSolver.BindPoint(
-                            bindings[g].point, targetBasis, bvhTarget, chainRange,
-                            region, settings.filterByBoneRegion ? targetTriRegions : null,
-                            nA, cosMax, settings.filterByNormal);
-                    });
-                }
-                else
-                {
-                    targetBindings = bindings;
-                }
-
-                // ----------------------------------------------------------
-                // Deformation fields (per welding group, world space)
-                // ----------------------------------------------------------
-                progress?.Invoke(0.55f, "Computing the deformation");
-                Vector3[] meshDeltas = null;
-                if (wantMesh)
-                {
-                    meshDeltas = new Vector3[groupCount];
-                    Parallel.For(0, groupCount, g =>
-                    {
-                        if (!bindings[g].valid || !targetBindings[g].valid) { meshDeltas[g] = Vector3.zero; return; }
-                        var cpA = bindings[g].point;
-                        var cpB = targetBindings[g].point;
-                        Vector3 d;
-                        if (settings.offsetMode == OffsetMode.RotateWithNormal)
-                        {
-                            var p = assetSnap.worldVertices[assetSnap.groupRep[g]];
-                            var nA = firstSnap.FaceNormal(bindings[g].triangle);
-                            var nB = targetBasis.FaceNormal(targetBindings[g].triangle);
-                            d = cpB + Quaternion.FromToRotation(nA, nB) * (p - cpA) - p;
-                        }
-                        else
-                        {
-                            d = cpB - cpA;
-                        }
-                        meshDeltas[g] = d * DeltaField.Falloff(bindings[g].distance, settings.falloffStartDistance, settings.maxProjectionDistance);
-                    });
-                    DeltaField.Smooth(meshDeltas, assetSnap.groupAdjacency, settings.smoothingIterations, settings.smoothingStrength);
-                }
-
-                Vector3[] shapeDeltas = null;
-                if (wantShape)
-                {
-                    shapeDeltas = new Vector3[groupCount];
-                    Parallel.For(0, groupCount, g =>
-                    {
-                        if (!targetBindings[g].valid) { shapeDeltas[g] = Vector3.zero; return; }
-                        var d = targetShaped.BaryPoint(targetBindings[g].triangle, targetBindings[g].bary)
-                              - targetBasis.BaryPoint(targetBindings[g].triangle, targetBindings[g].bary);
-                        shapeDeltas[g] = d * DeltaField.Falloff(bindings[g].valid ? bindings[g].distance : float.MaxValue,
-                            settings.falloffStartDistance, settings.maxProjectionDistance);
-                    });
-                    DeltaField.Smooth(shapeDeltas, assetSnap.groupAdjacency, settings.smoothingIterations, settings.smoothingStrength);
-                }
-
-                // ----------------------------------------------------------
-                // New skinning (bones, bindposes, weights)
-                // ----------------------------------------------------------
-                bool replace = settings.replaceArmature && wantMesh && !stage.sourceIsTarget && !assetSnap.rigid;
-                Matrix4x4[] newBindposes = null;
-                BoneWeight[] newWeights = null;
-                if (replace)
-                {
-                    progress?.Invoke(0.7f, "Rebinding to the target armature");
-                    replace = BuildBonePlan(stage, assetSnap, targetBasis, settings, comp, report,
-                        targetBindings, out newBindposes, out newWeights);
-                    if (!replace)
-                        report.Warn("armature-replace-skipped", "Could not build the target bone plan; keeping the asset's original armature.");
-                }
-                comp.armatureReplaced = replace;
-
-                // ----------------------------------------------------------
-                // Blendshape deltas in mesh space
-                // ----------------------------------------------------------
-                progress?.Invoke(0.8f, "Baking blendshapes");
-                int vertexCount = assetSnap.localVertices.Length;
-                Vector3[] primaryLocal = null, secondaryLocal = null;
-                if (wantMesh)
-                {
-                    primaryLocal = new Vector3[vertexCount];
-                    var w2l = assetSnap.rendererWorldToLocal;
-                    Parallel.For(0, vertexCount, i =>
-                    {
-                        var dWorld = meshDeltas[assetSnap.groupOfVertex[i]];
-                        if (replace)
-                        {
-                            // New bindposes are captured in the staged pose: mesh space == staged renderer space.
-                            primaryLocal[i] = w2l.MultiplyPoint3x4(assetSnap.worldVertices[i] + dWorld) - assetSnap.localVertices[i];
-                        }
-                        else
-                        {
-                            // Original skinning kept: un-skin the world delta through the inverse skinning matrix.
-                            primaryLocal[i] = assetSnap.skinMatrices[i].inverse.MultiplyVector(dWorld);
-                        }
-                    });
-                }
-                if (wantShape)
-                {
-                    secondaryLocal = new Vector3[vertexCount];
-                    var w2l = assetSnap.rendererWorldToLocal;
-                    Parallel.For(0, vertexCount, i =>
-                    {
-                        var dWorld = shapeDeltas[assetSnap.groupOfVertex[i]];
-                        secondaryLocal[i] = replace
-                            ? w2l.MultiplyVector(dWorld)
-                            : assetSnap.skinMatrices[i].inverse.MultiplyVector(dWorld);
-                    });
-                }
-
-                // ----------------------------------------------------------
-                // Output mesh
-                // ----------------------------------------------------------
-                var newMesh = Object.Instantiate(assetSnap.mesh);
-                newMesh.name = assetSnap.mesh.name.Replace("(Clone)", "") + "_ReFit";
-
-                if (primaryLocal != null)
-                {
-                    comp.primaryShapeName = UniqueShapeName(newMesh, settings.blendshapeName);
-                    var normalDeltas = settings.recalculateNormalDeltas
-                        ? NormalDeltas(assetSnap, primaryLocal, null, newMesh)
-                        : null;
-                    newMesh.AddBlendShapeFrame(comp.primaryShapeName, 100f, primaryLocal, normalDeltas, null);
-                }
-                if (secondaryLocal != null)
-                {
-                    comp.secondaryShapeName = UniqueShapeName(newMesh,
-                        wantMesh ? settings.blendshapeName + "_" + request.targetBlendshape : request.targetBlendshape + "_refit");
-                    var normalDeltas = settings.recalculateNormalDeltas
-                        ? NormalDeltas(assetSnap, secondaryLocal, primaryLocal, newMesh)
-                        : null;
-                    newMesh.AddBlendShapeFrame(comp.secondaryShapeName, 100f, secondaryLocal, normalDeltas, null);
-                }
-
-                if (replace)
-                {
-                    newMesh.boneWeights = newWeights;
-                    newMesh.bindposes = newBindposes;
-                }
-
-                comp.mesh = newMesh;
-                comp.success = !report.HasErrors;
-                progress?.Invoke(1f, "Done");
-                return comp;
+                ComputeGeometry(state);
+                progress?.Invoke(0.85f, "Baking the mesh");
+                Bake(state);
             }
+            catch (Exception e)
+            {
+                state.comp.report.Error("refit-exception", $"Unexpected error: {e.Message}\n{e.StackTrace}");
+            }
+            progress?.Invoke(1f, "Done");
+            return state.comp;
         }
 
         /// <summary>
-        /// Dry run: stages the avatars, checks armature matching and proportions, and returns the diagnostics
-        /// without computing any geometry. Used by UIs to surface warnings before the user commits.
+        /// Runs the computation as an editor coroutine: yield it from any coroutine runner. The heavy geometry
+        /// is computed on a background thread so the editor stays responsive. <paramref name="onComplete"/> is
+        /// invoked on the main thread with the result.
+        /// </summary>
+        public IEnumerator RunCoroutine(ReFitRequest request, ReFitProgress progress, Action<ReFitComputation> onComplete)
+        {
+            State state;
+            try
+            {
+                state = Prepare(request, progress);
+            }
+            catch (Exception e)
+            {
+                var comp = new ReFitComputation();
+                comp.report.Error("staging-exception", $"Unexpected error while staging: {e.Message}");
+                onComplete?.Invoke(comp);
+                yield break;
+            }
+
+            if (state.failed)
+            {
+                onComplete?.Invoke(state.comp);
+                yield break;
+            }
+
+            var task = Task.Run(() =>
+            {
+                try { ComputeGeometry(state); }
+                catch (Exception e) { state.backgroundError = e; }
+            });
+
+            while (!task.IsCompleted)
+            {
+                progress?.Invoke(0.25f + Mathf.Clamp01(state.backgroundProgress) * 0.6f, state.backgroundLabel);
+                yield return null;
+            }
+
+            if (state.backgroundError != null)
+            {
+                state.comp.report.Error("refit-exception",
+                    $"Unexpected error during computation: {state.backgroundError.Message}\n{state.backgroundError.StackTrace}");
+                onComplete?.Invoke(state.comp);
+                yield break;
+            }
+
+            progress?.Invoke(0.9f, "Baking the mesh");
+            try
+            {
+                Bake(state);
+            }
+            catch (Exception e)
+            {
+                state.comp.report.Error("refit-exception", $"Unexpected error while baking: {e.Message}");
+            }
+            progress?.Invoke(1f, "Done");
+            onComplete?.Invoke(state.comp);
+        }
+
+        /// <summary>
+        /// Dry run: stages the avatars, checks armature matching, proportions and blendshape availability, and
+        /// returns the diagnostics without computing any geometry.
         /// </summary>
         public ReFitReport Validate(ReFitRequest request)
         {
@@ -250,15 +112,185 @@ namespace Orbiters.ReFit
             {
                 if (stage == null) return report;
                 ProportionChecker.Check(stage, request.settings ?? new ReFitSettings(), report);
-                if (request.mode != ReFitMode.MeshToMesh && !string.IsNullOrEmpty(request.targetBlendshape) &&
-                    stage.targetBody != null && stage.targetBody.sharedMesh != null &&
-                    stage.targetBody.sharedMesh.GetBlendShapeIndex(request.targetBlendshape) < 0)
+                var names = RequestedShapeNames(request);
+                if (names.Count > 0 && stage.targetBody != null && stage.targetBody.sharedMesh != null)
                 {
-                    report.Error("blendshape-not-found",
-                        $"Blendshape '{request.targetBlendshape}' was not found on the target body '{stage.targetBody.name}'.");
+                    int found = 0;
+                    foreach (var name in names)
+                    {
+                        if (stage.targetBody.sharedMesh.GetBlendShapeIndex(name) >= 0) found++;
+                        else report.Warn("blendshape-not-found", $"Blendshape '{name}' was not found on the target body '{stage.targetBody.name}'.");
+                    }
+                    if (found == 0 && request.mode != ReFitMode.MeshToMesh)
+                        report.Error("blendshapes-missing", "None of the requested blendshapes exist on the target body.");
                 }
             }
             return report;
+        }
+
+        // ------------------------------------------------------------------
+        // State
+        // ------------------------------------------------------------------
+
+        private class ShapeTask
+        {
+            public string sourceName;
+            public int shapeIndex;
+            public float mirrorWeight;
+            /// <summary>Mesh-local frame deltas on the target body (captured on the main thread).</summary>
+            public Vector3[] frameDeltas;
+            // background results
+            public Vector3[] localDeltas;
+            public Vector3[] normalDeltas;
+        }
+
+        private class State
+        {
+            public ReFitRequest request;
+            public ReFitSettings settings;
+            public ReFitComputation comp = new ReFitComputation();
+            public bool failed;
+            public bool wantMesh;
+            public bool replace;
+            public bool sourceIsTarget;
+
+            public MeshSnapshot asset;
+            public MeshSnapshot sourceBody;   // null when not wantMesh; == targetBasis when source == target
+            public MeshSnapshot targetBasis;
+            public List<ShapeTask> shapes = new List<ShapeTask>();
+
+            public BodyRegion[] assetGroupRegions;
+            public BodyRegion[] sourceTriRegions;
+            public BodyRegion[] targetTriRegions;
+
+            // bone plan (resolved on the main thread; weights computed in the background)
+            public Matrix4x4[] newBindposes;
+            public int[] bodyBoneToNew;
+            public int[] assetBoneToNew;
+            public bool[] assetBoneIsExtra;
+            public bool transferWeights;
+
+            // background outputs
+            public Vector3[] primaryLocalDeltas;
+            public Vector3[] primaryNormalDeltas;
+            public BoneWeight[] newWeights;
+
+            // background progress
+            public volatile string backgroundLabel = "Computing...";
+            public float backgroundProgress;
+            public Exception backgroundError;
+
+            public ReFitReport Report => comp.report;
+        }
+
+        // ------------------------------------------------------------------
+        // Phase 1: Prepare (main thread — all scene/Unity-object access)
+        // ------------------------------------------------------------------
+
+        private State Prepare(ReFitRequest request, ReFitProgress progress)
+        {
+            var state = new State { request = request, settings = request?.settings ?? new ReFitSettings() };
+            var report = state.Report;
+
+            if (!ValidateRequest(request, report)) { state.failed = true; return state; }
+
+            progress?.Invoke(0.02f, "Staging avatars");
+            using (var stage = PoseNormalizer.CreateStage(request, report))
+            {
+                if (stage == null) { state.failed = true; return state; }
+                state.comp.assetRendererPath = stage.assetRendererPath;
+                state.sourceIsTarget = stage.sourceIsTarget;
+                state.wantMesh = request.mode != ReFitMode.Blendshape;
+
+                ProportionChecker.Check(stage, state.settings, report);
+
+                // Resolve requested blendshapes
+                var requestedNames = RequestedShapeNames(request);
+                var basisOverride = new Dictionary<int, float>();
+                foreach (var name in requestedNames)
+                {
+                    int idx = stage.targetBody.sharedMesh.GetBlendShapeIndex(name);
+                    if (idx < 0)
+                    {
+                        report.Warn("blendshape-not-found",
+                            $"Blendshape '{name}' was not found on the target body '{stage.targetBody.name}'; skipped.");
+                        continue;
+                    }
+                    state.shapes.Add(new ShapeTask
+                    {
+                        sourceName = name,
+                        shapeIndex = idx,
+                        mirrorWeight = stage.targetBody.GetBlendShapeWeight(idx)
+                    });
+                    basisOverride[idx] = 0f;
+                }
+                if (request.mode != ReFitMode.MeshToMesh && state.shapes.Count == 0)
+                {
+                    report.Error("blendshapes-missing", "None of the requested blendshapes exist on the target body.");
+                    state.failed = true;
+                    return state;
+                }
+
+                // Snapshots
+                progress?.Invoke(0.08f, "Capturing meshes");
+                state.asset = MeshSnapshot.Capture(stage.assetRenderer, true, null, report);
+                state.targetBasis = MeshSnapshot.Capture(stage.targetBody, false, basisOverride.Count > 0 ? basisOverride : null, report);
+                if (state.wantMesh)
+                    state.sourceBody = stage.sourceBody == stage.targetBody
+                        ? state.targetBasis
+                        : MeshSnapshot.Capture(stage.sourceBody, false, null, report);
+
+                // Per-shape mesh-local frame deltas (main thread: Mesh API)
+                int vertexCount = state.targetBasis.localVertices.Length;
+                var bodyMesh = stage.targetBody.sharedMesh;
+                foreach (var shape in state.shapes)
+                {
+                    shape.frameDeltas = new Vector3[vertexCount];
+                    int frame = bodyMesh.GetBlendShapeFrameCount(shape.shapeIndex) - 1;
+                    bodyMesh.GetBlendShapeFrameVertices(shape.shapeIndex, frame, shape.frameDeltas, null, null);
+                }
+
+                // Regions
+                progress?.Invoke(0.16f, "Classifying body regions");
+                var sourceRegions = HumanoidBoneMapper.ClassifyBones(stage.sourceRoot, stage.sourceHumanMap);
+                var targetRegions = stage.sourceIsTarget ? sourceRegions : HumanoidBoneMapper.ClassifyBones(stage.targetRoot, stage.targetHumanMap);
+                state.targetTriRegions = TriangleRegions(state.targetBasis, targetRegions);
+                state.sourceTriRegions = state.wantMesh && state.sourceBody != state.targetBasis
+                    ? TriangleRegions(state.sourceBody, sourceRegions)
+                    : state.targetTriRegions;
+                state.assetGroupRegions = AssetGroupRegions(state.asset, stage, sourceRegions);
+
+                // Bone plan (no weight transfer here — that runs in the background)
+                state.replace = state.settings.replaceArmature && state.wantMesh && !stage.sourceIsTarget && !state.asset.rigid;
+                state.transferWeights = state.settings.transferWeights;
+                if (state.replace)
+                {
+                    progress?.Invoke(0.2f, "Resolving the target armature");
+                    state.replace = BuildBonePlan(stage, state.asset, state.targetBasis, state.comp, report,
+                        out state.newBindposes, out state.bodyBoneToNew, out state.assetBoneToNew, out state.assetBoneIsExtra);
+                    if (!state.replace)
+                        report.Warn("armature-replace-skipped", "Could not build the target bone plan; keeping the asset's original armature.");
+                }
+                state.comp.armatureReplaced = state.replace;
+            } // stage disposed: everything below works on captured arrays only
+
+            return state;
+        }
+
+        private static List<string> RequestedShapeNames(ReFitRequest request)
+        {
+            var names = new List<string>();
+            if (request == null) return names;
+            if (request.targetBlendshapes != null && request.targetBlendshapes.Count > 0)
+            {
+                foreach (var n in request.targetBlendshapes)
+                    if (!string.IsNullOrEmpty(n) && !names.Contains(n)) names.Add(n);
+            }
+            else if (!string.IsNullOrEmpty(request.targetBlendshape))
+            {
+                names.Add(request.targetBlendshape);
+            }
+            return names;
         }
 
         private static bool ValidateRequest(ReFitRequest request, ReFitReport report)
@@ -271,12 +303,222 @@ namespace Orbiters.ReFit
                 report.Error("missing-source", "Mesh re-fit needs the avatar the asset was made for (source avatar).");
                 return false;
             }
-            if (request.mode != ReFitMode.MeshToMesh && string.IsNullOrEmpty(request.targetBlendshape))
+            if (request.mode != ReFitMode.MeshToMesh && RequestedShapeNames(request).Count == 0)
             {
-                report.Error("missing-blendshape", "Blendshape transfer needs the name of the target body blendshape.");
+                report.Error("missing-blendshape", "Blendshape transfer needs at least one target body blendshape name.");
                 return false;
             }
             return true;
+        }
+
+        // ------------------------------------------------------------------
+        // Phase 2: ComputeGeometry (thread-safe — captured arrays + pure math only)
+        // ------------------------------------------------------------------
+
+        private void ComputeGeometry(State state)
+        {
+            var settings = state.settings;
+            var asset = state.asset;
+            var targetBasis = state.targetBasis;
+            int groupCount = asset.GroupCount;
+            int vertexCount = asset.localVertices.Length;
+
+            // Spatial indices
+            SetBackgroundProgress(state, 0.05f, "Building spatial indices");
+            var bvhTarget = SurfaceBvh.Build(targetBasis);
+            var bvhSource = state.wantMesh && state.sourceBody != targetBasis ? SurfaceBvh.Build(state.sourceBody) : bvhTarget;
+
+            // Bindings to the first surface (source body for mesh refit, target body otherwise)
+            SetBackgroundProgress(state, 0.15f, "Binding the asset to the body");
+            var firstSnap = state.wantMesh ? state.sourceBody : targetBasis;
+            var firstBvh = state.wantMesh ? bvhSource : bvhTarget;
+            var firstTriRegions = state.wantMesh ? state.sourceTriRegions : state.targetTriRegions;
+            var bindings = SurfaceBindingSolver.ComputeGroupBindings(
+                asset, firstSnap, firstBvh, settings, state.assetGroupRegions, firstTriRegions, state.Report);
+
+            // Chain onto the target surface
+            var targetBindings = bindings;
+            if (state.wantMesh)
+            {
+                SetBackgroundProgress(state, 0.3f, "Projecting onto the target body");
+                targetBindings = new SurfaceBinding[groupCount];
+                float cosMax = Mathf.Cos(settings.maxNormalAngle * Mathf.Deg2Rad);
+                float chainRange = Mathf.Max(settings.maxProjectionDistance * 2f, 0.05f);
+                var localBindings = bindings;
+                var localTarget = targetBindings;
+                Parallel.For(0, groupCount, g =>
+                {
+                    if (!localBindings[g].valid) { localTarget[g].valid = false; return; }
+                    var nA = firstSnap.BaryNormal(localBindings[g].triangle, localBindings[g].bary);
+                    var region = state.assetGroupRegions != null ? state.assetGroupRegions[g] : BodyRegion.Unknown;
+                    localTarget[g] = SurfaceBindingSolver.BindPoint(
+                        localBindings[g].point, targetBasis, bvhTarget, chainRange,
+                        region, settings.filterByBoneRegion ? state.targetTriRegions : null,
+                        nA, cosMax, settings.filterByNormal);
+                });
+            }
+
+            // Falloff weight per group (asset distance to its base surface)
+            var falloff = new float[groupCount];
+            for (int g = 0; g < groupCount; g++)
+                falloff[g] = bindings[g].valid
+                    ? DeltaField.Falloff(bindings[g].distance, settings.falloffStartDistance, settings.maxProjectionDistance)
+                    : 0f;
+
+            // ---- Mesh deformation field --------------------------------------------------
+            Vector3[] primaryGroupDeltas = null;
+            if (state.wantMesh)
+            {
+                SetBackgroundProgress(state, 0.4f, "Computing the deformation");
+                primaryGroupDeltas = new Vector3[groupCount];
+                Parallel.For(0, groupCount, g =>
+                {
+                    if (!bindings[g].valid || !targetBindings[g].valid) { primaryGroupDeltas[g] = Vector3.zero; return; }
+                    var cpA = bindings[g].point;
+                    var cpB = targetBindings[g].point;
+                    Vector3 d;
+                    if (settings.offsetMode == OffsetMode.RotateWithNormal)
+                    {
+                        var p = asset.worldVertices[asset.groupRep[g]];
+                        var nA = firstSnap.FaceNormal(bindings[g].triangle);
+                        var nB = targetBasis.FaceNormal(targetBindings[g].triangle);
+                        d = cpB + Quaternion.FromToRotation(nA, nB) * (p - cpA) - p;
+                    }
+                    else
+                    {
+                        d = cpB - cpA;
+                    }
+                    primaryGroupDeltas[g] = d * falloff[g];
+                });
+                DeltaField.Smooth(primaryGroupDeltas, asset.groupAdjacency, settings.smoothingIterations, settings.smoothingStrength);
+
+                state.primaryLocalDeltas = ToLocalDeltas(state, primaryGroupDeltas, true);
+                if (settings.recalculateNormalDeltas)
+                    state.primaryNormalDeltas = NormalDeltas(asset, state.primaryLocalDeltas, null);
+            }
+
+            // ---- Blendshape transfer fields ----------------------------------------------
+            if (state.shapes.Count > 0)
+            {
+                // World-space delta of each target body vertex for a shape: M(v) applied to the frame delta.
+                int bodyVerts = targetBasis.localVertices.Length;
+                for (int s = 0; s < state.shapes.Count; s++)
+                {
+                    var shape = state.shapes[s];
+                    SetBackgroundProgress(state, 0.5f + 0.35f * s / state.shapes.Count, $"Transferring '{shape.sourceName}'");
+
+                    var worldShapeDelta = new Vector3[bodyVerts];
+                    Parallel.For(0, bodyVerts, i =>
+                        worldShapeDelta[i] = targetBasis.skinMatrices[i].MultiplyVector(shape.frameDeltas[i]));
+
+                    var groupDeltas = new Vector3[groupCount];
+                    Parallel.For(0, groupCount, g =>
+                    {
+                        if (!targetBindings[g].valid) { groupDeltas[g] = Vector3.zero; return; }
+                        int t = targetBindings[g].triangle * 3;
+                        var bary = targetBindings[g].bary;
+                        var d = worldShapeDelta[targetBasis.triangles[t]] * bary.x
+                              + worldShapeDelta[targetBasis.triangles[t + 1]] * bary.y
+                              + worldShapeDelta[targetBasis.triangles[t + 2]] * bary.z;
+                        groupDeltas[g] = d * falloff[g];
+                    });
+                    DeltaField.Smooth(groupDeltas, asset.groupAdjacency, settings.smoothingIterations, settings.smoothingStrength);
+
+                    shape.localDeltas = ToLocalDeltas(state, groupDeltas, false);
+                    if (settings.recalculateNormalDeltas)
+                        shape.normalDeltas = NormalDeltas(asset, shape.localDeltas, state.primaryLocalDeltas);
+                    shape.frameDeltas = null; // free
+                }
+            }
+
+            // ---- Skin weights --------------------------------------------------------------
+            if (state.replace)
+            {
+                SetBackgroundProgress(state, 0.9f, "Transferring skin weights");
+                state.newWeights = state.transferWeights
+                    ? WeightTransfer.Transfer(asset, targetBasis, targetBindings, state.bodyBoneToNew,
+                        state.assetBoneToNew, state.assetBoneIsExtra, settings, state.Report)
+                    : RemapAllOriginal(asset, state.assetBoneToNew);
+            }
+
+            SetBackgroundProgress(state, 1f, "Finishing");
+        }
+
+        private static void SetBackgroundProgress(State state, float t, string label)
+        {
+            state.backgroundProgress = t;
+            state.backgroundLabel = label;
+        }
+
+        /// <summary>Converts per-group world deltas into per-vertex mesh-space blendshape deltas.</summary>
+        private static Vector3[] ToLocalDeltas(State state, Vector3[] groupDeltas, bool isPositionFrame)
+        {
+            var asset = state.asset;
+            int vertexCount = asset.localVertices.Length;
+            var result = new Vector3[vertexCount];
+            var w2l = asset.rendererWorldToLocal;
+            bool replace = state.replace;
+            Parallel.For(0, vertexCount, i =>
+            {
+                var dWorld = groupDeltas[asset.groupOfVertex[i]];
+                if (replace)
+                {
+                    result[i] = isPositionFrame
+                        // New bindposes are captured in the staged pose: mesh space == staged renderer space.
+                        ? w2l.MultiplyPoint3x4(asset.worldVertices[i] + dWorld) - asset.localVertices[i]
+                        : w2l.MultiplyVector(dWorld);
+                }
+                else
+                {
+                    // Original skinning kept: un-skin the world delta through the inverse skinning matrix.
+                    result[i] = asset.skinMatrices[i].inverse.MultiplyVector(dWorld);
+                }
+            });
+            return result;
+        }
+
+        // ------------------------------------------------------------------
+        // Phase 3: Bake (main thread — Mesh API)
+        // ------------------------------------------------------------------
+
+        private void Bake(State state)
+        {
+            var comp = state.comp;
+            var settings = state.settings;
+            var newMesh = UnityEngine.Object.Instantiate(state.asset.mesh);
+            newMesh.name = state.asset.mesh.name.Replace("(Clone)", "") + "_ReFit";
+
+            if (state.primaryLocalDeltas != null)
+            {
+                comp.primaryShapeName = UniqueShapeName(newMesh, settings.blendshapeName);
+                newMesh.AddBlendShapeFrame(comp.primaryShapeName, 100f, state.primaryLocalDeltas, state.primaryNormalDeltas, null);
+            }
+
+            if (state.shapes.Count > 0)
+            {
+                comp.secondaryShapeNames = new string[state.shapes.Count];
+                comp.secondaryMirrorWeights = new float[state.shapes.Count];
+                for (int s = 0; s < state.shapes.Count; s++)
+                {
+                    var shape = state.shapes[s];
+                    string desired = settings.prefixTransferredShapes
+                        ? $"{settings.blendshapeName}_{shape.sourceName}"
+                        : shape.sourceName;
+                    var name = UniqueShapeName(newMesh, desired);
+                    newMesh.AddBlendShapeFrame(name, 100f, shape.localDeltas, shape.normalDeltas, null);
+                    comp.secondaryShapeNames[s] = name;
+                    comp.secondaryMirrorWeights[s] = shape.mirrorWeight;
+                }
+            }
+
+            if (state.replace)
+            {
+                newMesh.boneWeights = state.newWeights;
+                newMesh.bindposes = state.newBindposes;
+            }
+
+            comp.mesh = newMesh;
+            comp.success = !comp.report.HasErrors;
         }
 
         // ------------------------------------------------------------------
@@ -315,7 +557,6 @@ namespace Orbiters.ReFit
                 regions[i] = BodyRegion.Unknown;
                 if (!hasWeights) continue;
                 var bw = snap.boneWeights[i];
-                // strongest influence with a known region wins
                 float best = 0f;
                 PickRegion(bw.boneIndex0, bw.weight0, perBone, ref best, ref regions[i]);
                 PickRegion(bw.boneIndex1, bw.weight1, perBone, ref best, ref regions[i]);
@@ -358,15 +599,18 @@ namespace Orbiters.ReFit
         }
 
         // ------------------------------------------------------------------
-        // Bone plan (armature replacement)
+        // Bone plan (armature replacement) — main thread only
         // ------------------------------------------------------------------
 
         private static bool BuildBonePlan(NormalizedStage stage, MeshSnapshot asset, MeshSnapshot targetBody,
-            ReFitSettings settings, ReFitComputation comp, ReFitReport report, SurfaceBinding[] targetBindings,
-            out Matrix4x4[] bindposes, out BoneWeight[] weights)
+            ReFitComputation comp, ReFitReport report,
+            out Matrix4x4[] bindposes, out int[] bodyBoneToNewOut, out int[] assetBoneToNewOut, out bool[] assetBoneIsExtraOut)
         {
             bindposes = null;
-            weights = null;
+            bodyBoneToNewOut = null;
+            assetBoneToNewOut = null;
+            assetBoneIsExtraOut = null;
+
             var targetRoot = stage.targetRoot.transform;
             var targetNameIndex = HumanoidBoneMapper.BuildNameIndex(targetRoot);
 
@@ -398,10 +642,8 @@ namespace Orbiters.ReFit
             Transform ResolveToTarget(Transform assetOrSourceBone)
             {
                 if (assetOrSourceBone == null) return null;
-                // direct name match into the target skeleton
                 if (targetNameIndex.TryGetValue(ReFitUtility.NormalizeName(assetOrSourceBone.name), out var byName))
                     return byName;
-                // through the source avatar's humanoid chain
                 var src = assetOrSourceBone;
                 if (!stage.assetOnSourceAvatar && stage.assetBoneToSource.TryGetValue(assetOrSourceBone, out var mapped))
                     src = mapped;
@@ -420,7 +662,7 @@ namespace Orbiters.ReFit
             int assetBoneCount = asset.bones != null ? asset.bones.Length : 0;
             var assetBoneToNew = new int[assetBoneCount];
             var assetBoneIsExtra = new bool[assetBoneCount];
-            int mapped2 = 0, keptCount = 0;
+            int mappedCount = 0, keptCount = 0;
             var keptOriginRoot = stage.assetOnSourceAvatar ? stage.sourceRoot.transform : stage.assetStageRoot;
             var keptOrigin = stage.assetOnSourceAvatar ? ReFitBoneOrigin.SourceAvatar : ReFitBoneOrigin.Asset;
 
@@ -432,7 +674,7 @@ namespace Orbiters.ReFit
                 if (target != null)
                 {
                     assetBoneToNew[k] = AddTargetBone(target);
-                    mapped2++;
+                    mappedCount++;
                 }
                 else
                 {
@@ -448,7 +690,7 @@ namespace Orbiters.ReFit
                 }
             }
 
-            if (mapped2 == 0)
+            if (mappedCount == 0)
             {
                 report.Warn("no-target-bones",
                     "No asset bone could be matched to the target avatar's skeleton; armature replacement is not possible.");
@@ -461,7 +703,7 @@ namespace Orbiters.ReFit
             var placements = new List<ReFitKeptBonePlacement>();
             foreach (var bone in keptSet)
             {
-                if (bone.parent != null && keptSet.Contains(bone.parent)) continue; // inner bone, moves with its subtree root
+                if (bone.parent != null && keptSet.Contains(bone.parent)) continue;
                 var parentTarget = FindResolvedAncestor(bone, ResolveToTarget, keptOriginRoot);
                 if (parentTarget == null)
                 {
@@ -489,17 +731,15 @@ namespace Orbiters.ReFit
             for (int i = 0; i < stageBones.Count; i++)
                 bindposes[i] = stageBones[i].worldToLocalMatrix * rendererL2W;
 
-            // 6) weights
-            weights = settings.transferWeights
-                ? WeightTransfer.Transfer(asset, targetBody, targetBindings, bodyBoneToNew, assetBoneToNew, assetBoneIsExtra, settings, report)
-                : RemapAllOriginal(asset, assetBoneToNew);
-
             comp.bones = refs.ToArray();
             comp.keptPlacements = placements.ToArray();
+            bodyBoneToNewOut = bodyBoneToNew;
+            assetBoneToNewOut = assetBoneToNew;
+            assetBoneIsExtraOut = assetBoneIsExtra;
             return true;
         }
 
-        private static Transform FindResolvedAncestor(Transform bone, System.Func<Transform, Transform> resolve, Transform stopAt)
+        private static Transform FindResolvedAncestor(Transform bone, Func<Transform, Transform> resolve, Transform stopAt)
         {
             var cur = bone.parent;
             while (cur != null)
@@ -539,7 +779,7 @@ namespace Orbiters.ReFit
         private static int Remap(int idx, int[] map) => idx >= 0 && idx < map.Length && map[idx] >= 0 ? map[idx] : 0;
 
         // ------------------------------------------------------------------
-        // Blendshape helpers
+        // Blendshape helpers (thread-safe)
         // ------------------------------------------------------------------
 
         private static string UniqueShapeName(Mesh mesh, string desired)
@@ -555,10 +795,10 @@ namespace Orbiters.ReFit
 
         /// <summary>
         /// Per-vertex normal deltas so the shape lights correctly at full weight:
-        /// delta = normals(displaced) - original normals, with welding-group averaging.
+        /// delta = normals(displaced) - reference normals, with welding-group averaging.
         /// <paramref name="baseDeltas"/> is the already-applied previous frame (for stacked shapes), may be null.
         /// </summary>
-        private static Vector3[] NormalDeltas(MeshSnapshot asset, Vector3[] frameDeltas, Vector3[] baseDeltas, Mesh mesh)
+        private static Vector3[] NormalDeltas(MeshSnapshot asset, Vector3[] frameDeltas, Vector3[] baseDeltas)
         {
             int n = asset.localVertices.Length;
             var before = new Vector3[n];
@@ -570,14 +810,12 @@ namespace Orbiters.ReFit
                 before[i] = b;
                 after[i] = b + frameDeltas[i];
             }
-            var beforeNormals = WeldedNormals(before, asset);
             var afterNormals = WeldedNormals(after, asset);
-            var meshNormals = mesh.normals;
-            bool useMeshNormals = baseDeltas == null && meshNormals != null && meshNormals.Length == n;
+            Vector3[] reference = baseDeltas == null ? asset.baseNormals : WeldedNormals(before, asset);
 
             var deltas = new Vector3[n];
             for (int i = 0; i < n; i++)
-                deltas[i] = afterNormals[i] - (useMeshNormals ? meshNormals[i] : beforeNormals[i]);
+                deltas[i] = afterNormals[i] - reference[i];
             return deltas;
         }
 
@@ -591,7 +829,6 @@ namespace Orbiters.ReFit
                 var fn = Vector3.Cross(verts[b] - verts[a], verts[c] - verts[a]);
                 normals[a] += fn; normals[b] += fn; normals[c] += fn;
             }
-            // weld across groups so seams keep identical normals
             var groupSum = new Vector3[asset.GroupCount];
             for (int i = 0; i < verts.Length; i++) groupSum[asset.groupOfVertex[i]] += normals[i];
             for (int i = 0; i < verts.Length; i++)

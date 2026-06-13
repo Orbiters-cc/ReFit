@@ -49,6 +49,17 @@ foreach (var msg in result.report.messages)
 `ReFitService.Validate(request)` performs a dry run (staging, armature matching, proportion check) and returns the
 diagnostics without changing anything — use it to surface warnings in your own UI before committing.
 
+For non-blocking execution, `ReFitService.ExecuteCoroutine(request, progress, onComplete)` is an editor coroutine:
+staging and mesh baking run on the main thread while the heavy geometry runs on a background thread, so the editor
+stays responsive. Set `request.targetBlendshapes` (list) to transfer many body blendshapes in a single pass —
+bindings are computed once and reused per shape. `settings.prefixTransferredShapes = false` keeps the exact body
+shape names on the asset so existing animations/links drive both.
+
+MCB integration: when both packages are installed, MCB shows a **ReFit** frame in the avatar options (chip
+selection of the asset meshes + integrated progress button). It uses the default base body as model A, the applied
+custom version body as model B and the version's exposed blendshapes, tracks original meshes on the MyCustomBase
+component (restored on reset, surviving Unity restarts), and commits the generated files through Unit Git.
+
 The engine itself (`Orbiters.ReFit.ReFitEngine`, runtime assembly, no UnityEditor dependency) can be used directly
 when you want the computed mesh without asset saving or scene application.
 

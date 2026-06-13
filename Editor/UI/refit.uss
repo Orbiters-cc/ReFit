@@ -1,0 +1,209 @@
+.refit-root {
+    flex-grow: 1;
+    background-color: #2d2d2d;
+}
+
+.refit-header {
+    flex-direction: row;
+    justify-content: center;
+    align-items: center;
+    background-color: #383838;
+    height: 64px;
+    flex-shrink: 0;
+}
+
+.refit-title {
+    color: #ffffff;
+    font-size: 22px;
+    -unity-font-style: bold;
+    margin-left: 12px;
+}
+
+.refit-body {
+    flex-grow: 1;
+    padding: 18px 24px 18px 24px;
+}
+
+.refit-question {
+    color: #e6e6e6;
+    font-size: 14px;
+    -unity-text-align: middle-center;
+    margin-top: 26px;
+    margin-bottom: 28px;
+    white-space: normal;
+}
+
+.refit-cards {
+    flex-direction: row;
+    justify-content: center;
+    flex-wrap: wrap;
+}
+
+.refit-card {
+    width: 190px;
+    height: 190px;
+    margin: 12px;
+    background-color: #2f2f2f;
+    border-width: 1px;
+    border-color: #6a6a6a;
+    border-radius: 10px;
+    justify-content: center;
+    align-items: center;
+    cursor: link;
+    padding: 10px;
+}
+
+.refit-card:hover {
+    background-color: #3a3a3a;
+    border-color: #9a9a9a;
+}
+
+.refit-card--small {
+    width: 170px;
+    height: 110px;
+}
+
+.refit-card--list {
+    width: 360px;
+    height: 56px;
+    margin: 5px;
+    flex-direction: row;
+    justify-content: flex-start;
+    padding-left: 14px;
+}
+
+.refit-card-label {
+    color: #e6e6e6;
+    font-size: 13px;
+    -unity-text-align: middle-center;
+    white-space: normal;
+}
+
+.refit-card-sublabel {
+    color: #999999;
+    font-size: 11px;
+    -unity-text-align: middle-center;
+    white-space: normal;
+    margin-top: 4px;
+}
+
+.refit-nav {
+    flex-direction: row;
+    align-items: center;
+    flex-shrink: 0;
+    margin-bottom: 4px;
+}
+
+.refit-back {
+    height: 24px;
+    background-color: #494949;
+    color: #dddddd;
+    border-width: 0;
+    border-radius: 8px;
+    padding: 2px 12px 2px 12px;
+    cursor: link;
+}
+
+.refit-back:hover {
+    background-color: #5a5a5a;
+}
+
+.refit-breadcrumb {
+    color: #8a8a8a;
+    font-size: 11px;
+    margin-left: 10px;
+}
+
+.refit-field {
+    margin-top: 8px;
+    margin-bottom: 8px;
+}
+
+.refit-field Label {
+    color: #cccccc;
+    min-width: 150px;
+}
+
+.refit-help {
+    color: #999999;
+    font-size: 11px;
+    white-space: normal;
+    margin-top: 4px;
+    margin-bottom: 10px;
+}
+
+.refit-section {
+    color: #c8c8c8;
+    font-size: 12px;
+    -unity-font-style: bold;
+    margin-top: 14px;
+    margin-bottom: 6px;
+}
+
+.refit-primary {
+    height: 38px;
+    border-radius: 8px;
+    border-width: 0;
+    background-color: #00DA6D;
+    color: #ffffff;
+    font-size: 14px;
+    -unity-font-style: bold;
+    margin-top: 14px;
+    cursor: link;
+}
+
+.refit-primary:hover {
+    background-color: #15ee80;
+}
+
+.refit-primary:disabled {
+    opacity: 0.55;
+}
+
+.refit-summary-row {
+    flex-direction: row;
+    margin-top: 2px;
+}
+
+.refit-summary-key {
+    color: #999999;
+    width: 150px;
+}
+
+.refit-summary-value {
+    color: #e6e6e6;
+    flex-shrink: 1;
+    white-space: normal;
+}
+
+.refit-msg {
+    border-radius: 6px;
+    padding: 6px 10px 6px 10px;
+    margin-top: 4px;
+    white-space: normal;
+    font-size: 11px;
+}
+
+.refit-msg--info {
+    background-color: #31414f;
+    color: #b8d4e8;
+}
+
+.refit-msg--warning {
+    background-color: #4f4531;
+    color: #e8d6a8;
+}
+
+.refit-msg--error {
+    background-color: #4f3131;
+    color: #e8b0b0;
+}
+
+.refit-scroll {
+    flex-grow: 1;
+}
+
+.refit-logo-bar {
+    position: absolute;
+    background-color: #D9D9D9;
+}

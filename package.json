@@ -1,0 +1,19 @@
+{
+  "name": "orbiters.refit",
+  "displayName": "ReFit",
+  "version": "0.1.0",
+  "license": "LicenseRef-ReFit-Proprietary",
+  "unity": "2022.3",
+  "description": "Re-fit clothing and accessories made for a 3D model A so they fit a 3D model B, as a non-destructive 'refit' blendshape. Usable standalone through a wizard or as a module via its public API (used by MCB).",
+  "type": "tool",
+  "dependencies": {},
+  "gitDependencies": {},
+  "vpmDependencies": {},
+  "author": {
+    "name": "blackorbit",
+    "email": "blackorbit.eclaire@gmail.com",
+    "url": "orbiters.cc"
+  },
+  "legacyFolders": {},
+  "legacyFiles": {}
+}

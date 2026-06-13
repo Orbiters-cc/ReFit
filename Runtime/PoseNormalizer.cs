@@ -26,6 +26,12 @@ namespace Orbiters.ReFit
         public Transform assetStageRoot;
         /// <summary>True when the asset renderer is part of the source avatar hierarchy (shares its armature).</summary>
         public bool assetOnSourceAvatar;
+        /// <summary>
+        /// True when the asset already lives in the TARGET avatar's space (it is parented under the target, and
+        /// the source is a separate reference). Such assets must NOT be scaled/posed onto the source — they are
+        /// already at the target's scale and position; the source body is brought to target space for comparison.
+        /// </summary>
+        public bool assetInTargetSpace;
         /// <summary>True when source and target are the same avatar (Blendshape mode without a distinct source).</summary>
         public bool sourceIsTarget;
         /// <summary>Name-based map of staged asset bones to staged source bones (standalone assets only; values may be null).</summary>
@@ -116,6 +122,11 @@ namespace Orbiters.ReFit
             }
             else
             {
+                // The asset already lives in the target avatar's space when it is parented under the target and
+                // the source is a distinct reference (e.g. "fit a blendshape on my avatar", or the MCB module).
+                stage.assetInTargetSpace = !stage.sourceIsTarget && request.targetAvatar != null &&
+                                           request.assetRenderer.transform.IsChildOf(request.targetAvatar.transform);
+
                 var realAssetRoot = FindCommonRoot(request.assetRenderer);
                 stage.realAssetObject = realAssetRoot.gameObject;
                 stage.assetRendererPath = ReFitUtility.IndexPath(request.assetRenderer.transform, realAssetRoot);
@@ -265,7 +276,10 @@ namespace Orbiters.ReFit
                 if (Mathf.Abs(stage.appliedScale - 1f) > 1e-3f)
                 {
                     stage.sourceRoot.transform.localScale *= stage.appliedScale;
-                    if (stage.assetStageRoot != null) stage.assetStageRoot.localScale *= stage.appliedScale;
+                    // Only scale the asset with the source when the asset belongs to the source's space.
+                    // A target-space asset (already fitting the target) keeps its own scale.
+                    if (stage.assetStageRoot != null && !stage.assetInTargetSpace)
+                        stage.assetStageRoot.localScale *= stage.appliedScale;
                     report.Info("scale-matched",
                         $"Scaled the source side by x{stage.appliedScale:0.###} to match the target size" +
                         (usedBounds ? " (measured from the body meshes)." : "."));
@@ -343,6 +357,13 @@ namespace Orbiters.ReFit
         private static void PoseAsset(NormalizedStage stage, ReFitReport report)
         {
             if (stage.assetOnSourceAvatar || stage.assetRenderer == null) return; // shares the source armature, already posed
+            if (stage.assetInTargetSpace)
+            {
+                // The asset already sits in the target's space; the source body has been scaled/aligned to that
+                // same space, so they overlap. Re-posing the asset onto the source would misalign it.
+                report.Info("asset-target-space", "The asset already fits the target; binding it in place.");
+                return;
+            }
 
             var assetTransforms = stage.assetStageRoot.GetComponentsInChildren<Transform>(true);
             stage.assetBoneToSource = HumanoidBoneMapper.MatchBonesByName(assetTransforms, stage.sourceRoot.transform);

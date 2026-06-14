@@ -162,6 +162,8 @@ namespace Orbiters.ReFit
             public BodyRegion[] assetGroupRegions;
             public BodyRegion[] sourceTriRegions;
             public BodyRegion[] targetTriRegions;
+            public Matrix4x4[] sourceBodyBoneToTarget;
+            public bool[] sourceBodyBoneHasTarget;
 
             // bone plan (resolved on the main thread; weights computed in the background)
             public Matrix4x4[] newBindposes;
@@ -259,6 +261,9 @@ namespace Orbiters.ReFit
                     ? TriangleRegions(state.sourceBody, sourceRegions)
                     : state.targetTriRegions;
                 state.assetGroupRegions = AssetGroupRegions(state.asset, stage, sourceRegions);
+                if (state.wantMesh && state.sourceBody != state.targetBasis)
+                    BuildSourceBodyBoneGuides(state.sourceBody, state.targetBasis,
+                        out state.sourceBodyBoneToTarget, out state.sourceBodyBoneHasTarget);
 
                 // Bone plan (no weight transfer here — that runs in the background)
                 state.replace = state.settings.replaceArmature && state.wantMesh && !stage.sourceIsTarget && !state.asset.rigid;
@@ -344,6 +349,12 @@ namespace Orbiters.ReFit
                 targetBindings = new SurfaceBinding[groupCount];
                 float cosMax = Mathf.Cos(settings.maxNormalAngle * Mathf.Deg2Rad);
                 float chainRange = Mathf.Max(settings.maxProjectionDistance * 2f, 0.05f);
+                float directMatchTolerance = Mathf.Max(1e-5f, settings.maxProjectionDistance * 0.005f);
+                var targetUvBvh = state.sourceBody != targetBasis ? BuildUvSurfaceBvh(targetBasis) : null;
+                float uvChainRange = targetUvBvh != null ? UvBoundsDiagonal(firstSnap, targetBasis) : 0f;
+                var targetLocalBvh = state.sourceBody != targetBasis ? BuildLocalSurfaceBvh(targetBasis) : null;
+                float localChainRange = targetLocalBvh != null ? LocalBoundsDiagonal(firstSnap, targetBasis) : 0f;
+                bool sourceAndTargetOverlap = SurfacesOverlap(firstSnap, bvhTarget, chainRange, directMatchTolerance);
                 var localBindings = bindings;
                 var localTarget = targetBindings;
                 Parallel.For(0, groupCount, g =>
@@ -351,10 +362,57 @@ namespace Orbiters.ReFit
                     if (!localBindings[g].valid) { localTarget[g].valid = false; return; }
                     var nA = firstSnap.BaryNormal(localBindings[g].triangle, localBindings[g].bary);
                     var region = state.assetGroupRegions != null ? state.assetGroupRegions[g] : BodyRegion.Unknown;
-                    localTarget[g] = SurfaceBindingSolver.BindPoint(
+                    var direct = SurfaceBindingSolver.BindPoint(
                         localBindings[g].point, targetBasis, bvhTarget, chainRange,
                         region, settings.filterByBoneRegion ? state.targetTriRegions : null,
                         nA, cosMax, settings.filterByNormal);
+                    if (sourceAndTargetOverlap && direct.valid && direct.distance <= directMatchTolerance)
+                    {
+                        localTarget[g] = direct;
+                        return;
+                    }
+
+                    if (targetUvBvh != null &&
+                        TryAssetUvTargetBinding(asset, g, firstSnap, localBindings[g], targetBasis, targetUvBvh,
+                            uvChainRange, region, settings.filterByBoneRegion ? state.targetTriRegions : null,
+                            out var assetUvBinding))
+                    {
+                        localTarget[g] = assetUvBinding;
+                        return;
+                    }
+
+                    if (targetUvBvh != null &&
+                        TryUvTargetBinding(firstSnap, localBindings[g], targetBasis, targetUvBvh,
+                            uvChainRange, region, settings.filterByBoneRegion ? state.targetTriRegions : null,
+                            out var uvBinding))
+                    {
+                        localTarget[g] = uvBinding;
+                        return;
+                    }
+
+                    if (targetLocalBvh != null &&
+                        TryLocalTargetBinding(firstSnap, localBindings[g], targetBasis, targetLocalBvh,
+                            localChainRange, out var localBinding))
+                    {
+                        localTarget[g] = localBinding;
+                        return;
+                    }
+
+                    if (TryGuidedTargetPoint(firstSnap, localBindings[g],
+                            state.sourceBodyBoneToTarget, state.sourceBodyBoneHasTarget, out var guidedPoint))
+                    {
+                        var guided = SurfaceBindingSolver.BindPoint(
+                            guidedPoint, targetBasis, bvhTarget, chainRange,
+                            region, settings.filterByBoneRegion ? state.targetTriRegions : null,
+                            nA, cosMax, settings.filterByNormal);
+                        if (guided.valid)
+                        {
+                            localTarget[g] = guided;
+                            return;
+                        }
+                    }
+
+                    localTarget[g] = direct;
                 });
             }
 
@@ -596,6 +654,249 @@ namespace Orbiters.ReFit
             var perGroup = new BodyRegion[asset.GroupCount];
             for (int g = 0; g < perGroup.Length; g++) perGroup[g] = perVertex[asset.groupRep[g]];
             return perGroup;
+        }
+
+        private static void BuildSourceBodyBoneGuides(MeshSnapshot sourceBody, MeshSnapshot targetBody,
+            out Matrix4x4[] sourceToTarget, out bool[] hasTarget)
+        {
+            int count = sourceBody.bones != null ? sourceBody.bones.Length : 0;
+            sourceToTarget = new Matrix4x4[count];
+            hasTarget = new bool[count];
+            if (count == 0 || targetBody.bones == null || targetBody.bones.Length == 0) return;
+
+            var targetByName = new Dictionary<string, Transform>();
+            for (int i = 0; i < targetBody.bones.Length; i++)
+            {
+                var bone = targetBody.bones[i];
+                if (bone == null) continue;
+                var key = ReFitUtility.NormalizeName(bone.name);
+                if (key.Length == 0 || targetByName.ContainsKey(key)) continue;
+                targetByName[key] = bone;
+            }
+
+            for (int i = 0; i < count; i++)
+            {
+                var source = sourceBody.bones[i];
+                if (source == null) continue;
+                if (!targetByName.TryGetValue(ReFitUtility.NormalizeName(source.name), out var target) || target == null)
+                    continue;
+
+                sourceToTarget[i] = target.localToWorldMatrix * source.worldToLocalMatrix;
+                hasTarget[i] = true;
+            }
+        }
+
+        private static SurfaceBvh BuildLocalSurfaceBvh(MeshSnapshot body)
+        {
+            return SurfaceBvh.Build(new MeshSnapshot
+            {
+                worldVertices = body.localVertices,
+                triangles = body.triangles
+            });
+        }
+
+        private static SurfaceBvh BuildUvSurfaceBvh(MeshSnapshot body)
+        {
+            if (body.uvs == null || body.uvs.Length != body.localVertices.Length) return null;
+            var uvVerts = new Vector3[body.uvs.Length];
+            for (int i = 0; i < uvVerts.Length; i++)
+                uvVerts[i] = new Vector3(body.uvs[i].x, body.uvs[i].y, 0f);
+
+            return SurfaceBvh.Build(new MeshSnapshot
+            {
+                worldVertices = uvVerts,
+                triangles = body.triangles
+            });
+        }
+
+        private static float UvBoundsDiagonal(MeshSnapshot a, MeshSnapshot b)
+        {
+            var min = new Vector2(float.MaxValue, float.MaxValue);
+            var max = new Vector2(float.MinValue, float.MinValue);
+            EncapsulateUvBounds(a, ref min, ref max);
+            EncapsulateUvBounds(b, ref min, ref max);
+            return Mathf.Max((max - min).magnitude, 1e-4f);
+        }
+
+        private static void EncapsulateUvBounds(MeshSnapshot snap, ref Vector2 min, ref Vector2 max)
+        {
+            if (snap == null || snap.uvs == null) return;
+            for (int i = 0; i < snap.uvs.Length; i++)
+            {
+                min = Vector2.Min(min, snap.uvs[i]);
+                max = Vector2.Max(max, snap.uvs[i]);
+            }
+        }
+
+        private static float LocalBoundsDiagonal(MeshSnapshot a, MeshSnapshot b)
+        {
+            var min = new Vector3(float.MaxValue, float.MaxValue, float.MaxValue);
+            var max = new Vector3(float.MinValue, float.MinValue, float.MinValue);
+            EncapsulateLocalBounds(a, ref min, ref max);
+            EncapsulateLocalBounds(b, ref min, ref max);
+            return Mathf.Max((max - min).magnitude, 1e-4f);
+        }
+
+        private static void EncapsulateLocalBounds(MeshSnapshot snap, ref Vector3 min, ref Vector3 max)
+        {
+            if (snap == null || snap.localVertices == null) return;
+            for (int i = 0; i < snap.localVertices.Length; i++)
+            {
+                min = Vector3.Min(min, snap.localVertices[i]);
+                max = Vector3.Max(max, snap.localVertices[i]);
+            }
+        }
+
+        private static bool SurfacesOverlap(MeshSnapshot source, SurfaceBvh targetBvh, float searchRange, float tolerance)
+        {
+            if (source == null || source.worldVertices == null || targetBvh == null) return false;
+            for (int i = 0; i < source.worldVertices.Length; i++)
+            {
+                var hit = targetBvh.ClosestPoint(source.worldVertices[i], searchRange, null);
+                if (!hit.found || hit.distance > tolerance) return false;
+            }
+            return true;
+        }
+
+        private static bool TryAssetUvTargetBinding(MeshSnapshot asset, int group, MeshSnapshot sourceBody,
+            SurfaceBinding sourceBinding, MeshSnapshot targetBody, SurfaceBvh targetUvBvh, float maxUvDistance,
+            BodyRegion region, BodyRegion[] targetTriRegions, out SurfaceBinding targetBinding)
+        {
+            targetBinding = default;
+            if (asset == null || asset.uvs == null || group < 0 || group >= asset.groupRep.Length)
+                return false;
+
+            var assetUv = asset.uvs[asset.groupRep[group]];
+            if (sourceBody.uvs != null)
+            {
+                var sourceUv = SourceBindingUv(sourceBody, sourceBinding);
+                if ((assetUv - sourceUv).magnitude > 0.05f)
+                    return false;
+            }
+
+            return TryUvPointTargetBinding(assetUv, targetBody, targetUvBvh, maxUvDistance,
+                region, targetTriRegions, out targetBinding);
+        }
+
+        private static bool TryUvTargetBinding(MeshSnapshot sourceBody, SurfaceBinding sourceBinding,
+            MeshSnapshot targetBody, SurfaceBvh targetUvBvh, float maxUvDistance,
+            BodyRegion region, BodyRegion[] targetTriRegions, out SurfaceBinding targetBinding)
+        {
+            targetBinding = default;
+            if (sourceBody == null || targetBody == null || targetUvBvh == null ||
+                sourceBody.uvs == null || targetBody.uvs == null)
+                return false;
+
+            return TryUvPointTargetBinding(SourceBindingUv(sourceBody, sourceBinding),
+                targetBody, targetUvBvh, maxUvDistance, region, targetTriRegions, out targetBinding);
+        }
+
+        private static Vector2 SourceBindingUv(MeshSnapshot sourceBody, SurfaceBinding sourceBinding)
+        {
+            int t = sourceBinding.triangle * 3;
+            return sourceBody.uvs[sourceBody.triangles[t]] * sourceBinding.bary.x +
+                   sourceBody.uvs[sourceBody.triangles[t + 1]] * sourceBinding.bary.y +
+                   sourceBody.uvs[sourceBody.triangles[t + 2]] * sourceBinding.bary.z;
+        }
+
+        private static bool TryUvPointTargetBinding(Vector2 sourceUv, MeshSnapshot targetBody,
+            SurfaceBvh targetUvBvh, float maxUvDistance,
+            BodyRegion region, BodyRegion[] targetTriRegions, out SurfaceBinding targetBinding)
+        {
+            targetBinding = default;
+            if (targetBody == null || targetUvBvh == null || targetBody.uvs == null) return false;
+
+            Func<int, bool> filter = null;
+            if (targetTriRegions != null && region != BodyRegion.Unknown)
+                filter = t => HumanoidBoneMapper.RegionsCompatible(region, targetTriRegions[t]);
+
+            var uvHit = targetUvBvh.ClosestPoint(new Vector3(sourceUv.x, sourceUv.y, 0f), maxUvDistance, filter);
+            if (!uvHit.found && filter != null)
+                uvHit = targetUvBvh.ClosestPoint(new Vector3(sourceUv.x, sourceUv.y, 0f), maxUvDistance, null);
+            if (!uvHit.found) return false;
+
+            targetBinding = new SurfaceBinding
+            {
+                valid = true,
+                triangle = uvHit.triangle,
+                bary = uvHit.bary,
+                point = targetBody.BaryPoint(uvHit.triangle, uvHit.bary),
+                distance = uvHit.distance
+            };
+            return true;
+        }
+
+        private static bool TryLocalTargetBinding(MeshSnapshot sourceBody, SurfaceBinding sourceBinding,
+            MeshSnapshot targetBody, SurfaceBvh targetLocalBvh, float maxLocalDistance, out SurfaceBinding targetBinding)
+        {
+            targetBinding = default;
+            if (sourceBody == null || targetBody == null || targetLocalBvh == null ||
+                sourceBody.localVertices == null || targetBody.localVertices == null)
+                return false;
+
+            int t = sourceBinding.triangle * 3;
+            var sourceLocal =
+                sourceBody.localVertices[sourceBody.triangles[t]] * sourceBinding.bary.x +
+                sourceBody.localVertices[sourceBody.triangles[t + 1]] * sourceBinding.bary.y +
+                sourceBody.localVertices[sourceBody.triangles[t + 2]] * sourceBinding.bary.z;
+
+            var localHit = targetLocalBvh.ClosestPoint(sourceLocal, maxLocalDistance, null);
+            if (!localHit.found) return false;
+
+            targetBinding = new SurfaceBinding
+            {
+                valid = true,
+                triangle = localHit.triangle,
+                bary = localHit.bary,
+                point = targetBody.BaryPoint(localHit.triangle, localHit.bary),
+                distance = localHit.distance
+            };
+            return true;
+        }
+
+        private static bool TryGuidedTargetPoint(MeshSnapshot sourceBody, SurfaceBinding binding,
+            Matrix4x4[] sourceToTarget, bool[] hasTarget, out Vector3 point)
+        {
+            point = binding.point;
+            if (sourceBody == null || sourceToTarget == null || hasTarget == null ||
+                sourceBody.boneWeights == null || sourceBody.boneWeights.Length != sourceBody.localVertices.Length)
+                return false;
+
+            int t = binding.triangle * 3;
+            var guidedA = GuidedSourceVertex(sourceBody, sourceBody.triangles[t], sourceToTarget, hasTarget, out var okA);
+            var guidedB = GuidedSourceVertex(sourceBody, sourceBody.triangles[t + 1], sourceToTarget, hasTarget, out var okB);
+            var guidedC = GuidedSourceVertex(sourceBody, sourceBody.triangles[t + 2], sourceToTarget, hasTarget, out var okC);
+            if (!okA && !okB && !okC) return false;
+
+            point = guidedA * binding.bary.x + guidedB * binding.bary.y + guidedC * binding.bary.z;
+            return true;
+        }
+
+        private static Vector3 GuidedSourceVertex(MeshSnapshot sourceBody, int vertex,
+            Matrix4x4[] sourceToTarget, bool[] hasTarget, out bool mapped)
+        {
+            mapped = false;
+            var p = sourceBody.worldVertices[vertex];
+            var bw = sourceBody.boneWeights[vertex];
+            var sum = Vector3.zero;
+            float total = 0f;
+            AccumulateGuidedPoint(p, bw.boneIndex0, bw.weight0, sourceToTarget, hasTarget, ref sum, ref total);
+            AccumulateGuidedPoint(p, bw.boneIndex1, bw.weight1, sourceToTarget, hasTarget, ref sum, ref total);
+            AccumulateGuidedPoint(p, bw.boneIndex2, bw.weight2, sourceToTarget, hasTarget, ref sum, ref total);
+            AccumulateGuidedPoint(p, bw.boneIndex3, bw.weight3, sourceToTarget, hasTarget, ref sum, ref total);
+            if (total <= 1e-6f) return p;
+            mapped = true;
+            return sum / total;
+        }
+
+        private static void AccumulateGuidedPoint(Vector3 sourcePoint, int boneIndex, float weight,
+            Matrix4x4[] sourceToTarget, bool[] hasTarget, ref Vector3 sum, ref float total)
+        {
+            if (weight <= 0f || boneIndex < 0 || boneIndex >= hasTarget.Length || !hasTarget[boneIndex])
+                return;
+
+            sum += sourceToTarget[boneIndex].MultiplyPoint3x4(sourcePoint) * weight;
+            total += weight;
         }
 
         // ------------------------------------------------------------------

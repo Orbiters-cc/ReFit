@@ -319,29 +319,21 @@ namespace Orbiters.ReFit
         private static Bounds? BakedWorldBounds(SkinnedMeshRenderer smr)
         {
             if (smr == null || smr.sharedMesh == null) return null;
-            var baked = new Mesh();
-            try
+            var snap = MeshSnapshot.Capture(smr, false, null, null);
+            var verts = snap.worldVertices;
+            if (verts == null || verts.Length == 0) return null;
+
+            var min = new Vector3(float.MaxValue, float.MaxValue, float.MaxValue);
+            var max = new Vector3(float.MinValue, float.MinValue, float.MinValue);
+            for (int i = 0; i < verts.Length; i++)
             {
-                smr.BakeMesh(baked);
-                var verts = baked.vertices;
-                if (verts.Length == 0) return null;
-                var l2w = smr.transform.localToWorldMatrix; // BakeMesh output is in the renderer's local space
-                var min = new Vector3(float.MaxValue, float.MaxValue, float.MaxValue);
-                var max = new Vector3(float.MinValue, float.MinValue, float.MinValue);
-                foreach (var v in verts)
-                {
-                    var w = l2w.MultiplyPoint3x4(v);
-                    min = Vector3.Min(min, w);
-                    max = Vector3.Max(max, w);
-                }
-                var b = new Bounds();
-                b.SetMinMax(min, max);
-                return b;
+                min = Vector3.Min(min, verts[i]);
+                max = Vector3.Max(max, verts[i]);
             }
-            finally
-            {
-                UnityEngine.Object.DestroyImmediate(baked);
-            }
+
+            var b = new Bounds();
+            b.SetMinMax(min, max);
+            return b;
         }
 
         private static bool TryGet(Dictionary<HumanBodyBones, Transform> map, HumanBodyBones b, out Transform t)

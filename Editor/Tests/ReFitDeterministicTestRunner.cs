@@ -17,6 +17,8 @@ namespace Orbiters.ReFit.Editor.Tests
         private const float ChestForwardDeltaMinimum = 0.06f;
         private const float ArmOutwardDeltaMinimum = 0.02f;
         private const float WaistDeltaMaximum = 0.012f;
+        private const string FbxFixturePath = "Packages/orbiters.refit/ReFit unit test v1.fbx";
+        private const string FbxShapeName = "custom blendshape";
 
         [MenuItem("Tools/Orbiters/ReFit/Run Deterministic Tests")]
         public static void RunFromMenu()
@@ -63,6 +65,9 @@ namespace Orbiters.ReFit.Editor.Tests
                 RunCase(failures,
                     "Mesh refit with armature replacement disabled preserves clothing root bone",
                     MeshAndBlendshape_ArmatureReplacementDisabled_PreservesRootBone);
+                RunCase(failures,
+                    "FBX fixture reproduces authored B clothing result",
+                    FbxFixture_ReproducesAuthoredResultClothing);
 
                 if (failures.Count > 0)
                     throw new Exception("[ReFit Tests] Failed deterministic checks:\n" + string.Join("\n", failures));
@@ -72,6 +77,69 @@ namespace Orbiters.ReFit.Editor.Tests
             finally
             {
                 Selection.activeObject = previousSelection;
+            }
+        }
+
+        private static void FbxFixture_ReproducesAuthoredResultClothing()
+        {
+            using (var fixture = FbxResultFixture.Create())
+            {
+                var request = new ReFitRequest
+                {
+                    mode = ReFitMode.MeshAndBlendshape,
+                    assetRenderer = fixture.clothingA,
+                    sourceAvatar = fixture.sourceAvatar,
+                    targetAvatar = fixture.targetAvatar,
+                    sourceBodyRenderer = fixture.sourceBody,
+                    targetBodyRenderer = fixture.targetBody,
+                    targetBlendshape = FbxShapeName,
+                    settings = new ReFitSettings
+                    {
+                        maxProjectionDistance = 0.25f,
+                        falloffStartDistance = 0.08f,
+                        smoothingIterations = 0,
+                        smoothingStrength = 0f,
+                        filterByNormal = false,
+                        filterByBoneRegion = false,
+                        transferWeights = true,
+                        replaceArmature = true,
+                        keepExtraBoneVertices = true,
+                        blendshapeName = "refit",
+                        prefixTransferredShapes = false,
+                        offsetMode = OffsetMode.Translate,
+                        recalculateNormalDeltas = false,
+                        savePrefab = false,
+                        proportionWarningThreshold = 1f
+                    }
+                };
+
+                var comp = new ReFitEngine().Run(request);
+                try
+                {
+                    AssertComputationSucceeded(comp);
+                    var generated = ReFitAssetPipeline.ApplyToScene(request, comp, comp.report);
+                    AssertTrue(generated != null, "ApplyToScene returned no renderer for the FBX fixture.");
+
+                    var baseForward = MeasureSurfaceDistance(generated, fixture.expectedClothing);
+                    var baseReverse = MeasureSurfaceDistance(fixture.expectedClothing, generated);
+                    Debug.Log($"[ReFit Tests] FBX base generated->expected {baseForward}");
+                    Debug.Log($"[ReFit Tests] FBX base expected->generated {baseReverse}");
+                    AssertFbxSurfaceMetrics("FBX base generated->expected", baseForward, 0.008f, 0.014f, 0.015f, 0.13f);
+                    AssertFbxSurfaceMetrics("FBX base expected->generated", baseReverse, 0.012f, 0.03f, 0.055f, 0.19f);
+
+                    SetBlendShapeWeight(generated, FbxShapeName, 100f);
+                    SetBlendShapeWeight(fixture.expectedClothing, FbxShapeName, 100f);
+                    var shapeForward = MeasureSurfaceDistance(generated, fixture.expectedClothing);
+                    var shapeReverse = MeasureSurfaceDistance(fixture.expectedClothing, generated);
+                    Debug.Log($"[ReFit Tests] FBX shape generated->expected {shapeForward}");
+                    Debug.Log($"[ReFit Tests] FBX shape expected->generated {shapeReverse}");
+                    AssertFbxSurfaceMetrics("FBX shape generated->expected", shapeForward, 0.008f, 0.014f, 0.015f, 0.13f);
+                    AssertFbxSurfaceMetrics("FBX shape expected->generated", shapeReverse, 0.012f, 0.03f, 0.055f, 0.19f);
+                }
+                finally
+                {
+                    DestroyComputationMesh(comp);
+                }
             }
         }
 
@@ -327,6 +395,66 @@ namespace Orbiters.ReFit.Editor.Tests
             return deltas;
         }
 
+        private static SurfaceMetrics MeasureSurfaceDistance(SkinnedMeshRenderer from, SkinnedMeshRenderer to)
+        {
+            var report = new ReFitReport();
+            var fromSnap = MeshSnapshot.Capture(from, false, null, report);
+            var toSnap = MeshSnapshot.Capture(to, false, null, report);
+            var toBvh = SurfaceBvh.Build(toSnap);
+            var distances = new List<float>(fromSnap.worldVertices.Length);
+            double sum = 0d;
+            double sumSq = 0d;
+            float max = 0f;
+
+            for (int i = 0; i < fromSnap.worldVertices.Length; i++)
+            {
+                var hit = toBvh.ClosestPoint(fromSnap.worldVertices[i], 20f, null);
+                AssertTrue(hit.found, $"No closest point found for vertex {i} on '{from.name}'.");
+                distances.Add(hit.distance);
+                sum += hit.distance;
+                sumSq += hit.distance * hit.distance;
+                max = Mathf.Max(max, hit.distance);
+            }
+
+            distances.Sort();
+            return new SurfaceMetrics
+            {
+                average = (float)(sum / distances.Count),
+                rms = (float)Math.Sqrt(sumSq / distances.Count),
+                p95 = Percentile(distances, 0.95f),
+                p99 = Percentile(distances, 0.99f),
+                max = max
+            };
+        }
+
+        private static float Percentile(List<float> sortedValues, float percentile)
+        {
+            AssertTrue(sortedValues != null && sortedValues.Count > 0, "Cannot measure an empty percentile set.");
+            int index = Mathf.Clamp(Mathf.RoundToInt((sortedValues.Count - 1) * percentile), 0, sortedValues.Count - 1);
+            return sortedValues[index];
+        }
+
+        private static void AssertFbxSurfaceMetrics(
+            string label,
+            SurfaceMetrics metrics,
+            float maxAverage,
+            float maxRms,
+            float maxP95,
+            float maxMax)
+        {
+            AssertLessOrEqual(metrics.average, maxAverage, $"{label} average distance is too high.");
+            AssertLessOrEqual(metrics.rms, maxRms, $"{label} RMS distance is too high.");
+            AssertLessOrEqual(metrics.p95, maxP95, $"{label} p95 distance is too high.");
+            AssertLessOrEqual(metrics.max, maxMax, $"{label} max distance is too high.");
+        }
+
+        private static void SetBlendShapeWeight(SkinnedMeshRenderer renderer, string shapeName, float weight)
+        {
+            int shapeIndex = renderer.sharedMesh.GetBlendShapeIndex(shapeName);
+            AssertTrue(shapeIndex >= 0, $"Mesh '{renderer.sharedMesh.name}' does not contain blendshape '{shapeName}'.");
+            renderer.SetBlendShapeWeight(shapeIndex, weight);
+        }
+
         private static BoneWeight WeightAtClosestVertex(Mesh mesh, Vector2 target)
         {
             var vertices = mesh.vertices;
@@ -416,6 +544,109 @@ namespace Orbiters.ReFit.Editor.Tests
             public Vector3 average;
             public float averageOutward;
             public float maxMagnitude;
+        }
+
+        private struct SurfaceMetrics
+        {
+            public float average;
+            public float rms;
+            public float p95;
+            public float p99;
+            public float max;
+
+            public override string ToString()
+            {
+                return $"avg={average:0.000000} rms={rms:0.000000} p95={p95:0.000000} p99={p99:0.000000} max={max:0.000000}";
+            }
+        }
+
+        private sealed class FbxResultFixture : IDisposable
+        {
+            public GameObject sourceAvatar;
+            public GameObject clothingRoot;
+            public GameObject targetAvatar;
+            public GameObject expectedRoot;
+            public SkinnedMeshRenderer sourceBody;
+            public SkinnedMeshRenderer clothingA;
+            public SkinnedMeshRenderer targetBody;
+            public SkinnedMeshRenderer expectedClothing;
+
+            public static FbxResultFixture Create()
+            {
+                var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(FbxFixturePath);
+                AssertTrue(prefab != null, $"Missing FBX fixture at '{FbxFixturePath}'.");
+
+                var fixture = new FbxResultFixture
+                {
+                    sourceAvatar = InstantiateCleanRoot(prefab, "Armature", "Body"),
+                    clothingRoot = InstantiateCleanRoot(prefab, "Armature Clothing for A", "Body Clothing for A"),
+                    targetAvatar = InstantiateCleanRoot(prefab, "Armature custom edit", "Body custom edit"),
+                    expectedRoot = InstantiateCleanRoot(prefab, "Armature Result Clothing for B", "Body Result Clothing for B")
+                };
+
+                fixture.sourceAvatar.name = "__ReFitFbx_SourceA";
+                fixture.clothingRoot.name = "__ReFitFbx_ClothingA";
+                fixture.targetAvatar.name = "__ReFitFbx_TargetB";
+                fixture.expectedRoot.name = "__ReFitFbx_ExpectedClothingB";
+
+                fixture.sourceBody = RequireRenderer(fixture.sourceAvatar, "Body");
+                fixture.clothingA = RequireRenderer(fixture.clothingRoot, "Body Clothing for A");
+                fixture.targetBody = RequireRenderer(fixture.targetAvatar, "Body custom edit");
+                fixture.expectedClothing = RequireRenderer(fixture.expectedRoot, "Body Result Clothing for B");
+                return fixture;
+            }
+
+            private static GameObject InstantiateCleanRoot(GameObject prefab, params string[] keepChildren)
+            {
+                var root = Object.Instantiate(prefab);
+                MarkHideAndDontSave(root);
+                for (int i = root.transform.childCount - 1; i >= 0; i--)
+                {
+                    var child = root.transform.GetChild(i);
+                    bool keep = false;
+                    for (int k = 0; k < keepChildren.Length; k++)
+                    {
+                        if (child.name == keepChildren[k])
+                        {
+                            keep = true;
+                            break;
+                        }
+                    }
+
+                    if (!keep)
+                        Object.DestroyImmediate(child.gameObject);
+                }
+
+                return root;
+            }
+
+            private static void MarkHideAndDontSave(GameObject root)
+            {
+                var transforms = root.GetComponentsInChildren<Transform>(true);
+                for (int i = 0; i < transforms.Length; i++)
+                    transforms[i].gameObject.hideFlags = HideFlags.HideAndDontSave;
+            }
+
+            private static SkinnedMeshRenderer RequireRenderer(GameObject root, string rendererName)
+            {
+                var renderers = root.GetComponentsInChildren<SkinnedMeshRenderer>(true);
+                for (int i = 0; i < renderers.Length; i++)
+                    if (renderers[i].name == rendererName)
+                        return renderers[i];
+                throw new Exception($"Could not find renderer '{rendererName}' under '{root.name}'.");
+            }
+
+            public void Dispose()
+            {
+                if (sourceAvatar != null) Object.DestroyImmediate(sourceAvatar);
+                if (clothingRoot != null) Object.DestroyImmediate(clothingRoot);
+                if (targetAvatar != null) Object.DestroyImmediate(targetAvatar);
+                if (expectedRoot != null) Object.DestroyImmediate(expectedRoot);
+                sourceAvatar = null;
+                clothingRoot = null;
+                targetAvatar = null;
+                expectedRoot = null;
+            }
         }
 
         private sealed class ReFitTestFixture : IDisposable

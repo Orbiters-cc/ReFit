@@ -22,6 +22,8 @@ namespace Orbiters.ReFit
         public Vector3[] worldNormals;
         /// <summary>Mesh-local base normals (authored, or recomputed when absent). Thread-safe to read off the main thread.</summary>
         public Vector3[] baseNormals;
+        /// <summary>Primary UV channel captured on the main thread, used as an optional correspondence domain.</summary>
+        public Vector2[] uvs;
         /// <summary>Per-vertex world skinning matrix M(v): world = M(v) * local.</summary>
         public Matrix4x4[] skinMatrices;
         /// <summary>All submesh triangles concatenated.</summary>
@@ -61,6 +63,8 @@ namespace Orbiters.ReFit
             };
             var mesh = snap.mesh;
             int vertexCount = mesh.vertexCount;
+            var uvs = mesh.uv;
+            snap.uvs = uvs != null && uvs.Length == vertexCount ? uvs : null;
 
             // --- local positions with blendshapes applied -------------------------------------
             snap.localVertices = mesh.vertices;

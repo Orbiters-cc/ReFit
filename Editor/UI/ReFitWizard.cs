@@ -724,7 +724,6 @@ namespace Orbiters.ReFit.Editor
             var credit = new VisualElement();
             credit.AddToClassList("refit-result-credit");
             ConfigureCreditLink(credit);
-            credit.Add(CreditImage(BlackOrbitProfilePath, "refit-result-credit-profile", true, ScaleMode.ScaleAndCrop));
 
             var line = new VisualElement();
             line.AddToClassList("refit-result-credit-line");

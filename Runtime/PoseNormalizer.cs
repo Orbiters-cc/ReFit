@@ -276,8 +276,8 @@ namespace Orbiters.ReFit
                 if (Mathf.Abs(stage.appliedScale - 1f) > 1e-3f)
                 {
                     stage.sourceRoot.transform.localScale *= stage.appliedScale;
-                    // Only scale the asset with the source when the asset belongs to the source's space.
-                    // A target-space asset (already fitting the target) keeps its own scale.
+                    // Source-space standalone assets keep their authored pose, but they still need the same
+                    // global source-side scale so their current scene fit remains aligned with source A.
                     if (stage.assetStageRoot != null && !stage.assetInTargetSpace)
                         stage.assetStageRoot.localScale *= stage.appliedScale;
                     report.Info("scale-matched",
@@ -294,14 +294,22 @@ namespace Orbiters.ReFit
             if (stage.sourceHumanMap.TryGetValue(HumanBodyBones.Hips, out var srcHips) && srcHips != null &&
                 stage.targetHumanMap.TryGetValue(HumanBodyBones.Hips, out var tgtHips) && tgtHips != null)
             {
-                stage.sourceRoot.transform.position += tgtHips.position - srcHips.position;
+                var delta = tgtHips.position - srcHips.position;
+                stage.sourceRoot.transform.position += delta;
+                if (stage.assetStageRoot != null && !stage.assetInTargetSpace)
+                    stage.assetStageRoot.position += delta;
             }
             else
             {
                 var sb = BakedWorldBounds(stage.sourceBody);
                 var tb = BakedWorldBounds(stage.targetBody);
                 if (sb.HasValue && tb.HasValue)
-                    stage.sourceRoot.transform.position += tb.Value.center - sb.Value.center;
+                {
+                    var delta = tb.Value.center - sb.Value.center;
+                    stage.sourceRoot.transform.position += delta;
+                    if (stage.assetStageRoot != null && !stage.assetInTargetSpace)
+                        stage.assetStageRoot.position += delta;
+                }
             }
         }
 
@@ -349,28 +357,16 @@ namespace Orbiters.ReFit
         private static void PoseAsset(NormalizedStage stage, ReFitReport report)
         {
             if (stage.assetOnSourceAvatar || stage.assetRenderer == null) return; // shares the source armature, already posed
+            if (stage.assetStageRoot == null) return;
+
+            var assetTransforms = stage.assetStageRoot.GetComponentsInChildren<Transform>(true);
+            stage.assetBoneToSource = HumanoidBoneMapper.MatchBonesByName(assetTransforms, stage.sourceRoot.transform);
+
             if (stage.assetInTargetSpace)
             {
                 // The asset already sits in the target's space; the source body has been scaled/aligned to that
                 // same space, so they overlap. Re-posing the asset onto the source would misalign it.
                 report.Info("asset-target-space", "The asset already fits the target; binding it in place.");
-                return;
-            }
-
-            var assetTransforms = stage.assetStageRoot.GetComponentsInChildren<Transform>(true);
-            stage.assetBoneToSource = HumanoidBoneMapper.MatchBonesByName(assetTransforms, stage.sourceRoot.transform);
-
-            // Apply parent-first so children read already-updated parents.
-            int applied = 0;
-            foreach (var t in assetTransforms) // GetComponentsInChildren is depth-first, parents before children
-            {
-                if (t == stage.assetStageRoot) continue;
-                if (stage.assetBoneToSource.TryGetValue(t, out var src) && src != null)
-                {
-                    t.position = src.position;
-                    t.rotation = src.rotation;
-                    applied++;
-                }
             }
 
             // How much of the actual skinning skeleton did we match?
@@ -394,11 +390,12 @@ namespace Orbiters.ReFit
             else if (boneCount > 0 && boneMatched < boneCount / 2)
             {
                 report.Warn("armature-match-weak",
-                    $"Only {boneMatched}/{boneCount} asset bones matched the source skeleton by name. The fit may be unreliable.");
+                    $"Only {boneMatched}/{boneCount} asset bones matched the source skeleton by name. The fit may be unreliable; keeping the asset's current scene pose.");
             }
-            else if (applied > 0)
+            else if (boneMatched > 0 && !stage.assetInTargetSpace)
             {
-                report.Info("armature-matched", $"Posed the asset onto the source avatar ({boneMatched}/{boneCount} skinned bones matched).");
+                report.Info("armature-mapped",
+                    $"Mapped the asset armature to the source avatar ({boneMatched}/{boneCount} skinned bones matched); keeping the asset's current scene pose.");
             }
         }
     }

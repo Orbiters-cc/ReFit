@@ -17,7 +17,8 @@ namespace Orbiters.ReFit.Editor.Tests
         private const float ChestForwardDeltaMinimum = 0.06f;
         private const float ArmOutwardDeltaMinimum = 0.02f;
         private const float WaistDeltaMaximum = 0.012f;
-        private const string FbxFixturePath = "Packages/orbiters.refit/ReFit unit test v1.fbx";
+        private const string FbxFixtureV1Path = "Packages/orbiters.refit/ReFit unit test v1.fbx";
+        private const string FbxFixtureV2DifferentArmaturePath = "Packages/orbiters.refit/ReFit unit test v2 clothing with different armature.fbx";
         private const string FbxShapeName = "custom blendshape";
 
         [MenuItem("Tools/Orbiters/ReFit/Run Deterministic Tests")]
@@ -68,6 +69,9 @@ namespace Orbiters.ReFit.Editor.Tests
                 RunCase(failures,
                     "FBX fixture reproduces authored B clothing result",
                     FbxFixture_ReproducesAuthoredResultClothing);
+                RunCase(failures,
+                    "FBX fixture supports clothing with an inserted armature bone",
+                    FbxFixture_DifferentClothingArmature_ReproducesAuthoredResultClothing);
 
                 if (failures.Count > 0)
                     throw new Exception("[ReFit Tests] Failed deterministic checks:\n" + string.Join("\n", failures));
@@ -82,7 +86,17 @@ namespace Orbiters.ReFit.Editor.Tests
 
         private static void FbxFixture_ReproducesAuthoredResultClothing()
         {
-            using (var fixture = FbxResultFixture.Create())
+            RunFbxFixtureAgainstAuthoredResult(FbxFixtureV1Path, "FBX v1");
+        }
+
+        private static void FbxFixture_DifferentClothingArmature_ReproducesAuthoredResultClothing()
+        {
+            RunFbxFixtureAgainstAuthoredResult(FbxFixtureV2DifferentArmaturePath, "FBX v2");
+        }
+
+        private static void RunFbxFixtureAgainstAuthoredResult(string fixturePath, string label)
+        {
+            using (var fixture = FbxResultFixture.Create(fixturePath))
             {
                 var request = new ReFitRequest
                 {
@@ -113,28 +127,39 @@ namespace Orbiters.ReFit.Editor.Tests
                     }
                 };
 
+                var originalClothing = MeshSnapshot.Capture(fixture.clothingA, false, null, new ReFitReport());
                 var comp = new ReFitEngine().Run(request);
                 try
                 {
                     AssertComputationSucceeded(comp);
                     var generated = ReFitAssetPipeline.ApplyToScene(request, comp, comp.report);
                     AssertTrue(generated != null, "ApplyToScene returned no renderer for the FBX fixture.");
+                    AssertRootBoneInRendererBones(generated, label);
+                    if (fixturePath == FbxFixtureV2DifferentArmaturePath)
+                        AssertTrue(!RendererHasBone(generated, "middle arm"),
+                            "The inserted clothing-only 'middle arm' bone should resolve onto the target armature, not be preserved as an extra deforming bone.");
 
                     var baseForward = MeasureSurfaceDistance(generated, fixture.expectedClothing);
                     var baseReverse = MeasureSurfaceDistance(fixture.expectedClothing, generated);
-                    Debug.Log($"[ReFit Tests] FBX base generated->expected {baseForward}");
-                    Debug.Log($"[ReFit Tests] FBX base expected->generated {baseReverse}");
-                    AssertFbxSurfaceMetrics("FBX base generated->expected", baseForward, 0.008f, 0.014f, 0.015f, 0.13f);
-                    AssertFbxSurfaceMetrics("FBX base expected->generated", baseReverse, 0.012f, 0.03f, 0.055f, 0.19f);
+                    var baseQuality = MeasureTriangleQuality(originalClothing, generated);
+                    Debug.Log($"[ReFit Tests] {label} base generated->expected {baseForward}");
+                    Debug.Log($"[ReFit Tests] {label} base expected->generated {baseReverse}");
+                    Debug.Log($"[ReFit Tests] {label} base triangle quality {baseQuality}");
+                    AssertFbxSurfaceMetrics($"{label} base generated->expected", baseForward, 0.008f, 0.014f, 0.015f, 0.13f);
+                    AssertFbxSurfaceMetrics($"{label} base expected->generated", baseReverse, 0.012f, 0.03f, 0.055f, 0.19f);
+                    AssertTriangleQuality($"{label} base", baseQuality);
 
                     SetBlendShapeWeight(generated, FbxShapeName, 100f);
                     SetBlendShapeWeight(fixture.expectedClothing, FbxShapeName, 100f);
                     var shapeForward = MeasureSurfaceDistance(generated, fixture.expectedClothing);
                     var shapeReverse = MeasureSurfaceDistance(fixture.expectedClothing, generated);
-                    Debug.Log($"[ReFit Tests] FBX shape generated->expected {shapeForward}");
-                    Debug.Log($"[ReFit Tests] FBX shape expected->generated {shapeReverse}");
-                    AssertFbxSurfaceMetrics("FBX shape generated->expected", shapeForward, 0.008f, 0.014f, 0.015f, 0.13f);
-                    AssertFbxSurfaceMetrics("FBX shape expected->generated", shapeReverse, 0.012f, 0.03f, 0.055f, 0.19f);
+                    var shapeQuality = MeasureTriangleQuality(originalClothing, generated);
+                    Debug.Log($"[ReFit Tests] {label} shape generated->expected {shapeForward}");
+                    Debug.Log($"[ReFit Tests] {label} shape expected->generated {shapeReverse}");
+                    Debug.Log($"[ReFit Tests] {label} shape triangle quality {shapeQuality}");
+                    AssertFbxSurfaceMetrics($"{label} shape generated->expected", shapeForward, 0.008f, 0.014f, 0.015f, 0.13f);
+                    AssertFbxSurfaceMetrics($"{label} shape expected->generated", shapeReverse, 0.012f, 0.03f, 0.055f, 0.19f);
+                    AssertTriangleQuality($"{label} shape", shapeQuality);
                 }
                 finally
                 {
@@ -427,6 +452,64 @@ namespace Orbiters.ReFit.Editor.Tests
             };
         }
 
+        private static TriangleQualityMetrics MeasureTriangleQuality(MeshSnapshot reference, SkinnedMeshRenderer deformed)
+        {
+            AssertTrue(reference != null, "Cannot measure triangle quality without a reference snapshot.");
+            var report = new ReFitReport();
+            var deformedSnap = MeshSnapshot.Capture(deformed, false, null, report);
+            AssertTrue(reference.worldVertices.Length == deformedSnap.worldVertices.Length,
+                $"Triangle quality requires matching vertex counts. Expected {reference.worldVertices.Length}, got {deformedSnap.worldVertices.Length}.");
+            AssertTrue(reference.triangles.Length == deformedSnap.triangles.Length,
+                $"Triangle quality requires matching triangle topology. Expected {reference.triangles.Length / 3}, got {deformedSnap.triangles.Length / 3}.");
+
+            var metrics = new TriangleQualityMetrics();
+            for (int t = 0; t < reference.triangles.Length; t += 3)
+            {
+                int a = reference.triangles[t];
+                int b = reference.triangles[t + 1];
+                int c = reference.triangles[t + 2];
+                AssertTrue(a == deformedSnap.triangles[t] &&
+                           b == deformedSnap.triangles[t + 1] &&
+                           c == deformedSnap.triangles[t + 2],
+                    "Triangle quality requires identical triangle indices before and after ReFit.");
+
+                TriangleStats(reference.worldVertices, a, b, c,
+                    out var refMinEdge, out var refMaxEdge, out var refArea, out var refAspect);
+                TriangleStats(deformedSnap.worldVertices, a, b, c,
+                    out var deformedMinEdge, out var deformedMaxEdge, out var deformedArea, out var deformedAspect);
+                if (refMaxEdge <= 1e-6f || refArea <= 1e-10f) continue;
+
+                metrics.checkedTriangles++;
+                metrics.maxEdgeGrowth = Mathf.Max(metrics.maxEdgeGrowth, deformedMaxEdge / refMaxEdge);
+                metrics.maxEdgeShrink = Mathf.Max(metrics.maxEdgeShrink, refMaxEdge / Mathf.Max(deformedMaxEdge, 1e-8f));
+                metrics.maxAreaGrowth = Mathf.Max(metrics.maxAreaGrowth, deformedArea / refArea);
+                metrics.maxAreaShrink = Mathf.Max(metrics.maxAreaShrink, refArea / Mathf.Max(deformedArea, 1e-10f));
+                metrics.maxAspectGrowth = Mathf.Max(metrics.maxAspectGrowth, deformedAspect / Mathf.Max(refAspect, 1e-6f));
+            }
+
+            AssertTrue(metrics.checkedTriangles > 0, "Triangle quality did not find any measurable triangles.");
+            return metrics;
+        }
+
+        private static void TriangleStats(
+            Vector3[] vertices,
+            int a,
+            int b,
+            int c,
+            out float minEdge,
+            out float maxEdge,
+            out float area,
+            out float aspect)
+        {
+            var ab = (vertices[b] - vertices[a]).magnitude;
+            var bc = (vertices[c] - vertices[b]).magnitude;
+            var ca = (vertices[a] - vertices[c]).magnitude;
+            minEdge = Mathf.Max(Mathf.Min(ab, Mathf.Min(bc, ca)), 1e-8f);
+            maxEdge = Mathf.Max(ab, Mathf.Max(bc, ca));
+            area = Vector3.Cross(vertices[b] - vertices[a], vertices[c] - vertices[a]).magnitude * 0.5f;
+            aspect = maxEdge / minEdge;
+        }
+
         private static float Percentile(List<float> sortedValues, float percentile)
         {
             AssertTrue(sortedValues != null && sortedValues.Count > 0, "Cannot measure an empty percentile set.");
@@ -448,11 +531,42 @@ namespace Orbiters.ReFit.Editor.Tests
             AssertLessOrEqual(metrics.max, maxMax, $"{label} max distance is too high.");
         }
 
+        private static void AssertTriangleQuality(string label, TriangleQualityMetrics metrics)
+        {
+            AssertLessOrEqual(metrics.maxEdgeGrowth, 8f, $"{label} has an implausibly stretched triangle edge.");
+            AssertLessOrEqual(metrics.maxEdgeShrink, 8f, $"{label} has an implausibly collapsed triangle edge.");
+            AssertLessOrEqual(metrics.maxAreaGrowth, 40f, $"{label} has an implausibly inflated triangle area.");
+            AssertLessOrEqual(metrics.maxAreaShrink, 80f, $"{label} has an implausibly collapsed triangle area.");
+            AssertLessOrEqual(metrics.maxAspectGrowth, 12f, $"{label} has an implausibly distorted triangle aspect ratio.");
+        }
+
         private static void SetBlendShapeWeight(SkinnedMeshRenderer renderer, string shapeName, float weight)
         {
             int shapeIndex = renderer.sharedMesh.GetBlendShapeIndex(shapeName);
             AssertTrue(shapeIndex >= 0, $"Mesh '{renderer.sharedMesh.name}' does not contain blendshape '{shapeName}'.");
             renderer.SetBlendShapeWeight(shapeIndex, weight);
+        }
+
+        private static bool RendererHasBone(SkinnedMeshRenderer renderer, string boneName)
+        {
+            var bones = renderer.bones;
+            if (bones == null) return false;
+            for (int i = 0; i < bones.Length; i++)
+                if (bones[i] != null && string.Equals(bones[i].name, boneName, StringComparison.OrdinalIgnoreCase))
+                    return true;
+            return false;
+        }
+
+        private static void AssertRootBoneInRendererBones(SkinnedMeshRenderer renderer, string label)
+        {
+            AssertTrue(renderer.rootBone != null, $"{label} renderer root bone is null after armature replacement.");
+            var bones = renderer.bones;
+            AssertTrue(bones != null && bones.Length > 0, $"{label} renderer has no bones after armature replacement.");
+            for (int i = 0; i < bones.Length; i++)
+                if (bones[i] == renderer.rootBone)
+                    return;
+
+            throw new Exception($"{label} renderer root bone '{renderer.rootBone.name}' is not part of its replaced bone array.");
         }
 
         private static BoneWeight WeightAtClosestVertex(Mesh mesh, Vector2 target)
@@ -560,6 +674,21 @@ namespace Orbiters.ReFit.Editor.Tests
             }
         }
 
+        private struct TriangleQualityMetrics
+        {
+            public int checkedTriangles;
+            public float maxEdgeGrowth;
+            public float maxEdgeShrink;
+            public float maxAreaGrowth;
+            public float maxAreaShrink;
+            public float maxAspectGrowth;
+
+            public override string ToString()
+            {
+                return $"triangles={checkedTriangles} edgeGrow={maxEdgeGrowth:0.000} edgeShrink={maxEdgeShrink:0.000} areaGrow={maxAreaGrowth:0.000} areaShrink={maxAreaShrink:0.000} aspectGrow={maxAspectGrowth:0.000}";
+            }
+        }
+
         private sealed class FbxResultFixture : IDisposable
         {
             public GameObject sourceAvatar;
@@ -571,10 +700,10 @@ namespace Orbiters.ReFit.Editor.Tests
             public SkinnedMeshRenderer targetBody;
             public SkinnedMeshRenderer expectedClothing;
 
-            public static FbxResultFixture Create()
+            public static FbxResultFixture Create(string fixturePath)
             {
-                var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(FbxFixturePath);
-                AssertTrue(prefab != null, $"Missing FBX fixture at '{FbxFixturePath}'.");
+                var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(fixturePath);
+                AssertTrue(prefab != null, $"Missing FBX fixture at '{fixturePath}'.");
 
                 var fixture = new FbxResultFixture
                 {

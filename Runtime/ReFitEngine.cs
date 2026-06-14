@@ -940,7 +940,10 @@ namespace Orbiters.ReFit
             foreach (var kv in stage.sourceHumanMap)
                 if (kv.Value != null && !sourceHumanOf.ContainsKey(kv.Value)) sourceHumanOf[kv.Value] = kv.Key;
 
-            Transform ResolveToTarget(Transform assetOrSourceBone)
+            var keptOriginRoot = stage.assetOnSourceAvatar ? stage.sourceRoot.transform : stage.assetStageRoot;
+            var keptOrigin = stage.assetOnSourceAvatar ? ReFitBoneOrigin.SourceAvatar : ReFitBoneOrigin.Asset;
+
+            Transform ResolveDirectToTarget(Transform assetOrSourceBone)
             {
                 if (assetOrSourceBone == null) return null;
                 if (targetNameIndex.TryGetValue(ReFitUtility.NormalizeName(assetOrSourceBone.name), out var byName))
@@ -948,6 +951,10 @@ namespace Orbiters.ReFit
                 var src = assetOrSourceBone;
                 if (!stage.assetOnSourceAvatar && stage.assetBoneToSource.TryGetValue(assetOrSourceBone, out var mapped))
                     src = mapped;
+                if (src == null) return null;
+                if (src != assetOrSourceBone &&
+                    targetNameIndex.TryGetValue(ReFitUtility.NormalizeName(src.name), out byName))
+                    return byName;
                 while (src != null)
                 {
                     if (sourceHumanOf.TryGetValue(src, out var human) &&
@@ -959,13 +966,62 @@ namespace Orbiters.ReFit
                 return null;
             }
 
+            Transform FindDirectResolvedAncestor(Transform bone)
+            {
+                var cur = bone.parent;
+                while (cur != null)
+                {
+                    var target = ResolveDirectToTarget(cur);
+                    if (target != null) return target;
+                    if (cur == keptOriginRoot) break;
+                    cur = cur.parent;
+                }
+                return null;
+            }
+
+            Transform FindDirectResolvedDescendant(Transform bone)
+            {
+                var queue = new Queue<Transform>();
+                for (int i = 0; i < bone.childCount; i++)
+                    queue.Enqueue(bone.GetChild(i));
+
+                while (queue.Count > 0)
+                {
+                    var cur = queue.Dequeue();
+                    var target = ResolveDirectToTarget(cur);
+                    if (target != null) return target;
+                    for (int i = 0; i < cur.childCount; i++)
+                        queue.Enqueue(cur.GetChild(i));
+                }
+                return null;
+            }
+
+            Transform ResolveInsertedChainBone(Transform bone)
+            {
+                if (bone == null) return null;
+                var ancestorTarget = FindDirectResolvedAncestor(bone);
+                if (ancestorTarget == null) return null;
+
+                var descendantTarget = FindDirectResolvedDescendant(bone);
+                if (descendantTarget == null) return null;
+
+                var bonePosition = bone.position;
+                var ancestorDistance = (bonePosition - ancestorTarget.position).sqrMagnitude;
+                var descendantDistance = (bonePosition - descendantTarget.position).sqrMagnitude;
+                return descendantDistance < ancestorDistance ? descendantTarget : ancestorTarget;
+            }
+
+            Transform ResolveToTarget(Transform assetOrSourceBone)
+            {
+                var direct = ResolveDirectToTarget(assetOrSourceBone);
+                return direct != null ? direct : ResolveInsertedChainBone(assetOrSourceBone);
+            }
+
             // 2) resolve every asset bone
             int assetBoneCount = asset.bones != null ? asset.bones.Length : 0;
             var assetBoneToNew = new int[assetBoneCount];
             var assetBoneIsExtra = new bool[assetBoneCount];
             int mappedCount = 0, keptCount = 0;
-            var keptOriginRoot = stage.assetOnSourceAvatar ? stage.sourceRoot.transform : stage.assetStageRoot;
-            var keptOrigin = stage.assetOnSourceAvatar ? ReFitBoneOrigin.SourceAvatar : ReFitBoneOrigin.Asset;
 
             for (int k = 0; k < assetBoneCount; k++)
             {
@@ -1021,10 +1077,21 @@ namespace Orbiters.ReFit
                 });
             }
 
-            // 4) root bone: target hips when available
+            // 4) root bone: prefer the target equivalent of the asset renderer's authored root bone.
             comp.rootBoneIndex = -1;
-            if (stage.targetHumanMap.TryGetValue(HumanBodyBones.Hips, out var hips) && hips != null)
+            var resolvedRoot = stage.assetRenderer.rootBone != null ? ResolveToTarget(stage.assetRenderer.rootBone) : null;
+            if (resolvedRoot != null)
+            {
+                comp.rootBoneIndex = AddTargetBone(resolvedRoot);
+            }
+            else if (stage.assetRenderer.rootBone != null && indexOf.TryGetValue(stage.assetRenderer.rootBone, out var keptRootIndex))
+            {
+                comp.rootBoneIndex = keptRootIndex;
+            }
+            else if (stage.targetHumanMap.TryGetValue(HumanBodyBones.Hips, out var hips) && hips != null)
+            {
                 comp.rootBoneIndex = AddTargetBone(hips);
+            }
 
             // 5) bindposes captured in the staged pose, relative to the staged asset renderer
             var rendererL2W = stage.assetRenderer.transform.localToWorldMatrix;

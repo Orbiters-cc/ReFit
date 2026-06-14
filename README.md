@@ -63,6 +63,24 @@ component (restored on reset, surviving Unity restarts), and commits the generat
 The engine itself (`Orbiters.ReFit.ReFitEngine`, runtime assembly, no UnityEditor dependency) can be used directly
 when you want the computed mesh without asset saving or scene application.
 
+## Deterministic test pipeline
+
+`Tools > Orbiters > ReFit > Run Deterministic Tests`
+
+The test runner builds in-memory sample rigs, meshes, weights and blendshapes. It does not need fixture assets. The
+main regression case uses model A and model B with identical body surfaces, different topology, moved bones and
+different skin weights; model B has a `TestMuscle` blendshape that is transferred onto a third clothing renderer.
+
+Batch/CI entry point:
+
+```bash
+"<Unity.exe>" -batchmode -quit -projectPath "<project>" -executeMethod Orbiters.ReFit.Editor.Tests.ReFitDeterministicTestRunner.RunBatchMode
+```
+
+The checks fail if the primary `refit` shape visibly moves an equal-surface case, if the transferred chest/arm
+shape is too weak, if the waist moves when the source body shape has no waist delta, or if applying with armature
+replacement disabled changes the clothing renderer's root bone.
+
 ## How it works
 
 See `Documentation~/DESIGN.md` for the algorithm: pose normalization into a shared neutral pose, scale matching,

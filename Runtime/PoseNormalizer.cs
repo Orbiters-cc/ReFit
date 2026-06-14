@@ -256,12 +256,20 @@ namespace Orbiters.ReFit
 
         private static void ScaleAndAlign(NormalizedStage stage, ReFitReport report)
         {
-            // 1) Scale: prefer humanoid landmarks, fall back to the body meshes' world height so that
-            //    non-humanoid rigs (and FBX imported at a different unit scale) are still matched.
-            float ms = Measure(stage.sourceHumanMap);
-            float mt = Measure(stage.targetHumanMap);
-            bool usedBounds = false;
-            if (ms <= 1e-5f || mt <= 1e-5f)
+            // 1) Scale: real humanoid avatars can use stable humanoid landmarks. Name-fallback rigs can be in
+            //    different arm poses, so hand span is not reliable; use the baked body height instead.
+            bool useBounds = HumanoidBoneMapper.FindHumanoidAnimator(stage.sourceRoot) == null ||
+                             HumanoidBoneMapper.FindHumanoidAnimator(stage.targetRoot) == null;
+            bool usedBounds = useBounds;
+            float ms = -1f;
+            float mt = -1f;
+            if (!useBounds)
+            {
+                ms = Measure(stage.sourceHumanMap);
+                mt = Measure(stage.targetHumanMap);
+            }
+
+            if (useBounds || ms <= 1e-5f || mt <= 1e-5f)
             {
                 var sb = BakedWorldBounds(stage.sourceBody);
                 var tb = BakedWorldBounds(stage.targetBody);

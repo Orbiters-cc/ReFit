@@ -361,23 +361,19 @@ namespace Orbiters.ReFit
                 {
                     if (!localBindings[g].valid) { localTarget[g].valid = false; return; }
                     var nA = firstSnap.BaryNormal(localBindings[g].triangle, localBindings[g].bary);
-                    var region = state.assetGroupRegions != null ? state.assetGroupRegions[g] : BodyRegion.Unknown;
-                    var direct = SurfaceBindingSolver.BindPoint(
+                    var region = BodyRegion.Unknown;
+                    if (firstTriRegions != null &&
+                        localBindings[g].triangle >= 0 && localBindings[g].triangle < firstTriRegions.Length)
+                        region = firstTriRegions[localBindings[g].triangle];
+                    if (region == BodyRegion.Unknown && state.assetGroupRegions != null)
+                        region = state.assetGroupRegions[g];
+                    var direct = BindTargetPoint(
                         localBindings[g].point, targetBasis, bvhTarget, chainRange,
                         region, settings.filterByBoneRegion ? state.targetTriRegions : null,
                         nA, cosMax, settings.filterByNormal);
                     if (sourceAndTargetOverlap && direct.valid && direct.distance <= directMatchTolerance)
                     {
                         localTarget[g] = direct;
-                        return;
-                    }
-
-                    if (targetUvBvh != null &&
-                        TryAssetUvTargetBinding(asset, g, firstSnap, localBindings[g], targetBasis, targetUvBvh,
-                            uvChainRange, region, settings.filterByBoneRegion ? state.targetTriRegions : null,
-                            out var assetUvBinding))
-                    {
-                        localTarget[g] = assetUvBinding;
                         return;
                     }
 
@@ -392,7 +388,8 @@ namespace Orbiters.ReFit
 
                     if (targetLocalBvh != null &&
                         TryLocalTargetBinding(firstSnap, localBindings[g], targetBasis, targetLocalBvh,
-                            localChainRange, out var localBinding))
+                            localChainRange, region, settings.filterByBoneRegion ? state.targetTriRegions : null,
+                            out var localBinding))
                     {
                         localTarget[g] = localBinding;
                         return;
@@ -401,7 +398,7 @@ namespace Orbiters.ReFit
                     if (TryGuidedTargetPoint(firstSnap, localBindings[g],
                             state.sourceBodyBoneToTarget, state.sourceBodyBoneHasTarget, out var guidedPoint))
                     {
-                        var guided = SurfaceBindingSolver.BindPoint(
+                        var guided = BindTargetPoint(
                             guidedPoint, targetBasis, bvhTarget, chainRange,
                             region, settings.filterByBoneRegion ? state.targetTriRegions : null,
                             nA, cosMax, settings.filterByNormal);
@@ -758,26 +755,6 @@ namespace Orbiters.ReFit
             return true;
         }
 
-        private static bool TryAssetUvTargetBinding(MeshSnapshot asset, int group, MeshSnapshot sourceBody,
-            SurfaceBinding sourceBinding, MeshSnapshot targetBody, SurfaceBvh targetUvBvh, float maxUvDistance,
-            BodyRegion region, BodyRegion[] targetTriRegions, out SurfaceBinding targetBinding)
-        {
-            targetBinding = default;
-            if (asset == null || asset.uvs == null || group < 0 || group >= asset.groupRep.Length)
-                return false;
-
-            var assetUv = asset.uvs[asset.groupRep[group]];
-            if (sourceBody.uvs != null)
-            {
-                var sourceUv = SourceBindingUv(sourceBody, sourceBinding);
-                if ((assetUv - sourceUv).magnitude > 0.05f)
-                    return false;
-            }
-
-            return TryUvPointTargetBinding(assetUv, targetBody, targetUvBvh, maxUvDistance,
-                region, targetTriRegions, out targetBinding);
-        }
-
         private static bool TryUvTargetBinding(MeshSnapshot sourceBody, SurfaceBinding sourceBinding,
             MeshSnapshot targetBody, SurfaceBvh targetUvBvh, float maxUvDistance,
             BodyRegion region, BodyRegion[] targetTriRegions, out SurfaceBinding targetBinding)
@@ -808,11 +785,9 @@ namespace Orbiters.ReFit
 
             Func<int, bool> filter = null;
             if (targetTriRegions != null && region != BodyRegion.Unknown)
-                filter = t => HumanoidBoneMapper.RegionsCompatible(region, targetTriRegions[t]);
+                filter = t => UvRegionsCompatible(region, targetTriRegions[t]);
 
             var uvHit = targetUvBvh.ClosestPoint(new Vector3(sourceUv.x, sourceUv.y, 0f), maxUvDistance, filter);
-            if (!uvHit.found && filter != null)
-                uvHit = targetUvBvh.ClosestPoint(new Vector3(sourceUv.x, sourceUv.y, 0f), maxUvDistance, null);
             if (!uvHit.found) return false;
 
             targetBinding = new SurfaceBinding
@@ -826,8 +801,45 @@ namespace Orbiters.ReFit
             return true;
         }
 
+        private static bool UvRegionsCompatible(BodyRegion source, BodyRegion target)
+        {
+            if (source == BodyRegion.Unknown) return true;
+            if (target == BodyRegion.Unknown) return false;
+            return source == target;
+        }
+
+        private static SurfaceBinding BindTargetPoint(Vector3 point, MeshSnapshot body, SurfaceBvh bvh, float maxDistance,
+            BodyRegion region, BodyRegion[] bodyTriRegions, Vector3 referenceNormal, float cosMaxAngle, bool useNormal)
+        {
+            Func<int, bool> filter = null;
+            bool useRegion = bodyTriRegions != null && region != BodyRegion.Unknown;
+            if (useNormal || useRegion)
+            {
+                filter = t =>
+                {
+                    if (useRegion && !UvRegionsCompatible(region, bodyTriRegions[t])) return false;
+                    if (useNormal && Vector3.Dot(referenceNormal, body.FaceNormal(t)) < cosMaxAngle) return false;
+                    return true;
+                };
+            }
+
+            var hit = bvh.ClosestPoint(point, maxDistance, filter);
+            if (!hit.found && filter != null && !useRegion)
+                hit = bvh.ClosestPoint(point, maxDistance, null);
+
+            return new SurfaceBinding
+            {
+                valid = hit.found,
+                triangle = hit.triangle,
+                bary = hit.bary,
+                point = hit.position,
+                distance = hit.distance
+            };
+        }
+
         private static bool TryLocalTargetBinding(MeshSnapshot sourceBody, SurfaceBinding sourceBinding,
-            MeshSnapshot targetBody, SurfaceBvh targetLocalBvh, float maxLocalDistance, out SurfaceBinding targetBinding)
+            MeshSnapshot targetBody, SurfaceBvh targetLocalBvh, float maxLocalDistance,
+            BodyRegion region, BodyRegion[] targetTriRegions, out SurfaceBinding targetBinding)
         {
             targetBinding = default;
             if (sourceBody == null || targetBody == null || targetLocalBvh == null ||
@@ -840,7 +852,11 @@ namespace Orbiters.ReFit
                 sourceBody.localVertices[sourceBody.triangles[t + 1]] * sourceBinding.bary.y +
                 sourceBody.localVertices[sourceBody.triangles[t + 2]] * sourceBinding.bary.z;
 
-            var localHit = targetLocalBvh.ClosestPoint(sourceLocal, maxLocalDistance, null);
+            Func<int, bool> filter = null;
+            if (targetTriRegions != null && region != BodyRegion.Unknown)
+                filter = tri => UvRegionsCompatible(region, targetTriRegions[tri]);
+
+            var localHit = targetLocalBvh.ClosestPoint(sourceLocal, maxLocalDistance, filter);
             if (!localHit.found) return false;
 
             targetBinding = new SurfaceBinding

@@ -67,6 +67,9 @@ namespace Orbiters.ReFit.Editor.Tests
                     "Mesh refit with armature replacement disabled preserves clothing root bone",
                     MeshAndBlendshape_ArmatureReplacementDisabled_PreservesRootBone);
                 RunCase(failures,
+                    "Humanoid alias bone names map to target armature bones",
+                    HumanoidAliases_MapAccessoryBonesToAvatarBones);
+                RunCase(failures,
                     "FBX fixture reproduces authored B clothing result",
                     FbxFixture_ReproducesAuthoredResultClothing);
                 RunCase(failures,
@@ -166,6 +169,40 @@ namespace Orbiters.ReFit.Editor.Tests
                     DestroyComputationMesh(comp);
                 }
             }
+        }
+
+        private static void HumanoidAliases_MapAccessoryBonesToAvatarBones()
+        {
+            var avatar = new GameObject("__ReFitTest_AliasAvatar");
+            var accessory = new GameObject("__ReFitTest_AliasAccessory");
+            try
+            {
+                avatar.hideFlags = HideFlags.HideAndDontSave;
+                accessory.hideFlags = HideFlags.HideAndDontSave;
+
+                var upperArm = NewChild(avatar.transform, "upper_arm.L");
+                var forearm = NewChild(upperArm, "forearm.L");
+
+                var leftArm = NewChild(accessory.transform, "Left arm");
+                var leftElbow = NewChild(leftArm, "Left elbow");
+
+                var map = HumanoidBoneMapper.MatchBonesByName(accessory.GetComponentsInChildren<Transform>(true), avatar.transform);
+                AssertSame(map[leftArm], upperArm, "Accessory 'Left arm' should map to avatar 'upper_arm.L'.");
+                AssertSame(map[leftElbow], forearm, "Accessory 'Left elbow' should map to avatar 'forearm.L'.");
+            }
+            finally
+            {
+                Object.DestroyImmediate(avatar);
+                Object.DestroyImmediate(accessory);
+            }
+        }
+
+        private static Transform NewChild(Transform parent, string name)
+        {
+            var child = new GameObject(name);
+            child.hideFlags = HideFlags.HideAndDontSave;
+            child.transform.SetParent(parent, false);
+            return child.transform;
         }
 
         private static void RunCase(List<string> failures, string name, Action test)

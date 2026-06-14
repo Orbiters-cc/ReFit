@@ -75,28 +75,17 @@ namespace Orbiters.ReFit
         }
 
         /// <summary>
-        /// Matches the bones of <paramref name="bones"/> into the hierarchy below <paramref name="otherRoot"/> by normalized name,
-        /// with a humanoid-name fallback for common aliases such as "Left elbow" vs "forearm.L".
+        /// Matches the bones of <paramref name="bones"/> into the hierarchy below <paramref name="otherRoot"/> by normalized name.
         /// Unmatched bones map to null.
         /// </summary>
         public static Dictionary<Transform, Transform> MatchBonesByName(IEnumerable<Transform> bones, Transform otherRoot)
         {
             var index = BuildNameIndex(otherRoot);
-            var otherHumanMap = new Dictionary<HumanBodyBones, Transform>();
-            FallbackNameMap(otherRoot, otherHumanMap);
-
             var result = new Dictionary<Transform, Transform>();
             foreach (var bone in bones)
             {
                 if (bone == null || result.ContainsKey(bone)) continue;
-                var key = ReFitUtility.NormalizeName(bone.name);
-                index.TryGetValue(key, out var match);
-                if (match == null &&
-                    TryInferHumanBone(key, out var human) &&
-                    otherHumanMap.TryGetValue(human, out var humanMatch))
-                {
-                    match = humanMatch;
-                }
+                index.TryGetValue(ReFitUtility.NormalizeName(bone.name), out var match);
                 result[bone] = match;
             }
             return result;
@@ -171,7 +160,6 @@ namespace Orbiters.ReFit
             (HumanBodyBones.Hips, new[] { "hips", "hip", "pelvis" }),
             (HumanBodyBones.Spine, new[] { "spine" }),
             (HumanBodyBones.Chest, new[] { "chest" }),
-            (HumanBodyBones.UpperChest, new[] { "upperchest", "chestup", "chest2" }),
             (HumanBodyBones.Neck, new[] { "neck" }),
             (HumanBodyBones.Head, new[] { "head" }),
             (HumanBodyBones.LeftUpperLeg, new[] { "leftupperleg", "upperlegl", "leftleg", "thighl", "lthigh" }),
@@ -200,24 +188,6 @@ namespace Orbiters.ReFit
                     if (index.TryGetValue(p, out var t)) { map[bone] = t; break; }
                 }
             }
-        }
-
-        private static bool TryInferHumanBone(string normalizedName, out HumanBodyBones humanBone)
-        {
-            foreach (var (bone, patterns) in FallbackPatterns)
-            {
-                foreach (var p in patterns)
-                {
-                    if (normalizedName == p)
-                    {
-                        humanBone = bone;
-                        return true;
-                    }
-                }
-            }
-
-            humanBone = HumanBodyBones.LastBone;
-            return false;
         }
     }
 }

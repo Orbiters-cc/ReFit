@@ -19,14 +19,6 @@ namespace Orbiters.ReFit.Editor
     /// </summary>
     public static class ReFitService
     {
-        public const int ApiVersion = 1;
-        public const string ExecuteCoroutineCapability = "execute-coroutine";
-
-        public static string[] GetCapabilities()
-        {
-            return new[] { ExecuteCoroutineCapability };
-        }
-
         /// <summary>
         /// Runs the full re-fit: computes the deformation, saves the mesh asset, applies everything to the scene
         /// (instantiating prefabs when needed) and saves a prefab when possible. Never throws; inspect

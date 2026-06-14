@@ -1,6 +1,5 @@
 using System;
 using System.Collections.Generic;
-using System.IO;
 using UnityEditor;
 using UnityEditor.UIElements;
 using UnityEngine;
@@ -27,10 +26,6 @@ namespace Orbiters.ReFit.Editor
 
         /// <summary>All re-fits performed this session (survives reopening the window, cleared on assembly reload).</summary>
         private static readonly List<RefitLogEntry> SessionLog = new List<RefitLogEntry>();
-        private static readonly Dictionary<string, Texture2D> CreditTextures = new Dictionary<string, Texture2D>();
-        private const string BlackOrbitProfilePath = "Packages/orbiters.refit/blackorbit.png";
-        private const string KofiSymbolPath = "Packages/orbiters.refit/kofi_symbol.png";
-        private const string KofiUrl = "https://ko-fi.com/blackorbit";
 
         private enum Step
         {
@@ -107,7 +102,6 @@ namespace Orbiters.ReFit.Editor
             content = new ScrollView(ScrollViewMode.Vertical);
             content.AddToClassList("refit-scroll");
             body.Add(content);
-            body.Add(CreateFooterCredit());
 
             Render();
         }
@@ -629,8 +623,6 @@ namespace Orbiters.ReFit.Editor
             again.AddToClassList("refit-back");
             again.style.marginTop = 14;
             content.Add(again);
-
-            content.Add(CreateResultCredit());
         }
 
         // ------------------------------------------------------------------
@@ -705,163 +697,6 @@ namespace Orbiters.ReFit.Editor
             label.AddToClassList(m.severity == ReFitSeverity.Error ? "refit-msg--error"
                 : m.severity == ReFitSeverity.Warning ? "refit-msg--warning" : "refit-msg--info");
             parent.Add(label);
-        }
-
-        private static VisualElement CreateFooterCredit()
-        {
-            var credit = new VisualElement();
-            credit.AddToClassList("refit-credit");
-            ConfigureCreditLink(credit);
-            credit.Add(CreditLabel("by blackorbit", "refit-credit-text"));
-            credit.Add(CreditImage(BlackOrbitProfilePath, "refit-credit-profile", true, ScaleMode.ScaleAndCrop));
-            credit.Add(CreditLabel("support me on KoFi", "refit-credit-text"));
-            credit.Add(CreditImage(KofiSymbolPath, "refit-credit-kofi", false, ScaleMode.ScaleToFit));
-            return credit;
-        }
-
-        private static VisualElement CreateResultCredit()
-        {
-            var credit = new VisualElement();
-            credit.AddToClassList("refit-result-credit");
-            ConfigureCreditLink(credit);
-
-            var line = new VisualElement();
-            line.AddToClassList("refit-result-credit-line");
-            line.Add(CreditLabel("Support me on KoFi", "refit-result-credit-text"));
-            line.Add(CreditImage(KofiSymbolPath, "refit-result-credit-kofi", false, ScaleMode.ScaleToFit));
-            line.Add(CreditLabel("if it helps :3", "refit-result-credit-text"));
-            credit.Add(line);
-            return credit;
-        }
-
-        private static Label CreditLabel(string text, string className)
-        {
-            var label = new Label(text);
-            label.AddToClassList(className);
-            return label;
-        }
-
-        private static Image CreditImage(string path, string className, bool circular, ScaleMode scaleMode)
-        {
-            var image = new Image
-            {
-                image = LoadCreditTexture(path, circular),
-                scaleMode = scaleMode
-            };
-            image.AddToClassList(className);
-            return image;
-        }
-
-        private static void ConfigureCreditLink(VisualElement credit)
-        {
-            credit.tooltip = KofiUrl;
-            credit.RegisterCallback<MouseDownEvent>(_ => credit.AddToClassList("refit-credit--pressed"));
-            credit.RegisterCallback<MouseUpEvent>(_ => credit.RemoveFromClassList("refit-credit--pressed"));
-            credit.RegisterCallback<MouseLeaveEvent>(_ => credit.RemoveFromClassList("refit-credit--pressed"));
-            credit.RegisterCallback<ClickEvent>(OpenKofi);
-        }
-
-        private static void OpenKofi(ClickEvent evt)
-        {
-            Application.OpenURL(KofiUrl);
-            evt.StopPropagation();
-        }
-
-        private static Texture2D LoadCreditTexture(string path, bool circular)
-        {
-            string cacheKey = path + (circular ? "|circle" : "|plain");
-            if (CreditTextures.TryGetValue(cacheKey, out var cached)) return cached;
-
-            bool loadedFromFile;
-            var texture = LoadCreditTextureFromFile(path, out loadedFromFile) ?? AssetDatabase.LoadAssetAtPath<Texture2D>(path);
-            if (texture != null)
-            {
-                texture.wrapMode = TextureWrapMode.Clamp;
-                texture.filterMode = FilterMode.Bilinear;
-                if (circular)
-                {
-                    var circularTexture = MakeCircularCreditTexture(texture);
-                    if (circularTexture != null && !ReferenceEquals(circularTexture, texture))
-                    {
-                        if (loadedFromFile) DestroyImmediate(texture);
-                        texture = circularTexture;
-                    }
-                }
-            }
-
-            CreditTextures[cacheKey] = texture;
-            return texture;
-        }
-
-        private static Texture2D LoadCreditTextureFromFile(string path, out bool loadedFromFile)
-        {
-            loadedFromFile = false;
-            var projectRoot = Directory.GetParent(Application.dataPath)?.FullName;
-            var absolutePath = !string.IsNullOrEmpty(projectRoot) ? Path.Combine(projectRoot, path) : null;
-            if (string.IsNullOrEmpty(absolutePath) || !File.Exists(absolutePath))
-                return null;
-
-            var texture = new Texture2D(2, 2, TextureFormat.RGBA32, false)
-            {
-                hideFlags = HideFlags.HideAndDontSave,
-                name = Path.GetFileNameWithoutExtension(path)
-            };
-            if (!texture.LoadImage(File.ReadAllBytes(absolutePath)))
-            {
-                DestroyImmediate(texture);
-                return null;
-            }
-
-            texture.wrapMode = TextureWrapMode.Clamp;
-            texture.filterMode = FilterMode.Bilinear;
-            loadedFromFile = true;
-            return texture;
-        }
-
-        private static Texture2D MakeCircularCreditTexture(Texture2D texture)
-        {
-            if (texture == null)
-                return null;
-
-            try
-            {
-                int size = Mathf.Min(texture.width, texture.height);
-                int xOffset = Mathf.Max(0, (texture.width - size) / 2);
-                int yOffset = Mathf.Max(0, (texture.height - size) / 2);
-                Color[] sourcePixels = texture.GetPixels(xOffset, yOffset, size, size);
-
-                float radius = size * 0.5f;
-                float softEdge = Mathf.Max(1f, size * 0.015f);
-                for (int y = 0; y < size; y++)
-                {
-                    float dy = (y + 0.5f) - radius;
-                    for (int x = 0; x < size; x++)
-                    {
-                        float dx = (x + 0.5f) - radius;
-                        float distance = Mathf.Sqrt((dx * dx) + (dy * dy));
-                        float alpha = Mathf.Clamp01((radius - distance) / softEdge);
-                        int index = y * size + x;
-                        Color c = sourcePixels[index];
-                        c.a *= alpha;
-                        sourcePixels[index] = c;
-                    }
-                }
-
-                var circular = new Texture2D(size, size, TextureFormat.RGBA32, false)
-                {
-                    hideFlags = HideFlags.HideAndDontSave,
-                    name = texture.name,
-                    wrapMode = TextureWrapMode.Clamp,
-                    filterMode = FilterMode.Bilinear
-                };
-                circular.SetPixels(sourcePixels);
-                circular.Apply();
-                return circular;
-            }
-            catch (UnityException)
-            {
-                return texture;
-            }
         }
 
         private string ModeLabel()

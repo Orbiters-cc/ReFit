@@ -256,20 +256,12 @@ namespace Orbiters.ReFit
 
         private static void ScaleAndAlign(NormalizedStage stage, ReFitReport report)
         {
-            // 1) Scale: real humanoid avatars can use stable humanoid landmarks. Name-fallback rigs can be in
-            //    different arm poses, so hand span is not reliable; use the baked body height instead.
-            bool useBounds = HumanoidBoneMapper.FindHumanoidAnimator(stage.sourceRoot) == null ||
-                             HumanoidBoneMapper.FindHumanoidAnimator(stage.targetRoot) == null;
-            bool usedBounds = useBounds;
-            float ms = -1f;
-            float mt = -1f;
-            if (!useBounds)
-            {
-                ms = Measure(stage.sourceHumanMap);
-                mt = Measure(stage.targetHumanMap);
-            }
-
-            if (useBounds || ms <= 1e-5f || mt <= 1e-5f)
+            // 1) Scale: prefer humanoid landmarks, fall back to the body meshes' world height so that
+            //    non-humanoid rigs (and FBX imported at a different unit scale) are still matched.
+            float ms = Measure(stage.sourceHumanMap);
+            float mt = Measure(stage.targetHumanMap);
+            bool usedBounds = false;
+            if (ms <= 1e-5f || mt <= 1e-5f)
             {
                 var sb = BakedWorldBounds(stage.sourceBody);
                 var tb = BakedWorldBounds(stage.targetBody);
@@ -284,8 +276,8 @@ namespace Orbiters.ReFit
                 if (Mathf.Abs(stage.appliedScale - 1f) > 1e-3f)
                 {
                     stage.sourceRoot.transform.localScale *= stage.appliedScale;
-                    // Source-space standalone assets keep their authored pose, but they still need the same
-                    // global source-side scale so their current scene fit remains aligned with source A.
+                    // Only scale the asset with the source when the asset belongs to the source's space.
+                    // A target-space asset (already fitting the target) keeps its own scale.
                     if (stage.assetStageRoot != null && !stage.assetInTargetSpace)
                         stage.assetStageRoot.localScale *= stage.appliedScale;
                     report.Info("scale-matched",
@@ -302,22 +294,14 @@ namespace Orbiters.ReFit
             if (stage.sourceHumanMap.TryGetValue(HumanBodyBones.Hips, out var srcHips) && srcHips != null &&
                 stage.targetHumanMap.TryGetValue(HumanBodyBones.Hips, out var tgtHips) && tgtHips != null)
             {
-                var delta = tgtHips.position - srcHips.position;
-                stage.sourceRoot.transform.position += delta;
-                if (stage.assetStageRoot != null && !stage.assetInTargetSpace)
-                    stage.assetStageRoot.position += delta;
+                stage.sourceRoot.transform.position += tgtHips.position - srcHips.position;
             }
             else
             {
                 var sb = BakedWorldBounds(stage.sourceBody);
                 var tb = BakedWorldBounds(stage.targetBody);
                 if (sb.HasValue && tb.HasValue)
-                {
-                    var delta = tb.Value.center - sb.Value.center;
-                    stage.sourceRoot.transform.position += delta;
-                    if (stage.assetStageRoot != null && !stage.assetInTargetSpace)
-                        stage.assetStageRoot.position += delta;
-                }
+                    stage.sourceRoot.transform.position += tb.Value.center - sb.Value.center;
             }
         }
 
@@ -335,21 +319,29 @@ namespace Orbiters.ReFit
         private static Bounds? BakedWorldBounds(SkinnedMeshRenderer smr)
         {
             if (smr == null || smr.sharedMesh == null) return null;
-            var snap = MeshSnapshot.Capture(smr, false, null, null);
-            var verts = snap.worldVertices;
-            if (verts == null || verts.Length == 0) return null;
-
-            var min = new Vector3(float.MaxValue, float.MaxValue, float.MaxValue);
-            var max = new Vector3(float.MinValue, float.MinValue, float.MinValue);
-            for (int i = 0; i < verts.Length; i++)
+            var baked = new Mesh();
+            try
             {
-                min = Vector3.Min(min, verts[i]);
-                max = Vector3.Max(max, verts[i]);
+                smr.BakeMesh(baked);
+                var verts = baked.vertices;
+                if (verts.Length == 0) return null;
+                var l2w = smr.transform.localToWorldMatrix; // BakeMesh output is in the renderer's local space
+                var min = new Vector3(float.MaxValue, float.MaxValue, float.MaxValue);
+                var max = new Vector3(float.MinValue, float.MinValue, float.MinValue);
+                foreach (var v in verts)
+                {
+                    var w = l2w.MultiplyPoint3x4(v);
+                    min = Vector3.Min(min, w);
+                    max = Vector3.Max(max, w);
+                }
+                var b = new Bounds();
+                b.SetMinMax(min, max);
+                return b;
             }
-
-            var b = new Bounds();
-            b.SetMinMax(min, max);
-            return b;
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(baked);
+            }
         }
 
         private static bool TryGet(Dictionary<HumanBodyBones, Transform> map, HumanBodyBones b, out Transform t)
@@ -365,16 +357,28 @@ namespace Orbiters.ReFit
         private static void PoseAsset(NormalizedStage stage, ReFitReport report)
         {
             if (stage.assetOnSourceAvatar || stage.assetRenderer == null) return; // shares the source armature, already posed
-            if (stage.assetStageRoot == null) return;
-
-            var assetTransforms = stage.assetStageRoot.GetComponentsInChildren<Transform>(true);
-            stage.assetBoneToSource = HumanoidBoneMapper.MatchBonesByName(assetTransforms, stage.sourceRoot.transform);
-
             if (stage.assetInTargetSpace)
             {
                 // The asset already sits in the target's space; the source body has been scaled/aligned to that
                 // same space, so they overlap. Re-posing the asset onto the source would misalign it.
                 report.Info("asset-target-space", "The asset already fits the target; binding it in place.");
+                return;
+            }
+
+            var assetTransforms = stage.assetStageRoot.GetComponentsInChildren<Transform>(true);
+            stage.assetBoneToSource = HumanoidBoneMapper.MatchBonesByName(assetTransforms, stage.sourceRoot.transform);
+
+            // Apply parent-first so children read already-updated parents.
+            int applied = 0;
+            foreach (var t in assetTransforms) // GetComponentsInChildren is depth-first, parents before children
+            {
+                if (t == stage.assetStageRoot) continue;
+                if (stage.assetBoneToSource.TryGetValue(t, out var src) && src != null)
+                {
+                    t.position = src.position;
+                    t.rotation = src.rotation;
+                    applied++;
+                }
             }
 
             // How much of the actual skinning skeleton did we match?
@@ -398,12 +402,11 @@ namespace Orbiters.ReFit
             else if (boneCount > 0 && boneMatched < boneCount / 2)
             {
                 report.Warn("armature-match-weak",
-                    $"Only {boneMatched}/{boneCount} asset bones matched the source skeleton by name. The fit may be unreliable; keeping the asset's current scene pose.");
+                    $"Only {boneMatched}/{boneCount} asset bones matched the source skeleton by name. The fit may be unreliable.");
             }
-            else if (boneMatched > 0 && !stage.assetInTargetSpace)
+            else if (applied > 0)
             {
-                report.Info("armature-mapped",
-                    $"Mapped the asset armature to the source avatar ({boneMatched}/{boneCount} skinned bones matched); keeping the asset's current scene pose.");
+                report.Info("armature-matched", $"Posed the asset onto the source avatar ({boneMatched}/{boneCount} skinned bones matched).");
             }
         }
     }

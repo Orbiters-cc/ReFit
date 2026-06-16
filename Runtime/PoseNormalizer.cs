@@ -34,6 +34,10 @@ namespace Orbiters.ReFit
         public bool assetInTargetSpace;
         /// <summary>True when source and target are the same avatar (Blendshape mode without a distinct source).</summary>
         public bool sourceIsTarget;
+        /// <summary>True when the staged source has a valid humanoid Animator avatar.</summary>
+        public bool sourceHasHumanoidAvatar;
+        /// <summary>True when the staged target has a valid humanoid Animator avatar.</summary>
+        public bool targetHasHumanoidAvatar;
         /// <summary>Name-based map of staged asset bones to staged source bones (standalone assets only; values may be null).</summary>
         public Dictionary<Transform, Transform> assetBoneToSource = new Dictionary<Transform, Transform>();
         /// <summary>Uniform scale applied to the source side so it matches the target size.</summary>
@@ -77,6 +81,11 @@ namespace Orbiters.ReFit
                     return null;
                 }
 
+                stage.sourceHasHumanoidAvatar = HumanoidBoneMapper.FindHumanoidAnimator(stage.sourceRoot) != null;
+                stage.targetHasHumanoidAvatar = stage.sourceIsTarget
+                    ? stage.sourceHasHumanoidAvatar
+                    : HumanoidBoneMapper.FindHumanoidAnimator(stage.targetRoot) != null;
+
                 stage.sourceHumanMap = HumanoidBoneMapper.GetHumanoidMap(stage.sourceRoot, report);
                 stage.targetHumanMap = stage.sourceIsTarget
                     ? stage.sourceHumanMap
@@ -85,7 +94,7 @@ namespace Orbiters.ReFit
                 ApplyNeutralPose(stage.sourceRoot, report);
                 if (!stage.sourceIsTarget) ApplyNeutralPose(stage.targetRoot, report);
 
-                if (!stage.sourceIsTarget) ScaleAndAlign(stage, report);
+                if (!stage.sourceIsTarget) ScaleAndAlign(stage, request, report);
 
                 PoseAsset(stage, report);
                 return stage;
@@ -254,20 +263,28 @@ namespace Orbiters.ReFit
         // Scale & alignment
         // ------------------------------------------------------------------
 
-        private static void ScaleAndAlign(NormalizedStage stage, ReFitReport report)
+        private static void ScaleAndAlign(NormalizedStage stage, ReFitRequest request, ReFitReport report)
         {
-            // 1) Scale: prefer humanoid landmarks, fall back to the body meshes' world height so that
-            //    non-humanoid rigs (and FBX imported at a different unit scale) are still matched.
-            float ms = Measure(stage.sourceHumanMap);
-            float mt = Measure(stage.targetHumanMap);
-            bool usedBounds = false;
-            if (ms <= 1e-5f || mt <= 1e-5f)
+            var targetBasisWeights = TargetBasisShapeOverrides(request, stage.targetBody);
+
+            // 1) Scale: humanoid landmarks are only reliable when both sides have a real humanoid
+            // avatar. Fallback name maps can find hands in arbitrary poses, which makes arm span a
+            // poor scale reference for non-humanoid rigs.
+            float ms = -1f;
+            float mt = -1f;
+            bool usedBounds = !(stage.sourceHasHumanoidAvatar && stage.targetHasHumanoidAvatar);
+            if (!usedBounds)
+            {
+                ms = Measure(stage.sourceHumanMap);
+                mt = Measure(stage.targetHumanMap);
+                usedBounds = ms <= 1e-5f || mt <= 1e-5f;
+            }
+            if (usedBounds)
             {
                 var sb = BakedWorldBounds(stage.sourceBody);
-                var tb = BakedWorldBounds(stage.targetBody);
+                var tb = BakedWorldBounds(stage.targetBody, targetBasisWeights);
                 ms = sb.HasValue ? sb.Value.size.y : -1f;
                 mt = tb.HasValue ? tb.Value.size.y : -1f;
-                usedBounds = true;
             }
 
             if (ms > 1e-5f && mt > 1e-5f)
@@ -299,7 +316,7 @@ namespace Orbiters.ReFit
             else
             {
                 var sb = BakedWorldBounds(stage.sourceBody);
-                var tb = BakedWorldBounds(stage.targetBody);
+                var tb = BakedWorldBounds(stage.targetBody, targetBasisWeights);
                 if (sb.HasValue && tb.HasValue)
                     stage.sourceRoot.transform.position += tb.Value.center - sb.Value.center;
             }
@@ -316,32 +333,55 @@ namespace Orbiters.ReFit
         }
 
         /// <summary>World-space AABB of a skinned renderer in its current pose, baked deterministically.</summary>
-        private static Bounds? BakedWorldBounds(SkinnedMeshRenderer smr)
+        private static Bounds? BakedWorldBounds(SkinnedMeshRenderer smr, Dictionary<int, float> shapeWeightOverrides01 = null)
         {
             if (smr == null || smr.sharedMesh == null) return null;
-            var baked = new Mesh();
-            try
+            var snap = MeshSnapshot.Capture(smr, false, shapeWeightOverrides01, null);
+            var verts = snap.worldVertices;
+            if (verts == null || verts.Length == 0) return null;
+
+            var min = new Vector3(float.MaxValue, float.MaxValue, float.MaxValue);
+            var max = new Vector3(float.MinValue, float.MinValue, float.MinValue);
+            foreach (var v in verts)
             {
-                smr.BakeMesh(baked);
-                var verts = baked.vertices;
-                if (verts.Length == 0) return null;
-                var l2w = smr.transform.localToWorldMatrix; // BakeMesh output is in the renderer's local space
-                var min = new Vector3(float.MaxValue, float.MaxValue, float.MaxValue);
-                var max = new Vector3(float.MinValue, float.MinValue, float.MinValue);
-                foreach (var v in verts)
-                {
-                    var w = l2w.MultiplyPoint3x4(v);
-                    min = Vector3.Min(min, w);
-                    max = Vector3.Max(max, w);
-                }
-                var b = new Bounds();
-                b.SetMinMax(min, max);
-                return b;
+                min = Vector3.Min(min, v);
+                max = Vector3.Max(max, v);
             }
-            finally
+            var b = new Bounds();
+            b.SetMinMax(min, max);
+            return b;
+        }
+
+        private static Dictionary<int, float> TargetBasisShapeOverrides(ReFitRequest request, SkinnedMeshRenderer targetBody)
+        {
+            if (request == null || targetBody == null || targetBody.sharedMesh == null || request.mode == ReFitMode.MeshToMesh)
+                return null;
+
+            Dictionary<int, float> overrides = null;
+            foreach (var name in RequestedShapeNames(request))
             {
-                UnityEngine.Object.DestroyImmediate(baked);
+                var idx = targetBody.sharedMesh.GetBlendShapeIndex(name);
+                if (idx < 0) continue;
+                if (overrides == null) overrides = new Dictionary<int, float>();
+                overrides[idx] = 0f;
             }
+            return overrides;
+        }
+
+        private static List<string> RequestedShapeNames(ReFitRequest request)
+        {
+            var names = new List<string>();
+            if (request == null) return names;
+            if (request.targetBlendshapes != null && request.targetBlendshapes.Count > 0)
+            {
+                foreach (var name in request.targetBlendshapes)
+                    if (!string.IsNullOrEmpty(name) && !names.Contains(name)) names.Add(name);
+            }
+            else if (!string.IsNullOrEmpty(request.targetBlendshape))
+            {
+                names.Add(request.targetBlendshape);
+            }
+            return names;
         }
 
         private static bool TryGet(Dictionary<HumanBodyBones, Transform> map, HumanBodyBones b, out Transform t)

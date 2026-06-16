@@ -22,6 +22,8 @@ namespace Orbiters.ReFit
         public Vector3[] worldNormals;
         /// <summary>Mesh-local base normals (authored, or recomputed when absent). Thread-safe to read off the main thread.</summary>
         public Vector3[] baseNormals;
+        /// <summary>Primary UV set, when present and aligned with vertices.</summary>
+        public Vector2[] uvs;
         /// <summary>Per-vertex world skinning matrix M(v): world = M(v) * local.</summary>
         public Matrix4x4[] skinMatrices;
         /// <summary>All submesh triangles concatenated.</summary>
@@ -65,6 +67,9 @@ namespace Orbiters.ReFit
             // --- local positions with blendshapes applied -------------------------------------
             snap.localVertices = mesh.vertices;
             var baseNormals = mesh.normals;
+            var meshUvs = mesh.uv;
+            if (meshUvs != null && meshUvs.Length == vertexCount)
+                snap.uvs = meshUvs;
             for (int s = 0; s < mesh.blendShapeCount; s++)
             {
                 float w = smr.GetBlendShapeWeight(s) / 100f;
@@ -246,6 +251,16 @@ namespace Orbiters.ReFit
                     worldNormals[triangles[t + 1]] * bary.y +
                     worldNormals[triangles[t + 2]] * bary.z;
             return n.sqrMagnitude > 1e-12f ? n.normalized : FaceNormal(triangle);
+        }
+
+        /// <summary>UV at barycentric coordinates of a triangle. Returns zero when the snapshot has no UVs.</summary>
+        public Vector2 BaryUv(int triangle, Vector3 bary)
+        {
+            if (uvs == null || uvs.Length != localVertices.Length) return Vector2.zero;
+            int t = triangle * 3;
+            return uvs[triangles[t]] * bary.x +
+                   uvs[triangles[t + 1]] * bary.y +
+                   uvs[triangles[t + 2]] * bary.z;
         }
     }
 }

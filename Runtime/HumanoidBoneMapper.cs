@@ -69,9 +69,34 @@ namespace Orbiters.ReFit
             {
                 var key = ReFitUtility.NormalizeName(t.name);
                 if (key.Length == 0) continue;
-                if (!index.ContainsKey(key)) index[key] = t;
+                AddNameKey(index, key, t);
+                AddFallbackAliases(index, key, t);
             }
             return index;
+        }
+
+        private static void AddNameKey(Dictionary<string, Transform> index, string key, Transform t)
+        {
+            if (!index.ContainsKey(key)) index[key] = t;
+        }
+
+        private static void AddFallbackAliases(Dictionary<string, Transform> index, string key, Transform t)
+        {
+            foreach (var (_, patterns) in FallbackPatterns)
+            {
+                var matched = false;
+                foreach (var pattern in patterns)
+                {
+                    if (key != pattern) continue;
+                    matched = true;
+                    break;
+                }
+                if (!matched) continue;
+
+                foreach (var pattern in patterns)
+                    AddNameKey(index, pattern, t);
+                return;
+            }
         }
 
         /// <summary>

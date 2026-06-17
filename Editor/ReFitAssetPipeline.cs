@@ -331,10 +331,23 @@ namespace Orbiters.ReFit.Editor
                     report.Warn("kept-parent-missing", "Could not resolve the target parent of a preserved clothing bone.");
                     continue;
                 }
-                if (sourceToNew.TryGetValue(targetParent, out var proxyParent))
+                if (TryFindMaterializedAncestor(targetParent, sourceToNew, out var proxyParent))
                     result[placement.boneIndex] = proxyParent;
             }
             return result;
+        }
+
+        private static bool TryFindMaterializedAncestor(Transform source, Dictionary<Transform, Transform> sourceToNew,
+            out Transform proxy)
+        {
+            while (source != null)
+            {
+                if (sourceToNew.TryGetValue(source, out proxy))
+                    return true;
+                source = source.parent;
+            }
+            proxy = null;
+            return false;
         }
 
         private static Transform FindMaterializedParent(Transform source, Dictionary<Transform, Transform> sourceToNew)

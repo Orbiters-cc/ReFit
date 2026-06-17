@@ -631,11 +631,6 @@ namespace Orbiters.ReFit
                 return idx;
             }
 
-            // 1) all target body bones first (projected weights reference them directly)
-            var bodyBoneToNew = new int[targetBody.bones != null ? targetBody.bones.Length : 0];
-            for (int k = 0; k < bodyBoneToNew.Length; k++)
-                bodyBoneToNew[k] = targetBody.bones[k] != null ? AddTargetBone(targetBody.bones[k]) : -1;
-
             // Reverse human map of the source (bone transform -> human bone) for chain resolution.
             var sourceHumanOf = new Dictionary<Transform, HumanBodyBones>();
             foreach (var kv in sourceHumanIndex)
@@ -667,19 +662,17 @@ namespace Orbiters.ReFit
                     HumanoidBoneMapper.TryGetHumanoidEquivalent(targetHumanIndex, namedHuman, out var namedTarget))
                     return namedTarget;
 
-                var src = assetOrSourceBone;
-                if (!stage.assetOnSourceAvatar && stage.assetBoneToSource.TryGetValue(assetOrSourceBone, out var mapped))
-                    src = mapped;
-                while (src != null)
+                if (!stage.assetOnSourceAvatar && stage.assetBoneToSource.TryGetValue(assetOrSourceBone, out var mapped) &&
+                    mapped != null)
                 {
-                    if (sourceHumanOf.TryGetValue(src, out var human) &&
+                    if (targetNameIndex.TryGetValue(ReFitUtility.NormalizeName(mapped.name), out var mappedByName))
+                        return mappedByName;
+                    if (sourceHumanOf.TryGetValue(mapped, out var human) &&
                         HumanoidBoneMapper.TryGetHumanoidEquivalent(targetHumanIndex, human, out var tgt))
                         return tgt;
-                    if (HumanoidBoneMapper.TryInferHumanoidBone(src, out human) &&
+                    if (HumanoidBoneMapper.TryInferHumanoidBone(mapped, out human) &&
                         HumanoidBoneMapper.TryGetHumanoidEquivalent(targetHumanIndex, human, out tgt))
                         return tgt;
-                    if (src == stage.sourceRoot.transform) break;
-                    src = src.parent;
                 }
                 return null;
             }
@@ -808,7 +801,12 @@ namespace Orbiters.ReFit
             if (comp.rootBoneIndex < 0 && stageBones.Count > 0)
                 comp.rootBoneIndex = 0;
 
-            // 5) bindposes captured in the staged pose, relative to the staged asset renderer
+            // 5) target body weights are projected onto the hoodie-represented bone set. Target bones that
+            // do not have a hoodie equivalent are remapped to the nearest represented ancestor, so the output
+            // armature does not grow lower legs/fingers/etc. just because the target avatar has them.
+            var bodyBoneToNew = BuildBodyBoneRemap(targetBody.bones, indexOf, comp.rootBoneIndex);
+
+            // 6) bindposes captured in the staged pose, relative to the staged asset renderer
             var rendererL2W = stage.assetRenderer.transform.localToWorldMatrix;
             bindposes = new Matrix4x4[stageBones.Count];
             for (int i = 0; i < stageBones.Count; i++)
@@ -820,6 +818,29 @@ namespace Orbiters.ReFit
             assetBoneToNewOut = assetBoneToNew;
             assetBoneIsExtraOut = assetBoneIsExtra;
             return true;
+        }
+
+        private static int[] BuildBodyBoneRemap(Transform[] bodyBones, Dictionary<Transform, int> represented,
+            int fallbackIndex)
+        {
+            var result = new int[bodyBones != null ? bodyBones.Length : 0];
+            for (int i = 0; i < result.Length; i++)
+            {
+                result[i] = -1;
+                var bone = bodyBones[i];
+                while (bone != null)
+                {
+                    if (represented.TryGetValue(bone, out var idx))
+                    {
+                        result[i] = idx;
+                        break;
+                    }
+                    bone = bone.parent;
+                }
+                if (result[i] < 0 && fallbackIndex >= 0)
+                    result[i] = fallbackIndex;
+            }
+            return result;
         }
 
         private static Transform FindResolvedAncestor(Transform bone, Func<Transform, Transform> resolve, Transform stopAt)

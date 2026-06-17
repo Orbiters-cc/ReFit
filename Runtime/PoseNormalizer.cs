@@ -137,7 +137,10 @@ namespace Orbiters.ReFit
                 if (stage.assetRenderer == null)
                     report.Error("asset-clone-failed", "Could not locate the asset renderer inside the staged asset clone.");
                 else
+                {
+                    RemoveTargetNestedAssetCopy(request, stage, realAssetRoot, report);
                     RebindExternalBones(request, stage, realAssetRoot, assetClone.transform, report);
+                }
             }
 
             stage.sourceBody = ResolveBodyRenderer(stage.sourceRoot, request.sourceBodyRenderer,
@@ -164,6 +167,24 @@ namespace Orbiters.ReFit
                 catch { /* some behaviours refuse; harmless */ }
             }
             return clone;
+        }
+
+        private static void RemoveTargetNestedAssetCopy(ReFitRequest request, NormalizedStage stage,
+            Transform realAssetRoot, ReFitReport report)
+        {
+            if (request?.targetAvatar == null || stage?.targetRoot == null || realAssetRoot == null)
+                return;
+            if (!stage.assetInTargetSpace || !realAssetRoot.IsChildOf(request.targetAvatar.transform))
+                return;
+
+            var path = ReFitUtility.IndexPath(realAssetRoot, request.targetAvatar.transform);
+            var targetCopy = ReFitUtility.ResolvePath(stage.targetRoot.transform, path);
+            if (targetCopy == null || targetCopy == stage.targetRoot.transform)
+                return;
+
+            UnityEngine.Object.DestroyImmediate(targetCopy.gameObject);
+            report.Info("target-asset-copy-removed",
+                $"Excluded the target-space asset copy '{realAssetRoot.name}' from the staged target skeleton.");
         }
 
         /// <summary>Smallest ancestor of the renderer containing the renderer, its bones and root bone (the "asset root").</summary>

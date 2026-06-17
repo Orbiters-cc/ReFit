@@ -318,6 +318,8 @@ namespace Orbiters.ReFit.Editor.Tests
             {
                 var oldAccessoryHips = fixture.sourceSpaceAccessory.hips;
                 var oldAccessoryChest = fixture.sourceSpaceAccessory.chest;
+                var targetOnlyLowerLeg = NewChild(fixture.target.hips, "LeftLowerLeg");
+                AppendRendererBone(fixture.target, targetOnlyLowerLeg);
                 var request = BuildMeshAndBlendshapeRequest(fixture, fixture.sourceSpaceAccessory.renderer, true);
                 var comp = new ReFitEngine().Run(request);
                 try
@@ -337,6 +339,8 @@ namespace Orbiters.ReFit.Editor.Tests
                         "The applied renderer still binds directly to the target avatar hips instead of a rebuilt bone.");
                     AssertTrue(RendererHasBone(applied, "Hips"),
                         "The rebuilt clothing armature does not include a hips bone.");
+                    AssertTrue(!RendererHasBone(applied, "LeftLowerLeg"),
+                        "The rebuilt clothing armature included a target-only lower leg bone that has no clothing equivalent.");
                     AssertTrue(oldAccessoryHips == null && oldAccessoryChest == null,
                         "The stale source-space accessory skeleton was left in the scene after armature replacement.");
                 }
@@ -417,6 +421,24 @@ namespace Orbiters.ReFit.Editor.Tests
                     DestroyComputationMesh(comp);
                 }
             }
+        }
+
+        private static void AppendRendererBone(SkinnedSample sample, Transform bone)
+        {
+            var oldBones = sample.renderer.bones;
+            var bones = new Transform[oldBones.Length + 1];
+            Array.Copy(oldBones, bones, oldBones.Length);
+            bones[bones.Length - 1] = bone;
+
+            var oldMesh = sample.mesh;
+            var mesh = Object.Instantiate(oldMesh);
+            mesh.name = oldMesh.name + "_ExtraTargetBone";
+            mesh.hideFlags = HideFlags.HideAndDontSave;
+            mesh.bindposes = BuildBindposes(sample.renderer.transform, bones);
+            sample.renderer.bones = bones;
+            sample.renderer.sharedMesh = mesh;
+            sample.mesh = mesh;
+            Object.DestroyImmediate(oldMesh);
         }
 
         private static ReFitRequest BuildMeshAndBlendshapeRequest(

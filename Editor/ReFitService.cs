@@ -27,6 +27,7 @@ namespace Orbiters.ReFit.Editor
         public static ReFitResult Execute(ReFitRequest request, ReFitProgress progress = null)
         {
             var result = new ReFitResult();
+            ReFitDebugSession debug = null;
             try
             {
                 var computation = new ReFitEngine().Run(request, progress);
@@ -42,8 +43,11 @@ namespace Orbiters.ReFit.Editor
                 result.mesh = computation.mesh;
                 result.meshAssetPath = ReFitAssetPipeline.SaveMesh(computation.mesh, subfolder, result.report);
 
+                debug = ReFitDebugService.BeginSession(request, result.report);
+                debug?.Capture("00_input_asset", request.assetRenderer);
+
                 progress?.Invoke(0.96f, "Applying to the scene");
-                result.sceneRenderer = ReFitAssetPipeline.ApplyToScene(request, computation, result.report);
+                result.sceneRenderer = ReFitAssetPipeline.ApplyToScene(request, computation, result.report, debug);
                 result.originalMesh = computation.appliedOriginalMesh;
                 if (result.sceneRenderer != null && (request.settings == null || request.settings.savePrefab))
                     result.prefabAssetPath = ReFitAssetPipeline.TrySavePrefab(computation, result.sceneRenderer, subfolder, result.report);
@@ -55,6 +59,10 @@ namespace Orbiters.ReFit.Editor
             {
                 result.report.Error("refit-exception", $"Unexpected error: {e.Message}\n{e.StackTrace}");
                 result.success = false;
+            }
+            finally
+            {
+                debug?.Finish();
             }
             return result;
         }
@@ -69,6 +77,7 @@ namespace Orbiters.ReFit.Editor
         {
             var result = new ReFitResult();
             ReFitComputation computation = null;
+            ReFitDebugSession debug = null;
             yield return new ReFitEngine().RunCoroutine(request, progress, c => computation = c);
 
             try
@@ -81,8 +90,11 @@ namespace Orbiters.ReFit.Editor
                     result.mesh = computation.mesh;
                     result.meshAssetPath = ReFitAssetPipeline.SaveMesh(computation.mesh, subfolder, result.report);
 
+                    debug = ReFitDebugService.BeginSession(request, result.report);
+                    debug?.Capture("00_input_asset", request.assetRenderer);
+
                     progress?.Invoke(0.97f, "Applying to the scene");
-                    result.sceneRenderer = ReFitAssetPipeline.ApplyToScene(request, computation, result.report);
+                    result.sceneRenderer = ReFitAssetPipeline.ApplyToScene(request, computation, result.report, debug);
                     result.originalMesh = computation.appliedOriginalMesh;
                     if (result.sceneRenderer != null && (request.settings == null || request.settings.savePrefab))
                         result.prefabAssetPath = ReFitAssetPipeline.TrySavePrefab(computation, result.sceneRenderer, subfolder, result.report);
@@ -98,6 +110,10 @@ namespace Orbiters.ReFit.Editor
             {
                 result.report.Error("refit-exception", $"Unexpected error: {e.Message}\n{e.StackTrace}");
                 result.success = false;
+            }
+            finally
+            {
+                debug?.Finish();
             }
             progress?.Invoke(1f, "Done");
             onComplete?.Invoke(result);

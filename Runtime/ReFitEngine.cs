@@ -342,126 +342,20 @@ namespace Orbiters.ReFit
             {
                 SetBackgroundProgress(state, 0.3f, "Projecting onto the target body");
                 targetBindings = new SurfaceBinding[groupCount];
+                float cosMax = Mathf.Cos(settings.maxNormalAngle * Mathf.Deg2Rad);
+                float chainRange = Mathf.Max(settings.maxProjectionDistance * 2f, 0.05f);
                 var localBindings = bindings;
                 var localTarget = targetBindings;
-                if (SameSurfaceTopology(firstSnap, targetBasis))
+                Parallel.For(0, groupCount, g =>
                 {
-                    Parallel.For(0, groupCount, g =>
-                    {
-                        localTarget[g] = BindSameTopology(localBindings[g], targetBasis);
-                    });
-                }
-                else
-                {
-                    float cosMax = Mathf.Cos(settings.maxNormalAngle * Mathf.Deg2Rad);
-                    float chainRange = Mathf.Max(settings.maxProjectionDistance * 2f, 0.05f);
-                    float rayRange = SurfaceRange(firstSnap, targetBasis, chainRange);
-                    var firstCenter = BoundsCenter(firstSnap);
-                    var targetCenter = BoundsCenter(targetBasis);
-                    var uvMap = UvSurfaceMap.Create(targetBasis);
-                    Parallel.For(0, groupCount, g =>
-                    {
-                        if (!localBindings[g].valid) { localTarget[g].valid = false; return; }
-                        var nA = firstSnap.BaryNormal(localBindings[g].triangle, localBindings[g].bary);
-                        var region = state.assetGroupRegions != null ? state.assetGroupRegions[g] : BodyRegion.Unknown;
-                        Func<int, bool> filter = null;
-                        if (settings.filterByBoneRegion || settings.filterByNormal)
-                        {
-                            filter = t =>
-                            {
-                                if (settings.filterByBoneRegion && state.targetTriRegions != null &&
-                                    !HumanoidBoneMapper.RegionsCompatible(region, state.targetTriRegions[t]))
-                                    return false;
-                                if (settings.filterByNormal && Vector3.Dot(nA, targetBasis.FaceNormal(t)) < cosMax)
-                                    return false;
-                                return true;
-                            };
-                        }
-
-                        var offset = asset.worldVertices[asset.groupRep[g]] - localBindings[g].point;
-                        if (Vector3.Dot(offset, nA) < 0f) nA = -nA;
-                        if (uvMap != null)
-                        {
-                            var uv = firstSnap.BaryUv(localBindings[g].triangle, localBindings[g].bary);
-                            if (uvMap.TryBind(uv, localBindings[g].point, firstCenter, targetCenter, nA, region,
-                                settings.filterByBoneRegion ? state.targetTriRegions : null,
-                                settings.filterByNormal, cosMax, out var uvBinding))
-                            {
-                                localTarget[g] = uvBinding;
-                                return;
-                            }
-                        }
-
-                        localTarget[g] = BindAlongNormalThenNearest(
-                            localBindings[g], targetBasis, bvhTarget, rayRange, chainRange, filter,
-                            region, settings.filterByBoneRegion ? state.targetTriRegions : null,
-                            nA, cosMax, settings.filterByNormal);
-                    });
-                }
-            }
-
-            SurfaceBinding BindAlongNormalThenNearest(SurfaceBinding sourceBinding, MeshSnapshot body, SurfaceBvh bvh,
-                float rayRange, float nearestRange, Func<int, bool> filter, BodyRegion region,
-                BodyRegion[] bodyTriRegions, Vector3 normal, float cosMax, bool useNormal)
-            {
-                var ray = bvh.Raycast(sourceBinding.point + normal * 1e-4f, normal, rayRange, filter);
-                if (!ray.found && filter != null)
-                    ray = bvh.Raycast(sourceBinding.point + normal * 1e-4f, normal, rayRange, null);
-                if (!ray.found)
-                {
-                    var opposite = -normal;
-                    ray = bvh.Raycast(sourceBinding.point + opposite * 1e-4f, opposite, rayRange, filter);
-                    if (!ray.found && filter != null)
-                        ray = bvh.Raycast(sourceBinding.point + opposite * 1e-4f, opposite, rayRange, null);
-                }
-                if (ray.found)
-                {
-                    return new SurfaceBinding
-                    {
-                        valid = true,
-                        triangle = ray.triangle,
-                        bary = ray.bary,
-                        point = ray.position,
-                        distance = Vector3.Distance(sourceBinding.point, ray.position)
-                    };
-                }
-
-                return SurfaceBindingSolver.BindPoint(
-                    sourceBinding.point, body, bvh, nearestRange,
-                    region, bodyTriRegions, normal, cosMax, useNormal);
-            }
-
-            float SurfaceRange(MeshSnapshot a, MeshSnapshot b, float minimum)
-            {
-                return Mathf.Max(minimum, BoundsSize(a).magnitude, BoundsSize(b).magnitude);
-            }
-
-            Vector3 BoundsCenter(MeshSnapshot snap)
-            {
-                if (snap == null || snap.worldVertices == null || snap.worldVertices.Length == 0)
-                    return Vector3.zero;
-                var min = new Vector3(float.MaxValue, float.MaxValue, float.MaxValue);
-                var max = new Vector3(float.MinValue, float.MinValue, float.MinValue);
-                foreach (var v in snap.worldVertices)
-                {
-                    min = Vector3.Min(min, v);
-                    max = Vector3.Max(max, v);
-                }
-                return (min + max) * 0.5f;
-            }
-
-            Vector3 BoundsSize(MeshSnapshot snap)
-            {
-                if (snap == null || snap.worldVertices == null || snap.worldVertices.Length == 0)
-                    return Vector3.one * 0.01f;
-                var min = new Vector3(float.MaxValue, float.MaxValue, float.MaxValue);
-                var max = new Vector3(float.MinValue, float.MinValue, float.MinValue);
-                foreach (var v in snap.worldVertices)
-                {
-                    min = Vector3.Min(min, v);
-                    max = Vector3.Max(max, v);
-                }
-                return max - min;
+                    if (!localBindings[g].valid) { localTarget[g].valid = false; return; }
+                    var nA = firstSnap.BaryNormal(localBindings[g].triangle, localBindings[g].bary);
+                    var region = state.assetGroupRegions != null ? state.assetGroupRegions[g] : BodyRegion.Unknown;
+                    localTarget[g] = SurfaceBindingSolver.BindPoint(
+                        localBindings[g].point, targetBasis, bvhTarget, chainRange,
+                        region, settings.filterByBoneRegion ? state.targetTriRegions : null,
+                        nA, cosMax, settings.filterByNormal);
+                });
             }
 
             // Falloff weight per group (asset distance to its base surface)
@@ -550,128 +444,6 @@ namespace Orbiters.ReFit
             SetBackgroundProgress(state, 1f, "Finishing");
         }
 
-        private static bool SameSurfaceTopology(MeshSnapshot a, MeshSnapshot b)
-        {
-            if (a == null || b == null || a.localVertices == null || b.localVertices == null ||
-                a.triangles == null || b.triangles == null)
-                return false;
-            if (a.localVertices.Length != b.localVertices.Length || a.triangles.Length != b.triangles.Length)
-                return false;
-            for (int i = 0; i < a.triangles.Length; i++)
-                if (a.triangles[i] != b.triangles[i])
-                    return false;
-            return true;
-        }
-
-        private static SurfaceBinding BindSameTopology(SurfaceBinding sourceBinding, MeshSnapshot target)
-        {
-            if (!sourceBinding.valid)
-                return new SurfaceBinding { valid = false };
-
-            var point = target.BaryPoint(sourceBinding.triangle, sourceBinding.bary);
-            return new SurfaceBinding
-            {
-                valid = true,
-                triangle = sourceBinding.triangle,
-                bary = sourceBinding.bary,
-                point = point,
-                distance = Vector3.Distance(sourceBinding.point, point)
-            };
-        }
-
-        private sealed class UvSurfaceMap
-        {
-            private readonly MeshSnapshot target;
-            private readonly int triCount;
-
-            private UvSurfaceMap(MeshSnapshot target)
-            {
-                this.target = target;
-                triCount = target.triangles.Length / 3;
-            }
-
-            public static UvSurfaceMap Create(MeshSnapshot target)
-            {
-                if (target == null || target.uvs == null || target.uvs.Length != target.localVertices.Length ||
-                    target.triangles == null || target.triangles.Length == 0)
-                    return null;
-                return new UvSurfaceMap(target);
-            }
-
-            public bool TryBind(Vector2 uv, Vector3 sourcePoint, Vector3 sourceCenter, Vector3 targetCenter,
-                Vector3 referenceNormal, BodyRegion region, BodyRegion[] targetRegions, bool filterByNormal,
-                float cosMax, out SurfaceBinding binding)
-            {
-                binding = default;
-                var bestScore = float.MaxValue;
-                var found = false;
-
-                for (int t = 0; t < triCount; t++)
-                {
-                    if (targetRegions != null && !HumanoidBoneMapper.RegionsCompatible(region, targetRegions[t]))
-                        continue;
-                    var normalDot = Vector3.Dot(referenceNormal, target.FaceNormal(t));
-                    var minNormalDot = filterByNormal ? cosMax : 0.1f;
-                    if (normalDot < minNormalDot)
-                        continue;
-
-                    int i = t * 3;
-                    var a = target.uvs[target.triangles[i]];
-                    var b = target.uvs[target.triangles[i + 1]];
-                    var c = target.uvs[target.triangles[i + 2]];
-                    if (!TryUvBarycentric(uv, a, b, c, out var bary))
-                        continue;
-
-                    var point = target.BaryPoint(t, bary);
-                    if (!RadialSideCompatible(sourcePoint, sourceCenter, point, targetCenter))
-                        continue;
-
-                    var score = (point - sourcePoint).sqrMagnitude;
-                    if (score >= bestScore) continue;
-
-                    bestScore = score;
-                    found = true;
-                    binding = new SurfaceBinding
-                    {
-                        valid = true,
-                        triangle = t,
-                        bary = bary,
-                        point = point,
-                        distance = Mathf.Sqrt(score)
-                    };
-                }
-
-                return found;
-            }
-
-            private static bool RadialSideCompatible(Vector3 sourcePoint, Vector3 sourceCenter,
-                Vector3 targetPoint, Vector3 targetCenter)
-            {
-                var source = new Vector2(sourcePoint.x - sourceCenter.x, sourcePoint.z - sourceCenter.z);
-                var target = new Vector2(targetPoint.x - targetCenter.x, targetPoint.z - targetCenter.z);
-                if (source.sqrMagnitude <= 1e-8f || target.sqrMagnitude <= 1e-8f) return true;
-                return Vector2.Dot(source.normalized, target.normalized) >= 0.15f;
-            }
-
-            private static bool TryUvBarycentric(Vector2 p, Vector2 a, Vector2 b, Vector2 c, out Vector3 bary)
-            {
-                bary = default;
-                var v0 = b - a;
-                var v1 = c - a;
-                var v2 = p - a;
-                float den = v0.x * v1.y - v1.x * v0.y;
-                if (Mathf.Abs(den) <= 1e-8f) return false;
-
-                float v = (v2.x * v1.y - v1.x * v2.y) / den;
-                float w = (v0.x * v2.y - v2.x * v0.y) / den;
-                float u = 1f - v - w;
-                const float eps = 1e-4f;
-                if (u < -eps || v < -eps || w < -eps) return false;
-                bary = new Vector3(u, v, w);
-                return true;
-            }
-        }
-
         private static void SetBackgroundProgress(State state, float t, string label)
         {
             state.backgroundProgress = t;
@@ -684,10 +456,23 @@ namespace Orbiters.ReFit
             var asset = state.asset;
             int vertexCount = asset.localVertices.Length;
             var result = new Vector3[vertexCount];
+            var w2l = asset.rendererWorldToLocal;
+            bool replace = state.replace;
             Parallel.For(0, vertexCount, i =>
             {
                 var dWorld = groupDeltas[asset.groupOfVertex[i]];
-                result[i] = asset.skinMatrices[i].inverse.MultiplyVector(dWorld);
+                if (replace)
+                {
+                    result[i] = isPositionFrame
+                        // New bindposes are captured in the staged pose: mesh space == staged renderer space.
+                        ? w2l.MultiplyPoint3x4(asset.worldVertices[i] + dWorld) - asset.localVertices[i]
+                        : w2l.MultiplyVector(dWorld);
+                }
+                else
+                {
+                    // Original skinning kept: un-skin the world delta through the inverse skinning matrix.
+                    result[i] = asset.skinMatrices[i].inverse.MultiplyVector(dWorld);
+                }
             });
             return result;
         }
@@ -828,6 +613,8 @@ namespace Orbiters.ReFit
 
             var targetRoot = stage.targetRoot.transform;
             var targetNameIndex = HumanoidBoneMapper.BuildNameIndex(targetRoot);
+            var targetHumanIndex = HumanoidBoneMapper.BuildHumanoidBoneIndex(targetRoot, stage.targetHumanMap);
+            var sourceHumanIndex = HumanoidBoneMapper.BuildHumanoidBoneIndex(stage.sourceRoot.transform, stage.sourceHumanMap);
 
             var stageBones = new List<Transform>();
             var refs = new List<ReFitBoneRef>();
@@ -851,10 +638,8 @@ namespace Orbiters.ReFit
 
             // Reverse human map of the source (bone transform -> human bone) for chain resolution.
             var sourceHumanOf = new Dictionary<Transform, HumanBodyBones>();
-            foreach (var kv in stage.sourceHumanMap)
+            foreach (var kv in sourceHumanIndex)
                 if (kv.Value != null && !sourceHumanOf.ContainsKey(kv.Value)) sourceHumanOf[kv.Value] = kv.Key;
-            var keptOriginRoot = stage.assetOnSourceAvatar ? stage.sourceRoot.transform : stage.assetStageRoot;
-            var keptOrigin = stage.assetOnSourceAvatar ? ReFitBoneOrigin.SourceAvatar : ReFitBoneOrigin.Asset;
 
             Transform ResolveToTarget(Transform assetOrSourceBone)
             {
@@ -862,8 +647,25 @@ namespace Orbiters.ReFit
                 var direct = ResolveDirect(assetOrSourceBone);
                 if (direct != null) return direct;
 
+                if (HumanoidBoneMapper.TryInferHumanoidBone(assetOrSourceBone, out var explicitHuman) &&
+                    explicitHuman == HumanBodyBones.UpperChest &&
+                    !targetHumanIndex.ContainsKey(HumanBodyBones.UpperChest))
+                    return null;
+
                 var chainTarget = ResolveInsertedChainBone(assetOrSourceBone);
                 if (chainTarget != null) return chainTarget;
+
+                return null;
+            }
+
+            Transform ResolveDirect(Transform assetOrSourceBone)
+            {
+                if (assetOrSourceBone == null) return null;
+                if (targetNameIndex.TryGetValue(ReFitUtility.NormalizeName(assetOrSourceBone.name), out var byName))
+                    return byName;
+                if (HumanoidBoneMapper.TryInferHumanoidBone(assetOrSourceBone, out var namedHuman) &&
+                    HumanoidBoneMapper.TryGetHumanoidEquivalent(targetHumanIndex, namedHuman, out var namedTarget))
+                    return namedTarget;
 
                 var src = assetOrSourceBone;
                 if (!stage.assetOnSourceAvatar && stage.assetBoneToSource.TryGetValue(assetOrSourceBone, out var mapped))
@@ -871,27 +673,14 @@ namespace Orbiters.ReFit
                 while (src != null)
                 {
                     if (sourceHumanOf.TryGetValue(src, out var human) &&
-                        stage.targetHumanMap.TryGetValue(human, out var tgt) && tgt != null)
+                        HumanoidBoneMapper.TryGetHumanoidEquivalent(targetHumanIndex, human, out var tgt))
+                        return tgt;
+                    if (HumanoidBoneMapper.TryInferHumanoidBone(src, out human) &&
+                        HumanoidBoneMapper.TryGetHumanoidEquivalent(targetHumanIndex, human, out tgt))
                         return tgt;
                     if (src == stage.sourceRoot.transform) break;
                     src = src.parent;
                 }
-                return null;
-            }
-
-            Transform ResolveDirect(Transform bone)
-            {
-                if (bone == null) return null;
-                if (targetNameIndex.TryGetValue(ReFitUtility.NormalizeName(bone.name), out var byName))
-                    return byName;
-
-                var src = bone;
-                if (!stage.assetOnSourceAvatar && stage.assetBoneToSource.TryGetValue(bone, out var mapped))
-                    src = mapped;
-                if (src != null &&
-                    sourceHumanOf.TryGetValue(src, out var human) &&
-                    stage.targetHumanMap.TryGetValue(human, out var tgt) && tgt != null)
-                    return tgt;
                 return null;
             }
 
@@ -915,7 +704,7 @@ namespace Orbiters.ReFit
                 {
                     var resolved = ResolveDirect(cur);
                     if (resolved != null) return resolved;
-                    if (cur == keptOriginRoot || cur == stage.sourceRoot.transform) break;
+                    if (cur == stage.sourceRoot.transform || cur == stage.assetStageRoot) break;
                     cur = cur.parent;
                 }
                 return null;
@@ -943,6 +732,8 @@ namespace Orbiters.ReFit
             var assetBoneToNew = new int[assetBoneCount];
             var assetBoneIsExtra = new bool[assetBoneCount];
             int mappedCount = 0, keptCount = 0;
+            var keptOriginRoot = stage.assetOnSourceAvatar ? stage.sourceRoot.transform : stage.assetStageRoot;
+            var keptOrigin = stage.assetOnSourceAvatar ? ReFitBoneOrigin.SourceAvatar : ReFitBoneOrigin.Asset;
 
             for (int k = 0; k < assetBoneCount; k++)
             {
@@ -1011,8 +802,11 @@ namespace Orbiters.ReFit
                 if (mappedRoot != null)
                     comp.rootBoneIndex = AddTargetBone(mappedRoot);
             }
-            if (comp.rootBoneIndex < 0 && stage.targetHumanMap.TryGetValue(HumanBodyBones.Hips, out var hips) && hips != null)
+            if (comp.rootBoneIndex < 0 &&
+                HumanoidBoneMapper.TryGetHumanoidEquivalent(targetHumanIndex, HumanBodyBones.Hips, out var hips))
                 comp.rootBoneIndex = AddTargetBone(hips);
+            if (comp.rootBoneIndex < 0 && stageBones.Count > 0)
+                comp.rootBoneIndex = 0;
 
             // 5) bindposes captured in the staged pose, relative to the staged asset renderer
             var rendererL2W = stage.assetRenderer.transform.localToWorldMatrix;

@@ -34,10 +34,6 @@ namespace Orbiters.ReFit
         public bool assetInTargetSpace;
         /// <summary>True when source and target are the same avatar (Blendshape mode without a distinct source).</summary>
         public bool sourceIsTarget;
-        /// <summary>True when the staged source has a valid humanoid Animator avatar.</summary>
-        public bool sourceHasHumanoidAvatar;
-        /// <summary>True when the staged target has a valid humanoid Animator avatar.</summary>
-        public bool targetHasHumanoidAvatar;
         /// <summary>Name-based map of staged asset bones to staged source bones (standalone assets only; values may be null).</summary>
         public Dictionary<Transform, Transform> assetBoneToSource = new Dictionary<Transform, Transform>();
         /// <summary>Uniform scale applied to the source side so it matches the target size.</summary>
@@ -81,11 +77,6 @@ namespace Orbiters.ReFit
                     return null;
                 }
 
-                stage.sourceHasHumanoidAvatar = HumanoidBoneMapper.FindHumanoidAnimator(stage.sourceRoot) != null;
-                stage.targetHasHumanoidAvatar = stage.sourceIsTarget
-                    ? stage.sourceHasHumanoidAvatar
-                    : HumanoidBoneMapper.FindHumanoidAnimator(stage.targetRoot) != null;
-
                 stage.sourceHumanMap = HumanoidBoneMapper.GetHumanoidMap(stage.sourceRoot, report);
                 stage.targetHumanMap = stage.sourceIsTarget
                     ? stage.sourceHumanMap
@@ -94,7 +85,7 @@ namespace Orbiters.ReFit
                 ApplyNeutralPose(stage.sourceRoot, report);
                 if (!stage.sourceIsTarget) ApplyNeutralPose(stage.targetRoot, report);
 
-                if (!stage.sourceIsTarget) ScaleAndAlign(stage, request, report);
+                if (!stage.sourceIsTarget) ScaleAndAlign(stage, report);
 
                 PoseAsset(stage, report);
                 return stage;
@@ -136,7 +127,7 @@ namespace Orbiters.ReFit
                 stage.assetInTargetSpace = !stage.sourceIsTarget && request.targetAvatar != null &&
                                            request.assetRenderer.transform.IsChildOf(request.targetAvatar.transform);
 
-                var realAssetRoot = FindCommonRoot(request.assetRenderer);
+                var realAssetRoot = FindAssetObjectRoot(request.assetRenderer, request.sourceAvatar, request.targetAvatar);
                 stage.realAssetObject = realAssetRoot.gameObject;
                 stage.assetRendererPath = ReFitUtility.IndexPath(request.assetRenderer.transform, realAssetRoot);
                 var assetClone = Clone(realAssetRoot.gameObject, stage.stagingRoot.transform);
@@ -145,6 +136,8 @@ namespace Orbiters.ReFit
                 stage.assetRenderer = t != null ? t.GetComponent<SkinnedMeshRenderer>() : null;
                 if (stage.assetRenderer == null)
                     report.Error("asset-clone-failed", "Could not locate the asset renderer inside the staged asset clone.");
+                else
+                    RebindExternalBones(request, stage, realAssetRoot, assetClone.transform, report);
             }
 
             stage.sourceBody = ResolveBodyRenderer(stage.sourceRoot, request.sourceBodyRenderer,
@@ -181,6 +174,31 @@ namespace Orbiters.ReFit
             return t;
         }
 
+        /// <summary>
+        /// Root of the asset object hierarchy, not necessarily the root containing its current skin bones.
+        /// Re-fitted assets may already reference target-avatar bones, so using skin bones for root discovery can
+        /// accidentally promote the asset root to the whole avatar.
+        /// </summary>
+        public static Transform FindAssetObjectRoot(SkinnedMeshRenderer smr, GameObject sourceAvatar, GameObject targetAvatar)
+        {
+            if (smr == null) return null;
+            var t = smr.transform;
+
+            var sourceRoot = sourceAvatar != null ? sourceAvatar.transform : null;
+            var targetRoot = targetAvatar != null ? targetAvatar.transform : null;
+            var boundary = targetRoot != null && t.IsChildOf(targetRoot) ? targetRoot :
+                sourceRoot != null && t.IsChildOf(sourceRoot) ? sourceRoot : null;
+
+            if (boundary != null)
+            {
+                while (t.parent != null && t.parent != boundary)
+                    t = t.parent;
+                return t;
+            }
+
+            return FindCommonRoot(smr);
+        }
+
         private static bool ContainsAllBones(Transform candidate, SkinnedMeshRenderer smr)
         {
             if (!smr.transform.IsChildOf(candidate)) return false;
@@ -192,6 +210,48 @@ namespace Orbiters.ReFit
                     if (b != null && !b.IsChildOf(candidate)) return false;
             }
             return true;
+        }
+
+        private static void RebindExternalBones(ReFitRequest request, NormalizedStage stage, Transform realAssetRoot,
+            Transform assetCloneRoot, ReFitReport report)
+        {
+            if (request?.assetRenderer == null || stage?.assetRenderer == null) return;
+            var originalBones = request.assetRenderer.bones;
+            if (originalBones == null || originalBones.Length == 0) return;
+
+            var rebound = new Transform[originalBones.Length];
+            int mapped = 0;
+            for (int i = 0; i < originalBones.Length; i++)
+            {
+                rebound[i] = ResolveEquivalent(originalBones[i], request, stage, realAssetRoot, assetCloneRoot);
+                if (rebound[i] != null) mapped++;
+            }
+            stage.assetRenderer.bones = rebound;
+            stage.assetRenderer.rootBone = ResolveEquivalent(request.assetRenderer.rootBone, request, stage, realAssetRoot, assetCloneRoot);
+            if (mapped > 0)
+                report.Info("asset-bones-rebound", $"Resolved {mapped}/{originalBones.Length} staged asset bones onto cloned asset/avatar hierarchies.");
+        }
+
+        private static Transform ResolveEquivalent(Transform original, ReFitRequest request, NormalizedStage stage,
+            Transform realAssetRoot, Transform assetCloneRoot)
+        {
+            if (original == null) return null;
+            if (realAssetRoot != null && original.IsChildOf(realAssetRoot))
+            {
+                var path = ReFitUtility.IndexPath(original, realAssetRoot);
+                return ReFitUtility.ResolvePath(assetCloneRoot, path);
+            }
+            if (request.targetAvatar != null && original.IsChildOf(request.targetAvatar.transform))
+            {
+                var path = ReFitUtility.IndexPath(original, request.targetAvatar.transform);
+                return ReFitUtility.ResolvePath(stage.targetRoot.transform, path);
+            }
+            if (request.sourceAvatar != null && original.IsChildOf(request.sourceAvatar.transform))
+            {
+                var path = ReFitUtility.IndexPath(original, request.sourceAvatar.transform);
+                return ReFitUtility.ResolvePath(stage.sourceRoot.transform, path);
+            }
+            return original;
         }
 
         /// <summary>
@@ -263,28 +323,20 @@ namespace Orbiters.ReFit
         // Scale & alignment
         // ------------------------------------------------------------------
 
-        private static void ScaleAndAlign(NormalizedStage stage, ReFitRequest request, ReFitReport report)
+        private static void ScaleAndAlign(NormalizedStage stage, ReFitReport report)
         {
-            var targetBasisWeights = TargetBasisShapeOverrides(request, stage.targetBody);
-
-            // 1) Scale: humanoid landmarks are only reliable when both sides have a real humanoid
-            // avatar. Fallback name maps can find hands in arbitrary poses, which makes arm span a
-            // poor scale reference for non-humanoid rigs.
-            float ms = -1f;
-            float mt = -1f;
-            bool usedBounds = !(stage.sourceHasHumanoidAvatar && stage.targetHasHumanoidAvatar);
-            if (!usedBounds)
-            {
-                ms = Measure(stage.sourceHumanMap);
-                mt = Measure(stage.targetHumanMap);
-                usedBounds = ms <= 1e-5f || mt <= 1e-5f;
-            }
-            if (usedBounds)
+            // 1) Scale: prefer humanoid landmarks, fall back to the body meshes' world height so that
+            //    non-humanoid rigs (and FBX imported at a different unit scale) are still matched.
+            float ms = Measure(stage.sourceHumanMap);
+            float mt = Measure(stage.targetHumanMap);
+            bool usedBounds = false;
+            if (ms <= 1e-5f || mt <= 1e-5f)
             {
                 var sb = BakedWorldBounds(stage.sourceBody);
-                var tb = BakedWorldBounds(stage.targetBody, targetBasisWeights);
+                var tb = BakedWorldBounds(stage.targetBody);
                 ms = sb.HasValue ? sb.Value.size.y : -1f;
                 mt = tb.HasValue ? tb.Value.size.y : -1f;
+                usedBounds = true;
             }
 
             if (ms > 1e-5f && mt > 1e-5f)
@@ -316,7 +368,7 @@ namespace Orbiters.ReFit
             else
             {
                 var sb = BakedWorldBounds(stage.sourceBody);
-                var tb = BakedWorldBounds(stage.targetBody, targetBasisWeights);
+                var tb = BakedWorldBounds(stage.targetBody);
                 if (sb.HasValue && tb.HasValue)
                     stage.sourceRoot.transform.position += tb.Value.center - sb.Value.center;
             }
@@ -333,55 +385,32 @@ namespace Orbiters.ReFit
         }
 
         /// <summary>World-space AABB of a skinned renderer in its current pose, baked deterministically.</summary>
-        private static Bounds? BakedWorldBounds(SkinnedMeshRenderer smr, Dictionary<int, float> shapeWeightOverrides01 = null)
+        private static Bounds? BakedWorldBounds(SkinnedMeshRenderer smr)
         {
             if (smr == null || smr.sharedMesh == null) return null;
-            var snap = MeshSnapshot.Capture(smr, false, shapeWeightOverrides01, null);
-            var verts = snap.worldVertices;
-            if (verts == null || verts.Length == 0) return null;
-
-            var min = new Vector3(float.MaxValue, float.MaxValue, float.MaxValue);
-            var max = new Vector3(float.MinValue, float.MinValue, float.MinValue);
-            foreach (var v in verts)
+            var baked = new Mesh();
+            try
             {
-                min = Vector3.Min(min, v);
-                max = Vector3.Max(max, v);
+                smr.BakeMesh(baked);
+                var verts = baked.vertices;
+                if (verts.Length == 0) return null;
+                var l2w = smr.transform.localToWorldMatrix; // BakeMesh output is in the renderer's local space
+                var min = new Vector3(float.MaxValue, float.MaxValue, float.MaxValue);
+                var max = new Vector3(float.MinValue, float.MinValue, float.MinValue);
+                foreach (var v in verts)
+                {
+                    var w = l2w.MultiplyPoint3x4(v);
+                    min = Vector3.Min(min, w);
+                    max = Vector3.Max(max, w);
+                }
+                var b = new Bounds();
+                b.SetMinMax(min, max);
+                return b;
             }
-            var b = new Bounds();
-            b.SetMinMax(min, max);
-            return b;
-        }
-
-        private static Dictionary<int, float> TargetBasisShapeOverrides(ReFitRequest request, SkinnedMeshRenderer targetBody)
-        {
-            if (request == null || targetBody == null || targetBody.sharedMesh == null || request.mode == ReFitMode.MeshToMesh)
-                return null;
-
-            Dictionary<int, float> overrides = null;
-            foreach (var name in RequestedShapeNames(request))
+            finally
             {
-                var idx = targetBody.sharedMesh.GetBlendShapeIndex(name);
-                if (idx < 0) continue;
-                if (overrides == null) overrides = new Dictionary<int, float>();
-                overrides[idx] = 0f;
+                UnityEngine.Object.DestroyImmediate(baked);
             }
-            return overrides;
-        }
-
-        private static List<string> RequestedShapeNames(ReFitRequest request)
-        {
-            var names = new List<string>();
-            if (request == null) return names;
-            if (request.targetBlendshapes != null && request.targetBlendshapes.Count > 0)
-            {
-                foreach (var name in request.targetBlendshapes)
-                    if (!string.IsNullOrEmpty(name) && !names.Contains(name)) names.Add(name);
-            }
-            else if (!string.IsNullOrEmpty(request.targetBlendshape))
-            {
-                names.Add(request.targetBlendshape);
-            }
-            return names;
         }
 
         private static bool TryGet(Dictionary<HumanBodyBones, Transform> map, HumanBodyBones b, out Transform t)

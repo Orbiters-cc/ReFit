@@ -157,110 +157,12 @@ namespace Orbiters.ReFit
             return hit;
         }
 
-        /// <summary>Closest ray/triangle hit along <paramref name="direction"/>, optionally restricted by triangle predicate.</summary>
-        public Hit Raycast(Vector3 origin, Vector3 direction, float maxDistance, Func<int, bool> filter = null)
-        {
-            var hit = new Hit { found = false, distance = maxDistance, triangle = -1 };
-            if (nodeCount == 0 || direction.sqrMagnitude <= 1e-12f || maxDistance <= 0f) return hit;
-
-            direction.Normalize();
-            var stack = new int[64];
-            int sp = 0;
-            stack[sp++] = 0;
-            while (sp > 0)
-            {
-                int ni = stack[--sp];
-                var node = nodes[ni];
-                if (!RayIntersectsBounds(origin, direction, hit.distance, node.boundsMin, node.boundsMax)) continue;
-
-                if (node.left < 0)
-                {
-                    for (int i = node.start; i < node.start + node.count; i++)
-                    {
-                        int t = triOrder[i];
-                        if (filter != null && !filter(t)) continue;
-                        if (!RayTriangle(origin, direction, a[t], b[t], c[t], out var distance, out var bary))
-                            continue;
-                        if (distance >= hit.distance) continue;
-
-                        hit.found = true;
-                        hit.triangle = t;
-                        hit.distance = distance;
-                        hit.bary = bary;
-                        hit.position = origin + direction * distance;
-                    }
-                }
-                else
-                {
-                    if (sp + 2 >= stack.Length) Array.Resize(ref stack, stack.Length * 2);
-                    stack[sp++] = node.right;
-                    stack[sp++] = node.left;
-                }
-            }
-            return hit;
-        }
-
         private static float SqrDistanceToBounds(Vector3 p, Vector3 min, Vector3 max)
         {
             float dx = Mathf.Max(Mathf.Max(min.x - p.x, 0f), p.x - max.x);
             float dy = Mathf.Max(Mathf.Max(min.y - p.y, 0f), p.y - max.y);
             float dz = Mathf.Max(Mathf.Max(min.z - p.z, 0f), p.z - max.z);
             return dx * dx + dy * dy + dz * dz;
-        }
-
-        private static bool RayIntersectsBounds(Vector3 origin, Vector3 dir, float maxDistance, Vector3 min, Vector3 max)
-        {
-            float tMin = 0f;
-            float tMax = maxDistance;
-            if (!RaySlab(origin.x, dir.x, min.x, max.x, ref tMin, ref tMax)) return false;
-            if (!RaySlab(origin.y, dir.y, min.y, max.y, ref tMin, ref tMax)) return false;
-            if (!RaySlab(origin.z, dir.z, min.z, max.z, ref tMin, ref tMax)) return false;
-            return tMax >= 0f && tMin <= maxDistance;
-        }
-
-        private static bool RaySlab(float origin, float dir, float min, float max, ref float tMin, ref float tMax)
-        {
-            if (Mathf.Abs(dir) <= 1e-8f)
-                return origin >= min && origin <= max;
-
-            float inv = 1f / dir;
-            float a = (min - origin) * inv;
-            float b = (max - origin) * inv;
-            if (a > b)
-            {
-                var tmp = a;
-                a = b;
-                b = tmp;
-            }
-            tMin = Mathf.Max(tMin, a);
-            tMax = Mathf.Min(tMax, b);
-            return tMin <= tMax;
-        }
-
-        private static bool RayTriangle(Vector3 origin, Vector3 dir, Vector3 a, Vector3 b, Vector3 c,
-            out float distance, out Vector3 bary)
-        {
-            distance = 0f;
-            bary = default;
-            var ab = b - a;
-            var ac = c - a;
-            var p = Vector3.Cross(dir, ac);
-            float det = Vector3.Dot(ab, p);
-            if (Mathf.Abs(det) <= 1e-8f) return false;
-
-            float invDet = 1f / det;
-            var t = origin - a;
-            float u = Vector3.Dot(t, p) * invDet;
-            if (u < -1e-5f || u > 1f + 1e-5f) return false;
-
-            var q = Vector3.Cross(t, ab);
-            float v = Vector3.Dot(dir, q) * invDet;
-            if (v < -1e-5f || u + v > 1f + 1e-5f) return false;
-
-            distance = Vector3.Dot(ac, q) * invDet;
-            if (distance <= 1e-5f) return false;
-            bary = new Vector3(1f - u - v, u, v);
-            return true;
         }
 
         /// <summary>

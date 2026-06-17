@@ -67,6 +67,12 @@ namespace Orbiters.ReFit.Editor.Tests
                     "Mesh refit with armature replacement disabled preserves clothing root bone",
                     MeshAndBlendshape_ArmatureReplacementDisabled_PreservesRootBone);
                 RunCase(failures,
+                    "Armature replacement removes stale accessory skeleton",
+                    MeshAndBlendshape_ArmatureReplacement_RemovesStaleAccessorySkeleton);
+                RunCase(failures,
+                    "Armature replacement cleans rerun target-space stale skeleton",
+                    ArmatureReplacement_RerunTargetSpace_RemovesUnusedLocalSkeleton);
+                RunCase(failures,
                     "Humanoid alias bone names map to target armature bones",
                     HumanoidAliases_MapAccessoryBonesToAvatarBones);
                 RunCase(failures,
@@ -182,13 +188,17 @@ namespace Orbiters.ReFit.Editor.Tests
 
                 var upperArm = NewChild(avatar.transform, "upper_arm.L");
                 var forearm = NewChild(upperArm, "forearm.L");
+                NewChild(avatar.transform, "Chest");
 
                 var leftArm = NewChild(accessory.transform, "Left arm");
                 var leftElbow = NewChild(leftArm, "Left elbow");
+                var chestUp = NewChild(accessory.transform, "Chest Up");
 
                 var map = HumanoidBoneMapper.MatchBonesByName(accessory.GetComponentsInChildren<Transform>(true), avatar.transform);
                 AssertSame(map[leftArm], upperArm, "Accessory 'Left arm' should map to avatar 'upper_arm.L'.");
                 AssertSame(map[leftElbow], forearm, "Accessory 'Left elbow' should map to avatar 'forearm.L'.");
+                AssertTrue(map.ContainsKey(chestUp) && map[chestUp] == null,
+                    "Accessory 'Chest Up' should be preserved when the target has no UpperChest bone.");
             }
             finally
             {
@@ -294,6 +304,113 @@ namespace Orbiters.ReFit.Editor.Tests
                         $"Apply with armature replacement disabled changed the clothing root bone from {PathOf(originalRootBone)} to {PathOf(applied.rootBone)}.");
                     AssertTrue(applied.rootBone != fixture.target.hips,
                         "Apply with armature replacement disabled rebound the clothing root bone to the target avatar hips.");
+                }
+                finally
+                {
+                    DestroyComputationMesh(comp);
+                }
+            }
+        }
+
+        private static void MeshAndBlendshape_ArmatureReplacement_RemovesStaleAccessorySkeleton()
+        {
+            using (var fixture = ReFitTestFixture.Create())
+            {
+                var oldAccessoryHips = fixture.sourceSpaceAccessory.hips;
+                var oldAccessoryChest = fixture.sourceSpaceAccessory.chest;
+                var request = BuildMeshAndBlendshapeRequest(fixture, fixture.sourceSpaceAccessory.renderer, true);
+                var comp = new ReFitEngine().Run(request);
+                try
+                {
+                    AssertComputationSucceeded(comp);
+                    AssertTrue(comp.armatureReplaced, "The computation did not build a replacement armature plan.");
+
+                    var applied = ReFitAssetPipeline.ApplyToScene(request, comp, comp.report);
+                    AssertTrue(applied != null, "ApplyToScene returned no renderer.");
+                    AssertTrue(applied.rootBone != oldAccessoryHips,
+                        "The applied renderer kept the old accessory root bone after armature replacement.");
+                    AssertTrue(applied.rootBone != fixture.target.hips,
+                        "The applied renderer should use a rebuilt clothing-owned hips bone, not the target avatar hips transform.");
+                    AssertTrue(applied.rootBone != null && applied.rootBone.IsChildOf(fixture.sourceSpaceAccessory.root.transform),
+                        $"The applied renderer root bone should be under the rebuilt clothing armature, but was '{PathOf(applied.rootBone)}'.");
+                    AssertTrue(Array.IndexOf(applied.bones, fixture.target.hips) < 0,
+                        "The applied renderer still binds directly to the target avatar hips instead of a rebuilt bone.");
+                    AssertTrue(RendererHasBone(applied, "Hips"),
+                        "The rebuilt clothing armature does not include a hips bone.");
+                    AssertTrue(oldAccessoryHips == null && oldAccessoryChest == null,
+                        "The stale source-space accessory skeleton was left in the scene after armature replacement.");
+                }
+                finally
+                {
+                    DestroyComputationMesh(comp);
+                }
+            }
+        }
+
+        private static void ArmatureReplacement_RerunTargetSpace_RemovesUnusedLocalSkeleton()
+        {
+            using (var fixture = ReFitTestFixture.Create())
+            {
+                fixture.sourceSpaceAccessory.root.transform.SetParent(fixture.target.root.transform, true);
+                var renderer = fixture.sourceSpaceAccessory.renderer;
+                var staleHips = fixture.sourceSpaceAccessory.hips;
+                var staleChest = fixture.sourceSpaceAccessory.chest;
+                var localExtraBone = NewChild(staleChest, "Hood string");
+
+                var appliedBones = new Transform[fixture.target.bones.Length + 1];
+                Array.Copy(fixture.target.bones, appliedBones, fixture.target.bones.Length);
+                appliedBones[appliedBones.Length - 1] = localExtraBone;
+                renderer.bones = appliedBones;
+                renderer.rootBone = fixture.target.hips;
+
+                var mesh = Object.Instantiate(renderer.sharedMesh);
+                mesh.name = renderer.sharedMesh.name + "_TargetBound";
+                mesh.hideFlags = HideFlags.HideAndDontSave;
+                mesh.bindposes = BuildBindposes(renderer.transform, appliedBones);
+
+                var refs = new ReFitBoneRef[appliedBones.Length];
+                for (int i = 0; i < fixture.target.bones.Length; i++)
+                {
+                    refs[i] = new ReFitBoneRef
+                    {
+                        origin = ReFitBoneOrigin.Target,
+                        path = ReFitUtility.IndexPath(fixture.target.bones[i], fixture.target.root.transform)
+                    };
+                }
+                refs[refs.Length - 1] = new ReFitBoneRef
+                {
+                    origin = ReFitBoneOrigin.Asset,
+                    path = ReFitUtility.IndexPath(localExtraBone, fixture.sourceSpaceAccessory.root.transform)
+                };
+
+                var request = BuildMeshAndBlendshapeRequest(fixture, renderer, true);
+                var comp = new ReFitComputation
+                {
+                    success = true,
+                    report = new ReFitReport(),
+                    mesh = mesh,
+                    armatureReplaced = true,
+                    bones = refs,
+                    rootBoneIndex = (int)RigBone.Hips,
+                    assetRendererPath = ReFitUtility.IndexPath(renderer.transform, fixture.sourceSpaceAccessory.root.transform)
+                };
+
+                try
+                {
+                    var applied = ReFitAssetPipeline.ApplyToScene(request, comp, comp.report);
+                    AssertTrue(applied != null, "ApplyToScene returned no renderer.");
+                    AssertTrue(applied.rootBone != fixture.target.hips,
+                        "The applied renderer should use a rebuilt clothing-owned hips bone, not the target avatar hips transform.");
+                    AssertTrue(applied.rootBone != null && applied.rootBone.IsChildOf(fixture.sourceSpaceAccessory.root.transform),
+                        $"The applied renderer root bone should be under the rebuilt clothing armature, but was '{PathOf(applied.rootBone)}'.");
+                    AssertTrue(staleHips == null && staleChest == null,
+                        "An unused local accessory skeleton container survived armature replacement.");
+                    AssertTrue(Array.IndexOf(applied.bones, fixture.target.hips) < 0,
+                        "The applied renderer still binds directly to the target avatar hips instead of a rebuilt bone.");
+                    AssertTrue(RendererHasBone(applied, "Hood string"),
+                        "The cleanup deleted or unbound an accessory-only preserved bone.");
+                    AssertTrue(localExtraBone == null || Array.IndexOf(applied.bones, localExtraBone) < 0,
+                        "The renderer should bind to the rebuilt copy of the accessory-only bone, not the original stale transform.");
                 }
                 finally
                 {

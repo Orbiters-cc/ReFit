@@ -70,6 +70,9 @@ namespace Orbiters.ReFit.Editor.Tests
                     "Armature replacement removes stale accessory skeleton",
                     MeshAndBlendshape_ArmatureReplacement_RemovesStaleAccessorySkeleton);
                 RunCase(failures,
+                    "Armature replacement materializes child-first bone plans without hierarchy drift",
+                    ArmatureReplacement_ChildFirstPlan_MaterializesWithoutDrift);
+                RunCase(failures,
                     "Armature replacement cleans rerun target-space stale skeleton",
                     ArmatureReplacement_RerunTargetSpace_RemovesUnusedLocalSkeleton);
                 RunCase(failures,
@@ -343,6 +346,82 @@ namespace Orbiters.ReFit.Editor.Tests
                         "The rebuilt clothing armature included a target-only lower leg bone that has no clothing equivalent.");
                     AssertTrue(oldAccessoryHips == null && oldAccessoryChest == null,
                         "The stale source-space accessory skeleton was left in the scene after armature replacement.");
+                }
+                finally
+                {
+                    DestroyComputationMesh(comp);
+                }
+            }
+        }
+
+        private static void ArmatureReplacement_ChildFirstPlan_MaterializesWithoutDrift()
+        {
+            using (var fixture = ReFitTestFixture.Create())
+            {
+                var renderer = fixture.sourceSpaceAccessory.renderer;
+                var targetChest = fixture.target.bones[(int)RigBone.Chest];
+                var targetHips = fixture.target.bones[(int)RigBone.Hips];
+                var targetSpine = fixture.target.bones[(int)RigBone.Spine];
+                var orderedTargetBones = new[] { targetChest, targetHips, targetSpine };
+
+                var mesh = Object.Instantiate(renderer.sharedMesh);
+                mesh.name = renderer.sharedMesh.name + "_ChildFirstBonePlan";
+                mesh.hideFlags = HideFlags.HideAndDontSave;
+                var weights = new BoneWeight[mesh.vertexCount];
+                for (int i = 0; i < weights.Length; i++)
+                    weights[i] = new BoneWeight { boneIndex0 = 1, weight0 = 1f };
+                mesh.boneWeights = weights;
+                mesh.bindposes = BuildBindposes(renderer.transform, orderedTargetBones);
+
+                var refs = new ReFitBoneRef[orderedTargetBones.Length];
+                for (int i = 0; i < orderedTargetBones.Length; i++)
+                {
+                    refs[i] = new ReFitBoneRef
+                    {
+                        origin = ReFitBoneOrigin.Target,
+                        path = ReFitUtility.IndexPath(orderedTargetBones[i], fixture.target.root.transform)
+                    };
+                }
+
+                var request = BuildMeshAndBlendshapeRequest(fixture, renderer, true);
+                var comp = new ReFitComputation
+                {
+                    success = true,
+                    report = new ReFitReport(),
+                    mesh = mesh,
+                    armatureReplaced = true,
+                    bones = refs,
+                    rootBoneIndex = 1,
+                    assetRendererPath = ReFitUtility.IndexPath(renderer.transform, fixture.sourceSpaceAccessory.root.transform)
+                };
+
+                try
+                {
+                    var applied = ReFitAssetPipeline.ApplyToScene(request, comp, comp.report);
+                    AssertTrue(applied != null, "ApplyToScene returned no renderer.");
+                    AssertTrue(applied.bones.Length == orderedTargetBones.Length,
+                        $"Expected {orderedTargetBones.Length} rebuilt bones, got {applied.bones.Length}.");
+                    AssertSame(applied.rootBone, applied.bones[1], "Root bone did not follow the requested child-first hips index.");
+                    AssertSame(applied.bones[0].parent, applied.bones[2], "Chest was not parented under rebuilt Spine.");
+                    AssertSame(applied.bones[2].parent, applied.bones[1], "Spine was not parented under rebuilt Hips.");
+
+                    for (int i = 0; i < orderedTargetBones.Length; i++)
+                    {
+                        AssertLessOrEqual(Vector3.Distance(applied.bones[i].position, orderedTargetBones[i].position), 0.0001f,
+                            $"Rebuilt bone {i}:{applied.bones[i].name} drifted from its target blueprint.");
+                        AssertLessOrEqual(Quaternion.Angle(applied.bones[i].rotation, orderedTargetBones[i].rotation), 0.01f,
+                            $"Rebuilt bone {i}:{applied.bones[i].name} rotation drifted from its target blueprint.");
+                    }
+
+                    var bindposes = applied.sharedMesh.bindposes;
+                    AssertTrue(bindposes != null && bindposes.Length == applied.bones.Length,
+                        "Applied mesh bindpose count does not match rebuilt bone count.");
+                    for (int i = 0; i < applied.bones.Length; i++)
+                    {
+                        var expected = applied.bones[i].worldToLocalMatrix * applied.transform.localToWorldMatrix;
+                        AssertLessOrEqual(MatrixMaxAbsDelta(bindposes[i], expected), 0.0001f,
+                            $"Bindpose {i}:{applied.bones[i].name} does not match the final rebuilt transform.");
+                    }
                 }
                 finally
                 {
@@ -813,6 +892,14 @@ namespace Orbiters.ReFit.Editor.Tests
         {
             if (!(actual <= expectedMaximum))
                 throw new Exception($"{message} Expected <= {expectedMaximum:0.####}, got {actual:0.####}.");
+        }
+
+        private static float MatrixMaxAbsDelta(Matrix4x4 a, Matrix4x4 b)
+        {
+            float max = 0f;
+            for (int i = 0; i < 16; i++)
+                max = Mathf.Max(max, Mathf.Abs(a[i] - b[i]));
+            return max;
         }
 
         private static string PathOf(Transform transform)

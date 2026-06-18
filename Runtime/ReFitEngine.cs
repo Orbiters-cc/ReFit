@@ -639,6 +639,8 @@ namespace Orbiters.ReFit
             Transform ResolveToTarget(Transform assetOrSourceBone)
             {
                 if (assetOrSourceBone == null) return null;
+                if (IsArmatureContainerBone(assetOrSourceBone))
+                    return ResolveNearestDescendant(assetOrSourceBone);
                 var direct = ResolveDirect(assetOrSourceBone);
                 if (direct != null) return direct;
 
@@ -656,6 +658,7 @@ namespace Orbiters.ReFit
             Transform ResolveDirect(Transform assetOrSourceBone)
             {
                 if (assetOrSourceBone == null) return null;
+                if (IsArmatureContainerBone(assetOrSourceBone)) return null;
                 if (targetNameIndex.TryGetValue(ReFitUtility.NormalizeName(assetOrSourceBone.name), out var byName))
                     return byName;
                 if (HumanoidBoneMapper.TryInferHumanoidBone(assetOrSourceBone, out var namedHuman) &&
@@ -718,6 +721,13 @@ namespace Orbiters.ReFit
                         queue.Enqueue(cur.GetChild(i));
                 }
                 return null;
+            }
+
+            bool IsArmatureContainerBone(Transform bone)
+            {
+                if (bone == null) return false;
+                var key = ReFitUtility.NormalizeName(bone.name);
+                return key == "armature" || key == "skeleton" || key == "rig";
             }
 
             // 2) resolve every asset bone

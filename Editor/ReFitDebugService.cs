@@ -168,6 +168,7 @@ namespace Orbiters.ReFit.Editor
             {
                 foreach (var renderer in renderers)
                     renderer.enabled = renderer == cloneRenderer;
+                FreezeRendererMesh(sourceRenderer, cloneRenderer);
                 CopyBlendShapeWeights(sourceRenderer, cloneRenderer);
                 cloneRenderer.updateWhenOffscreen = true;
             }
@@ -186,6 +187,18 @@ namespace Orbiters.ReFit.Editor
             int count = Mathf.Min(source.sharedMesh.blendShapeCount, clone.sharedMesh.blendShapeCount);
             for (int i = 0; i < count; i++)
                 clone.SetBlendShapeWeight(i, source.GetBlendShapeWeight(i));
+        }
+
+        private static void FreezeRendererMesh(SkinnedMeshRenderer source, SkinnedMeshRenderer clone)
+        {
+            if (source == null || clone == null || source.sharedMesh == null)
+                return;
+
+            var mesh = Object.Instantiate(source.sharedMesh);
+            mesh.name = source.sharedMesh.name.Replace("(Clone)", "") + "_DebugSnapshot";
+            mesh.hideFlags = HideFlags.None;
+            Undo.RegisterCreatedObjectUndo(mesh, "ReFit debug mesh snapshot");
+            clone.sharedMesh = mesh;
         }
 
         private static Dictionary<Transform, LocalPose> CaptureLocalPose(GameObject root)

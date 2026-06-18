@@ -76,9 +76,11 @@ namespace Orbiters.ReFit.Editor
             debug?.Capture("02_generated_mesh_assigned", renderer);
 
             // --- armature replacement ------------------------------------------------------
+            bool armatureApplied = false;
             if (comp.armatureReplaced)
             {
-                if (!ApplyBonePlan(request, comp, targetInstance, assetInstanceRoot, renderer, report))
+                armatureApplied = ApplyBonePlan(request, comp, targetInstance, assetInstanceRoot, renderer, report);
+                if (!armatureApplied)
                     report.Warn("bone-apply-incomplete", "The armature replacement could not be fully applied; check the messages above.");
                 else if (!renderer.transform.IsChildOf(targetInstance.transform))
                 {
@@ -92,7 +94,8 @@ namespace Orbiters.ReFit.Editor
                         Undo.SetTransformParent(container, targetInstance.transform, "ReFit parent asset");
                 }
             }
-            debug?.Capture(comp.armatureReplaced ? "03_armature_replaced" : "03_armature_kept", renderer);
+            debug?.Capture(armatureApplied ? "03_armature_replaced" :
+                (comp.armatureReplaced ? "03_armature_replace_failed" : "03_armature_kept"), renderer);
 
             // --- enable the generated shapes -------------------------------------------------
             if (!string.IsNullOrEmpty(comp.primaryShapeName))
@@ -218,7 +221,11 @@ namespace Orbiters.ReFit.Editor
             // they are used as blueprints for a fresh clothing-owned armature.
             var sourceBones = ResolveBoneBlueprints(request, comp, targetInstance, assetInstanceRoot, out var missing);
             if (missing > 0)
-                report.Warn("bones-missing", $"{missing}/{sourceBones.Length} bones could not be resolved on the target; affected vertices may not deform correctly.");
+            {
+                report.Error("bones-missing",
+                    $"{missing}/{sourceBones.Length} bone blueprint(s) could not be resolved; armature replacement was aborted instead of creating null skin bones.");
+                return false;
+            }
 
             if (!MakeRestructurable(assetInstanceRoot, report)) return false;
 
@@ -240,6 +247,8 @@ namespace Orbiters.ReFit.Editor
             }
             // Mesh space changed (staged-pose bindposes): the authored local bounds are no longer reliable.
             renderer.updateWhenOffscreen = true;
+            RefreshMeshBindposes(renderer, bones, report);
+            ValidateMaterializedArmature(sourceBones, bones, renderer, report);
             RemoveReplacedAssetArmature(request, targetInstance, assetInstanceRoot, renderer, oldBones, oldRootBone, bones, newArmatureRoot, report);
             newArmatureRoot.name = UniqueChildName(assetInstanceRoot, "Armature", newArmatureRoot);
             report.Info("armature-rebuilt", $"Built a new clothing armature with {bones.Length - missing}/{bones.Length} resolved bone(s).");
@@ -287,6 +296,7 @@ namespace Orbiters.ReFit.Editor
         {
             var bones = new Transform[sourceBones != null ? sourceBones.Length : 0];
             var sourceToNew = new Dictionary<Transform, Transform>();
+            var placements = new MaterializedBonePlacement[bones.Length];
 
             for (int i = 0; i < bones.Length; i++)
             {
@@ -311,7 +321,21 @@ namespace Orbiters.ReFit.Editor
                 if (parent == null)
                     parent = newArmatureRoot;
 
-                SetParentPreservingWorld(proxy, parent, source.position, source.rotation, source.lossyScale);
+                SetWorldTransform(proxy, newArmatureRoot, source.position, source.rotation, source.lossyScale);
+                placements[i] = new MaterializedBonePlacement(proxy, parent, source.lossyScale);
+            }
+
+            var order = new List<int>();
+            for (int i = 0; i < placements.Length; i++)
+                if (placements[i].proxy != null)
+                    order.Add(i);
+            order.Sort((a, b) => DesiredParentDepth(placements[a].parent, newArmatureRoot)
+                .CompareTo(DesiredParentDepth(placements[b].parent, newArmatureRoot)));
+
+            foreach (var i in order)
+            {
+                var placement = placements[i];
+                ReparentPreservingWorld(placement.proxy, placement.parent, placement.lossyScale);
             }
 
             return bones;
@@ -369,6 +393,195 @@ namespace Orbiters.ReFit.Editor
             t.position = position;
             t.rotation = rotation;
             t.localScale = DivideScale(lossyScale, t.parent != null ? t.parent.lossyScale : Vector3.one);
+        }
+
+        private static void SetWorldTransform(Transform t, Transform parent, Vector3 position,
+            Quaternion rotation, Vector3 lossyScale)
+        {
+            t.SetParent(parent, true);
+            t.position = position;
+            t.rotation = rotation;
+            t.localScale = DivideScale(lossyScale, t.parent != null ? t.parent.lossyScale : Vector3.one);
+        }
+
+        private static void ReparentPreservingWorld(Transform t, Transform parent, Vector3 lossyScale)
+        {
+            var position = t.position;
+            var rotation = t.rotation;
+            t.SetParent(parent, true);
+            t.position = position;
+            t.rotation = rotation;
+            t.localScale = DivideScale(lossyScale, t.parent != null ? t.parent.lossyScale : Vector3.one);
+        }
+
+        private static int DesiredParentDepth(Transform parent, Transform stopAt)
+        {
+            int depth = 0;
+            var current = parent;
+            while (current != null && current != stopAt)
+            {
+                depth++;
+                current = current.parent;
+            }
+            return depth;
+        }
+
+        private static void RefreshMeshBindposes(SkinnedMeshRenderer renderer, Transform[] bones, ReFitReport report)
+        {
+            var mesh = renderer != null ? renderer.sharedMesh : null;
+            if (mesh == null || bones == null || bones.Length == 0) return;
+
+            var bindposes = new Matrix4x4[bones.Length];
+            var rendererLocalToWorld = renderer.transform.localToWorldMatrix;
+            for (int i = 0; i < bones.Length; i++)
+                bindposes[i] = bones[i] != null
+                    ? bones[i].worldToLocalMatrix * rendererLocalToWorld
+                    : Matrix4x4.identity;
+
+            mesh.bindposes = bindposes;
+            EditorUtility.SetDirty(mesh);
+            report.Info("armature-bindposes-refreshed",
+                $"Rebuilt {bindposes.Length} bindpose(s) from the final materialized clothing armature.");
+        }
+
+        private static void ValidateMaterializedArmature(Transform[] sourceBones, Transform[] bones,
+            SkinnedMeshRenderer renderer, ReFitReport report)
+        {
+            if (sourceBones == null || bones == null || report == null) return;
+
+            float maxPositionDrift = 0f;
+            float maxRotationDrift = 0f;
+            int worstPosition = -1;
+            int worstRotation = -1;
+            for (int i = 0; i < bones.Length && i < sourceBones.Length; i++)
+            {
+                var source = sourceBones[i];
+                var bone = bones[i];
+                if (source == null || bone == null) continue;
+                var positionDrift = Vector3.Distance(source.position, bone.position);
+                if (positionDrift > maxPositionDrift)
+                {
+                    maxPositionDrift = positionDrift;
+                    worstPosition = i;
+                }
+
+                var rotationDrift = Quaternion.Angle(source.rotation, bone.rotation);
+                if (rotationDrift > maxRotationDrift)
+                {
+                    maxRotationDrift = rotationDrift;
+                    worstRotation = i;
+                }
+            }
+
+            var mesh = renderer != null ? renderer.sharedMesh : null;
+            float maxBindposeDrift = 0f;
+            int worstBindpose = -1;
+            if (renderer != null && mesh != null && mesh.bindposes != null && mesh.bindposes.Length == bones.Length)
+            {
+                var rendererLocalToWorld = renderer.transform.localToWorldMatrix;
+                var bindposes = mesh.bindposes;
+                for (int i = 0; i < bones.Length; i++)
+                {
+                    if (bones[i] == null) continue;
+                    var expected = bones[i].worldToLocalMatrix * rendererLocalToWorld;
+                    var drift = MatrixMaxAbsDelta(bindposes[i], expected);
+                    if (drift > maxBindposeDrift)
+                    {
+                        maxBindposeDrift = drift;
+                        worstBindpose = i;
+                    }
+                }
+            }
+
+            float maxLengthRatio = 0f;
+            float maxLength = 0f;
+            int worstLength = -1;
+            var boneToIndex = new Dictionary<Transform, int>();
+            for (int i = 0; i < bones.Length; i++)
+                if (bones[i] != null && !boneToIndex.ContainsKey(bones[i]))
+                    boneToIndex[bones[i]] = i;
+
+            for (int i = 0; i < bones.Length && i < sourceBones.Length; i++)
+            {
+                var bone = bones[i];
+                var source = sourceBones[i];
+                if (bone == null || source == null || bone.parent == null) continue;
+                if (!boneToIndex.TryGetValue(bone.parent, out var parentIndex)) continue;
+                if (parentIndex < 0 || parentIndex >= sourceBones.Length || sourceBones[parentIndex] == null) continue;
+
+                var actual = Vector3.Distance(bone.position, bone.parent.position);
+                var expected = Vector3.Distance(source.position, sourceBones[parentIndex].position);
+                var ratio = expected > 1e-5f ? actual / expected : actual;
+                if (actual > maxLength)
+                    maxLength = actual;
+                if (ratio > maxLengthRatio)
+                {
+                    maxLengthRatio = ratio;
+                    worstLength = i;
+                }
+            }
+
+            report.Info("armature-validation",
+                $"Materialized armature validation: maxPositionDrift={maxPositionDrift * 1000f:0.###}mm" +
+                $" ({BoneLabel(bones, worstPosition)}), maxRotationDrift={maxRotationDrift:0.###}deg" +
+                $" ({BoneLabel(bones, worstRotation)}), maxBindposeDrift={maxBindposeDrift:0.######}" +
+                $" ({BoneLabel(bones, worstBindpose)}), maxBoneLength={maxLength:0.###}m" +
+                $" ({BoneLabel(bones, worstLength)}), maxLengthRatio={maxLengthRatio:0.###}.");
+
+            if (maxPositionDrift > 0.01f || maxRotationDrift > 1f)
+                report.Error("armature-placement-invalid",
+                    $"The rebuilt armature does not match its source blueprint. Worst position drift: {maxPositionDrift * 1000f:0.###}mm at {BoneLabel(bones, worstPosition)}; " +
+                    $"worst rotation drift: {maxRotationDrift:0.###}deg at {BoneLabel(bones, worstRotation)}.");
+
+            if (maxBindposeDrift > 0.0001f)
+                report.Error("armature-bindpose-invalid",
+                    $"The rebuilt armature bindposes do not match the final bone transforms. Worst matrix drift: {maxBindposeDrift:0.######} at {BoneLabel(bones, worstBindpose)}.");
+
+            if (maxLengthRatio > 4f && maxLength > 0.1f)
+                report.Warn("armature-length-suspicious",
+                    $"A rebuilt bone span is much longer than its blueprint. Worst ratio: {maxLengthRatio:0.###} at {BoneLabel(bones, worstLength)}.");
+        }
+
+        private static float MatrixMaxAbsDelta(Matrix4x4 a, Matrix4x4 b)
+        {
+            float max = 0f;
+            for (int i = 0; i < 16; i++)
+                max = Mathf.Max(max, Mathf.Abs(a[i] - b[i]));
+            return max;
+        }
+
+        private static string BoneLabel(Transform[] bones, int index)
+        {
+            if (index < 0 || bones == null || index >= bones.Length || bones[index] == null)
+                return "n/a";
+            return $"{index}:{HierarchyPath(bones[index])}";
+        }
+
+        private static string HierarchyPath(Transform t)
+        {
+            if (t == null) return "null";
+            var parts = new Stack<string>();
+            var current = t;
+            while (current != null)
+            {
+                parts.Push(current.name);
+                current = current.parent;
+            }
+            return string.Join("/", parts.ToArray());
+        }
+
+        private readonly struct MaterializedBonePlacement
+        {
+            public readonly Transform proxy;
+            public readonly Transform parent;
+            public readonly Vector3 lossyScale;
+
+            public MaterializedBonePlacement(Transform proxy, Transform parent, Vector3 lossyScale)
+            {
+                this.proxy = proxy;
+                this.parent = parent;
+                this.lossyScale = lossyScale;
+            }
         }
 
         private static void RemoveReplacedAssetArmature(ReFitRequest request, GameObject targetInstance,

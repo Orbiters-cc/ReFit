@@ -73,7 +73,7 @@ namespace Orbiters.ReFit.Editor
             Undo.RecordObject(renderer, "ReFit");
             comp.appliedOriginalMesh = renderer.sharedMesh;
             renderer.sharedMesh = comp.mesh;
-            debug?.Capture("01_generated_mesh_assigned", renderer);
+            debug?.Capture("02_generated_mesh_assigned", renderer);
 
             // --- armature replacement ------------------------------------------------------
             if (comp.armatureReplaced)
@@ -92,14 +92,14 @@ namespace Orbiters.ReFit.Editor
                         Undo.SetTransformParent(container, targetInstance.transform, "ReFit parent asset");
                 }
             }
-            debug?.Capture(comp.armatureReplaced ? "02_armature_replaced" : "02_armature_kept", renderer);
+            debug?.Capture(comp.armatureReplaced ? "03_armature_replaced" : "03_armature_kept", renderer);
 
             // --- enable the generated shapes -------------------------------------------------
             if (!string.IsNullOrEmpty(comp.primaryShapeName))
             {
                 int idx = comp.mesh.GetBlendShapeIndex(comp.primaryShapeName);
                 if (idx >= 0) renderer.SetBlendShapeWeight(idx, 100f);
-                debug?.Capture(idx >= 0 ? "03_primary_blendshape_enabled" : "03_primary_blendshape_missing", renderer);
+                debug?.Capture(idx >= 0 ? "04_primary_blendshape_enabled" : "04_primary_blendshape_missing", renderer);
             }
             if (comp.secondaryShapeNames != null)
             {
@@ -115,9 +115,9 @@ namespace Orbiters.ReFit.Editor
                     renderer.SetBlendShapeWeight(idx, weight);
                 }
                 if (hadSecondaryShape)
-                    debug?.Capture("04_transferred_blendshapes_enabled", renderer);
+                    debug?.Capture("05_transferred_blendshapes_enabled", renderer);
             }
-            debug?.Capture("05_final_result", renderer);
+            debug?.Capture("06_final_result", renderer);
 
             Selection.activeGameObject = renderer.gameObject;
             EditorGUIUtility.PingObject(renderer.gameObject);

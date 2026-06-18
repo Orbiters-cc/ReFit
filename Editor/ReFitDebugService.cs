@@ -97,6 +97,16 @@ namespace Orbiters.ReFit.Editor
 
         public void Capture(string label, SkinnedMeshRenderer renderer)
         {
+            Capture(label, renderer, false);
+        }
+
+        public void CaptureScenePoseAsDefault(string label, SkinnedMeshRenderer renderer)
+        {
+            Capture(label, renderer, true);
+        }
+
+        private void Capture(string label, SkinnedMeshRenderer renderer, bool bakeScenePoseAsDefault)
+        {
             if (renderer == null) return;
             try
             {
@@ -124,6 +134,8 @@ namespace Orbiters.ReFit.Editor
                     : clone.GetComponentInChildren<SkinnedMeshRenderer>(true);
 
                 ConfigureClone(clone, renderer, cloneRenderer);
+                if (bakeScenePoseAsDefault && cloneRenderer != null)
+                    PoseNormalizer.BakeCurrentSkinPoseAsDefault(cloneRenderer, report);
                 clone.transform.SetParent(root.transform, true);
                 PositionClone(clone, cloneRenderer != null ? (Renderer)cloneRenderer : clone.GetComponentInChildren<Renderer>(true));
                 LogSnapshot(label, renderer, clone, cloneRenderer);
@@ -143,11 +155,13 @@ namespace Orbiters.ReFit.Editor
 
         private void ConfigureClone(GameObject clone, SkinnedMeshRenderer sourceRenderer, SkinnedMeshRenderer cloneRenderer)
         {
+            var localPose = CaptureLocalPose(clone);
             foreach (var behaviour in clone.GetComponentsInChildren<Behaviour>(true))
             {
                 try { behaviour.enabled = false; }
                 catch { /* Some editor/third-party behaviours refuse changes. The clone is only diagnostic. */ }
             }
+            RestoreLocalPose(localPose);
 
             var renderers = clone.GetComponentsInChildren<Renderer>(true);
             if (cloneRenderer != null)
@@ -172,6 +186,28 @@ namespace Orbiters.ReFit.Editor
             int count = Mathf.Min(source.sharedMesh.blendShapeCount, clone.sharedMesh.blendShapeCount);
             for (int i = 0; i < count; i++)
                 clone.SetBlendShapeWeight(i, source.GetBlendShapeWeight(i));
+        }
+
+        private static Dictionary<Transform, LocalPose> CaptureLocalPose(GameObject root)
+        {
+            var pose = new Dictionary<Transform, LocalPose>();
+            if (root == null) return pose;
+            foreach (var t in root.GetComponentsInChildren<Transform>(true))
+                pose[t] = new LocalPose(t.localPosition, t.localRotation, t.localScale);
+            return pose;
+        }
+
+        private static void RestoreLocalPose(Dictionary<Transform, LocalPose> pose)
+        {
+            if (pose == null) return;
+            foreach (var entry in pose)
+            {
+                var t = entry.Key;
+                if (t == null) continue;
+                t.localPosition = entry.Value.position;
+                t.localRotation = entry.Value.rotation;
+                t.localScale = entry.Value.scale;
+            }
         }
 
         private void PositionClone(GameObject clone, Renderer focusRenderer)
@@ -278,6 +314,20 @@ namespace Orbiters.ReFit.Editor
         private static string Format(Vector3 value)
         {
             return $"({value.x:0.###}, {value.y:0.###}, {value.z:0.###})";
+        }
+
+        private readonly struct LocalPose
+        {
+            public readonly Vector3 position;
+            public readonly Quaternion rotation;
+            public readonly Vector3 scale;
+
+            public LocalPose(Vector3 position, Quaternion rotation, Vector3 scale)
+            {
+                this.position = position;
+                this.rotation = rotation;
+                this.scale = scale;
+            }
         }
     }
 }

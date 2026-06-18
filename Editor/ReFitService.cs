@@ -45,6 +45,7 @@ namespace Orbiters.ReFit.Editor
 
                 debug = ReFitDebugService.BeginSession(request, result.report);
                 debug?.Capture("00_input_asset", request.assetRenderer);
+                debug?.CaptureScenePoseAsDefault("01_scene_pose_as_default", request.assetRenderer);
 
                 progress?.Invoke(0.96f, "Applying to the scene");
                 result.sceneRenderer = ReFitAssetPipeline.ApplyToScene(request, computation, result.report, debug);
@@ -92,6 +93,7 @@ namespace Orbiters.ReFit.Editor
 
                     debug = ReFitDebugService.BeginSession(request, result.report);
                     debug?.Capture("00_input_asset", request.assetRenderer);
+                    debug?.CaptureScenePoseAsDefault("01_scene_pose_as_default", request.assetRenderer);
 
                     progress?.Invoke(0.97f, "Applying to the scene");
                     result.sceneRenderer = ReFitAssetPipeline.ApplyToScene(request, computation, result.report, debug);

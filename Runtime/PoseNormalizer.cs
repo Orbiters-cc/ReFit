@@ -140,6 +140,7 @@ namespace Orbiters.ReFit
                 {
                     RemoveTargetNestedAssetCopy(request, stage, realAssetRoot, report);
                     RebindExternalBones(request, stage, realAssetRoot, assetClone.transform, report);
+                    BakeCurrentSkinPoseAsDefault(stage.assetRenderer, report);
                 }
             }
 
@@ -167,6 +168,189 @@ namespace Orbiters.ReFit
                 catch { /* some behaviours refuse; harmless */ }
             }
             return clone;
+        }
+
+        /// <summary>
+        /// Converts the renderer's current skinned pose into a temporary mesh rest pose.
+        /// This is used for scene-authored accessory poses, e.g. a T-pose hoodie whose arm bones were rotated
+        /// in the scene to match an A-pose avatar before running ReFit.
+        /// </summary>
+        public static bool BakeCurrentSkinPoseAsDefault(SkinnedMeshRenderer renderer, ReFitReport report = null)
+        {
+            if (renderer == null || renderer.sharedMesh == null)
+            {
+                return false;
+            }
+
+            var sourceMesh = renderer.sharedMesh;
+            var bones = renderer.bones;
+            var bindposes = sourceMesh.bindposes;
+            var weights = sourceMesh.boneWeights;
+            int vertexCount = sourceMesh.vertexCount;
+            if (bones == null || bones.Length == 0 ||
+                bindposes == null || bindposes.Length != bones.Length ||
+                weights == null || weights.Length != vertexCount)
+            {
+                return false;
+            }
+
+            var meshLocalToRendererLocal = new Matrix4x4[bones.Length];
+            var normalLocalToRendererLocal = new Matrix4x4[bones.Length];
+            var rendererWorldToLocal = renderer.transform.worldToLocalMatrix;
+            for (int i = 0; i < bones.Length; i++)
+            {
+                if (bones[i] == null)
+                {
+                    meshLocalToRendererLocal[i] = Matrix4x4.identity;
+                    normalLocalToRendererLocal[i] = Matrix4x4.identity;
+                    continue;
+                }
+
+                var m = rendererWorldToLocal * bones[i].localToWorldMatrix * bindposes[i];
+                meshLocalToRendererLocal[i] = m;
+                normalLocalToRendererLocal[i] = m.inverse.transpose;
+            }
+
+            var bakedMesh = UnityEngine.Object.Instantiate(sourceMesh);
+            bakedMesh.name = sourceMesh.name.Replace("(Clone)", "") + "_ScenePoseDefault";
+
+            var sourceVertices = sourceMesh.vertices;
+            var bakedVertices = new Vector3[vertexCount];
+            for (int i = 0; i < vertexCount; i++)
+                bakedVertices[i] = SkinPoint(sourceVertices[i], weights[i], meshLocalToRendererLocal);
+            bakedMesh.vertices = bakedVertices;
+
+            var sourceNormals = sourceMesh.normals;
+            if (sourceNormals != null && sourceNormals.Length == vertexCount)
+            {
+                var bakedNormals = new Vector3[vertexCount];
+                for (int i = 0; i < vertexCount; i++)
+                    bakedNormals[i] = SkinDirection(sourceNormals[i], weights[i], normalLocalToRendererLocal, true);
+                bakedMesh.normals = bakedNormals;
+            }
+            else
+            {
+                bakedMesh.RecalculateNormals();
+            }
+
+            var sourceTangents = sourceMesh.tangents;
+            if (sourceTangents != null && sourceTangents.Length == vertexCount)
+            {
+                var bakedTangents = new Vector4[vertexCount];
+                for (int i = 0; i < vertexCount; i++)
+                {
+                    var tangent = new Vector3(sourceTangents[i].x, sourceTangents[i].y, sourceTangents[i].z);
+                    tangent = SkinDirection(tangent, weights[i], meshLocalToRendererLocal, true);
+                    bakedTangents[i] = new Vector4(tangent.x, tangent.y, tangent.z, sourceTangents[i].w);
+                }
+                bakedMesh.tangents = bakedTangents;
+            }
+
+            BakeBlendShapesIntoCurrentPose(sourceMesh, bakedMesh, weights, meshLocalToRendererLocal, normalLocalToRendererLocal);
+
+            var currentBindposes = new Matrix4x4[bones.Length];
+            var rendererLocalToWorld = renderer.transform.localToWorldMatrix;
+            for (int i = 0; i < bones.Length; i++)
+                currentBindposes[i] = bones[i] != null
+                    ? bones[i].worldToLocalMatrix * rendererLocalToWorld
+                    : Matrix4x4.identity;
+
+            bakedMesh.bindposes = currentBindposes;
+            bakedMesh.boneWeights = weights;
+            bakedMesh.RecalculateBounds();
+            renderer.sharedMesh = bakedMesh;
+            report?.Info("asset-scene-pose-default",
+                $"Baked the current scene pose of '{renderer.name}' into a temporary mesh rest pose.");
+            return true;
+        }
+
+        private static void BakeBlendShapesIntoCurrentPose(
+            Mesh sourceMesh,
+            Mesh bakedMesh,
+            BoneWeight[] weights,
+            Matrix4x4[] meshLocalToRendererLocal,
+            Matrix4x4[] normalLocalToRendererLocal)
+        {
+            int vertexCount = sourceMesh.vertexCount;
+            int shapeCount = sourceMesh.blendShapeCount;
+            if (shapeCount == 0)
+            {
+                return;
+            }
+
+            bakedMesh.ClearBlendShapes();
+            var sourceDeltaVertices = new Vector3[vertexCount];
+            var sourceDeltaNormals = new Vector3[vertexCount];
+            var sourceDeltaTangents = new Vector3[vertexCount];
+            var bakedDeltaVertices = new Vector3[vertexCount];
+            var bakedDeltaNormals = new Vector3[vertexCount];
+            var bakedDeltaTangents = new Vector3[vertexCount];
+
+            for (int s = 0; s < shapeCount; s++)
+            {
+                string shapeName = sourceMesh.GetBlendShapeName(s);
+                int frameCount = sourceMesh.GetBlendShapeFrameCount(s);
+                for (int f = 0; f < frameCount; f++)
+                {
+                    System.Array.Clear(sourceDeltaVertices, 0, sourceDeltaVertices.Length);
+                    System.Array.Clear(sourceDeltaNormals, 0, sourceDeltaNormals.Length);
+                    System.Array.Clear(sourceDeltaTangents, 0, sourceDeltaTangents.Length);
+                    sourceMesh.GetBlendShapeFrameVertices(s, f, sourceDeltaVertices, sourceDeltaNormals, sourceDeltaTangents);
+
+                    for (int i = 0; i < vertexCount; i++)
+                    {
+                        bakedDeltaVertices[i] = SkinDirection(sourceDeltaVertices[i], weights[i], meshLocalToRendererLocal, false);
+                        bakedDeltaNormals[i] = SkinDirection(sourceDeltaNormals[i], weights[i], normalLocalToRendererLocal, false);
+                        bakedDeltaTangents[i] = SkinDirection(sourceDeltaTangents[i], weights[i], meshLocalToRendererLocal, false);
+                    }
+
+                    bakedMesh.AddBlendShapeFrame(
+                        shapeName,
+                        sourceMesh.GetBlendShapeFrameWeight(s, f),
+                        bakedDeltaVertices,
+                        bakedDeltaNormals,
+                        bakedDeltaTangents);
+                }
+            }
+        }
+
+        private static Vector3 SkinPoint(Vector3 point, BoneWeight weight, Matrix4x4[] matrices)
+        {
+            Vector3 result = Vector3.zero;
+            float total = 0f;
+            AccumulatePoint(ref result, ref total, point, weight.boneIndex0, weight.weight0, matrices);
+            AccumulatePoint(ref result, ref total, point, weight.boneIndex1, weight.weight1, matrices);
+            AccumulatePoint(ref result, ref total, point, weight.boneIndex2, weight.weight2, matrices);
+            AccumulatePoint(ref result, ref total, point, weight.boneIndex3, weight.weight3, matrices);
+            if (total <= 1e-6f) return point;
+            return Mathf.Abs(total - 1f) > 1e-4f ? result / total : result;
+        }
+
+        private static Vector3 SkinDirection(Vector3 direction, BoneWeight weight, Matrix4x4[] matrices, bool normalize)
+        {
+            Vector3 result = Vector3.zero;
+            float total = 0f;
+            AccumulateDirection(ref result, ref total, direction, weight.boneIndex0, weight.weight0, matrices);
+            AccumulateDirection(ref result, ref total, direction, weight.boneIndex1, weight.weight1, matrices);
+            AccumulateDirection(ref result, ref total, direction, weight.boneIndex2, weight.weight2, matrices);
+            AccumulateDirection(ref result, ref total, direction, weight.boneIndex3, weight.weight3, matrices);
+            if (total <= 1e-6f) result = direction;
+            else if (Mathf.Abs(total - 1f) > 1e-4f) result /= total;
+            return normalize && result.sqrMagnitude > 1e-12f ? result.normalized : result;
+        }
+
+        private static void AccumulatePoint(ref Vector3 result, ref float total, Vector3 point, int index, float weight, Matrix4x4[] matrices)
+        {
+            if (weight <= 0f || index < 0 || index >= matrices.Length) return;
+            result += matrices[index].MultiplyPoint3x4(point) * weight;
+            total += weight;
+        }
+
+        private static void AccumulateDirection(ref Vector3 result, ref float total, Vector3 direction, int index, float weight, Matrix4x4[] matrices)
+        {
+            if (weight <= 0f || index < 0 || index >= matrices.Length) return;
+            result += matrices[index].MultiplyVector(direction) * weight;
+            total += weight;
         }
 
         private static void RemoveTargetNestedAssetCopy(ReFitRequest request, NormalizedStage stage,

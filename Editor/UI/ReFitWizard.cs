@@ -581,7 +581,7 @@ namespace Orbiters.ReFit.Editor
             projection.AddToClassList("refit-field");
             projection.RegisterValueChangedCallback(e => ReFitProjectionGizmoService.Enabled = e.newValue);
             content.Add(projection);
-            Help("When enabled with debug mode, ReFit stores source/target projection lines on debug snapshots. Details appear only when hovering a line in the Scene view.");
+            Help("When debug mode is enabled, ReFit stores source/target projection lines on debug snapshots. This toggle only shows or hides them in the Scene view; details appear when hovering a line.");
 
             var flush = new Button(() =>
             {
@@ -597,7 +597,7 @@ namespace Orbiters.ReFit.Editor
         private ReFitRequest BuildRequest()
         {
             var requestSettings = settings.Clone();
-            requestSettings.captureProjectionDebug = ReFitDebugService.Enabled && ReFitProjectionGizmoService.Enabled;
+            requestSettings.captureProjectionDebug = ReFitDebugService.Enabled;
             return new ReFitRequest
             {
                 mode = mode,

@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Reflection;
 using Orbiters.XRayGizmos.Editor;
 using UnityEditor;
 using UnityEngine;
@@ -62,6 +63,12 @@ namespace Orbiters.ReFit.Editor.Tests
                     "MeshAndBlendshape equal body surfaces do not create primary refit drift",
                     MeshAndBlendshape_EqualSurfaces_NoPrimaryDrift_TransfersMuscle);
                 RunCase(failures,
+                    "Scale matching ignores skeleton pose outliers when body surfaces match",
+                    ScaleMatching_EqualBodySurfacesIgnoreSkeletonPoseOutliers);
+                RunCase(failures,
+                    "Active non-target body blendshapes do not affect primary refit",
+                    MeshAndBlendshape_ActiveNonTargetBodyShapes_DoNotAffectPrimaryRefit);
+                RunCase(failures,
                     "Blendshape-only transfer works on target-space clothing and preserves root bone",
                     BlendshapeOnly_TargetSpaceAccessory_TransfersMuscle_PreservesRootBone);
                 RunCase(failures,
@@ -88,6 +95,12 @@ namespace Orbiters.ReFit.Editor.Tests
                 RunCase(failures,
                     "Projection debug captures binding and weight decision data",
                     ProjectionDebug_CapturesBindingAndWeightDecisionData);
+                RunCase(failures,
+                    "Target surface chaining prefers near equivalent hits before normal filtering",
+                    SurfaceBinding_TargetChainPrefersNearEquivalentHitBeforeNormalFilter);
+                RunCase(failures,
+                    "Wizard debug mode captures projection data even when rays are hidden",
+                    ReFitWizard_DebugModeCapturesProjectionDataWhenGizmoHidden);
                 RunCase(failures,
                     "XRay extra gizmo registry exposes external toggles",
                     XRayExtraGizmoRegistry_RegistersAndTogglesExternalGizmo);
@@ -271,6 +284,69 @@ namespace Orbiters.ReFit.Editor.Tests
                         $"Expected no visible primary refit drift when source and target body surfaces are identical. " +
                         $"Max drift was {maxPrimaryDrift * 1000f:0.###} mm.");
 
+                    AssertTransferredMuscleShape(comp.mesh, SingleSecondaryShape(comp));
+                }
+                finally
+                {
+                    DestroyComputationMesh(comp);
+                }
+            }
+        }
+
+        private static void ScaleMatching_EqualBodySurfacesIgnoreSkeletonPoseOutliers()
+        {
+            using (var fixture = ReFitTestFixture.Create())
+            {
+                fixture.target.bones[(int)RigBone.Head].position += new Vector3(0f, 0.55f, 0.05f);
+
+                NewChild(fixture.source.bones[(int)RigBone.LeftUpperArm], "LeftHand").position = new Vector3(-1.35f, 1.25f, 0f);
+                NewChild(fixture.source.bones[(int)RigBone.RightUpperArm], "RightHand").position = new Vector3(1.35f, 1.25f, 0f);
+                NewChild(fixture.target.bones[(int)RigBone.LeftUpperArm], "LeftHand").position = new Vector3(-0.28f, 1.25f, 0.05f);
+                NewChild(fixture.target.bones[(int)RigBone.RightUpperArm], "RightHand").position = new Vector3(0.28f, 1.25f, 0.05f);
+
+                var request = BuildMeshAndBlendshapeRequest(fixture, fixture.sourceSpaceAccessory.renderer, false);
+                var comp = new ReFitEngine().Run(request);
+                try
+                {
+                    AssertComputationSucceeded(comp);
+
+                    float maxPrimaryDrift = MaxBlendShapeMagnitude(comp.mesh, comp.primaryShapeName);
+                    Debug.Log($"[ReFit Tests] Primary refit drift with skeleton scale outliers: {maxPrimaryDrift * 1000f:0.###} mm");
+                    AssertLessOrEqual(maxPrimaryDrift, PrimaryRefitDriftTolerance,
+                        $"Skeleton-only pose/landmark differences must not create visible primary refit drift when the body meshes still overlap. " +
+                        $"Max drift was {maxPrimaryDrift * 1000f:0.###} mm.");
+
+                    AssertReportContains(comp.report, "scale-outlier-ignored",
+                        "Expected ReFit to log that skeleton scale outliers were ignored in favor of the body surface bounds.");
+                }
+                finally
+                {
+                    DestroyComputationMesh(comp);
+                }
+            }
+        }
+
+        private static void MeshAndBlendshape_ActiveNonTargetBodyShapes_DoNotAffectPrimaryRefit()
+        {
+            using (var fixture = ReFitTestFixture.Create())
+            {
+                var mesh = fixture.target.renderer.sharedMesh;
+                var deltas = new Vector3[mesh.vertexCount];
+                for (int i = 0; i < deltas.Length; i++)
+                    deltas[i] = new Vector3(0f, 0f, 0.08f);
+                mesh.AddBlendShapeFrame("ActiveButNotRequested", 100f, deltas, null, null);
+                fixture.target.renderer.SetBlendShapeWeight(mesh.GetBlendShapeIndex("ActiveButNotRequested"), 100f);
+
+                var request = BuildMeshAndBlendshapeRequest(fixture, fixture.sourceSpaceAccessory.renderer, false);
+                var comp = new ReFitEngine().Run(request);
+                try
+                {
+                    AssertComputationSucceeded(comp);
+                    float maxPrimaryDrift = MaxBlendShapeMagnitude(comp.mesh, comp.primaryShapeName);
+                    Debug.Log($"[ReFit Tests] Primary refit drift with active unrelated target shape: {maxPrimaryDrift * 1000f:0.###} mm");
+                    AssertLessOrEqual(maxPrimaryDrift, PrimaryRefitDriftTolerance,
+                        $"Current target body blendshape weights must not leak into the default mesh-to-mesh comparison. " +
+                        $"Max drift was {maxPrimaryDrift * 1000f:0.###} mm.");
                     AssertTransferredMuscleShape(comp.mesh, SingleSecondaryShape(comp));
                 }
                 finally
@@ -568,6 +644,83 @@ namespace Orbiters.ReFit.Editor.Tests
                 {
                     DestroyComputationMesh(comp);
                 }
+            }
+        }
+
+        private static void SurfaceBinding_TargetChainPrefersNearEquivalentHitBeforeNormalFilter()
+        {
+            var body = new MeshSnapshot
+            {
+                worldVertices = new[]
+                {
+                    new Vector3(0f, 0f, 0.001f),
+                    new Vector3(1f, 0f, 0.001f),
+                    new Vector3(0f, 1f, 0.001f),
+                    new Vector3(0f, 0f, 0.06f),
+                    new Vector3(0f, 1f, 0.06f),
+                    new Vector3(1f, 0f, 0.06f)
+                },
+                triangles = new[]
+                {
+                    0, 2, 1, // Near, but opposite the reference normal.
+                    3, 4, 5  // Farther, but matching the reference normal.
+                }
+            };
+            var bvh = SurfaceBvh.Build(body);
+            var hit = SurfaceBindingSolver.BindPoint(
+                new Vector3(0.2f, 0.2f, 0f),
+                body,
+                bvh,
+                0.3f,
+                BodyRegion.Torso,
+                new[] { BodyRegion.Torso, BodyRegion.Torso },
+                Vector3.forward,
+                Mathf.Cos(35f * Mathf.Deg2Rad),
+                true);
+
+            AssertTrue(hit.valid, "Near-equivalent target chain binding did not find any surface.");
+            AssertTrue(hit.triangle == 0,
+                $"Target chain should use the near overlapping surface before normal filtering. It chose triangle {hit.triangle}.");
+            AssertLessOrEqual(hit.distance, 0.01f,
+                $"Near-equivalent target chain hit should stay within the overlap epsilon. Distance was {hit.distance:0.####}m.");
+            AssertTrue(hit.usedRelaxedFallback,
+                "The near-equivalent hit should be marked as relaxed so projection debug shows that the filters were bypassed.");
+        }
+
+        private static void ReFitWizard_DebugModeCapturesProjectionDataWhenGizmoHidden()
+        {
+            bool previousDebug = ReFitDebugService.Enabled;
+            bool previousGizmo = ReFitProjectionGizmoService.Enabled;
+            var window = ScriptableObject.CreateInstance<ReFitWizard>();
+            try
+            {
+                using (var fixture = ReFitTestFixture.Create())
+                {
+                    ReFitDebugService.Enabled = true;
+                    ReFitProjectionGizmoService.Enabled = false;
+
+                    SetPrivateField(window, "mode", ReFitMode.MeshAndBlendshape);
+                    SetPrivateField(window, "asset", fixture.sourceSpaceAccessory.renderer);
+                    SetPrivateField(window, "sourceAvatar", fixture.source.root);
+                    SetPrivateField(window, "targetAvatar", fixture.target.root);
+                    SetPrivateField(window, "blendshape", BodyShapeName);
+                    SetPrivateField(window, "settings", CreateDeterministicSettings(true));
+
+                    var method = typeof(ReFitWizard).GetMethod("BuildRequest",
+                        BindingFlags.Instance | BindingFlags.NonPublic);
+                    AssertTrue(method != null, "Could not reflect ReFitWizard.BuildRequest.");
+
+                    var request = method.Invoke(window, null) as ReFitRequest;
+                    AssertTrue(request != null, "BuildRequest returned null.");
+                    AssertTrue(request.settings.captureProjectionDebug,
+                        "Debug mode should capture projection data even when the Scene view projection rays are hidden.");
+                }
+            }
+            finally
+            {
+                ReFitDebugService.Enabled = previousDebug;
+                ReFitProjectionGizmoService.Enabled = previousGizmo;
+                Object.DestroyImmediate(window);
             }
         }
 
@@ -1184,6 +1337,25 @@ namespace Orbiters.ReFit.Editor.Tests
         {
             if (!(actual <= expectedMaximum))
                 throw new Exception($"{message} Expected <= {expectedMaximum:0.####}, got {actual:0.####}.");
+        }
+
+        private static void AssertReportContains(ReFitReport report, string code, string message)
+        {
+            if (report != null)
+            {
+                foreach (var entry in report.messages)
+                    if (entry != null && entry.code == code)
+                        return;
+            }
+
+            throw new Exception(message + "\n" + FormatReport(report));
+        }
+
+        private static void SetPrivateField(object target, string fieldName, object value)
+        {
+            var field = target.GetType().GetField(fieldName, BindingFlags.Instance | BindingFlags.NonPublic);
+            AssertTrue(field != null, $"Could not reflect field '{fieldName}' on '{target.GetType().Name}'.");
+            field.SetValue(target, value);
         }
 
         private static float MatrixMaxAbsDelta(Matrix4x4 a, Matrix4x4 b)

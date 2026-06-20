@@ -40,6 +40,10 @@ namespace Orbiters.ReFit
         public Dictionary<Transform, Transform> assetBoneToSource = new Dictionary<Transform, Transform>();
         /// <summary>Uniform scale applied to the source side so it matches the target size.</summary>
         public float appliedScale = 1f;
+        /// <summary>True when the source clone was actually driven through a humanoid neutral pose.</summary>
+        public bool sourceNeutralPoseApplied;
+        /// <summary>True when the target clone was actually driven through a humanoid neutral pose.</summary>
+        public bool targetNeutralPoseApplied;
         /// <summary>The real object the asset paths are relative to (asset hierarchy root, or the avatar carrying it).</summary>
         public GameObject realAssetObject;
         /// <summary>Child-index path of the asset renderer inside <see cref="realAssetObject"/>.</summary>
@@ -84,8 +88,7 @@ namespace Orbiters.ReFit
                     ? stage.sourceHumanMap
                     : HumanoidBoneMapper.GetHumanoidMap(stage.targetRoot, report, stage.targetExcludedAssetRoot);
 
-                ApplyNeutralPose(stage.sourceRoot, report);
-                if (!stage.sourceIsTarget) ApplyNeutralPose(stage.targetRoot, report);
+                ApplyNeutralPosePair(stage, report);
 
                 if (!stage.sourceIsTarget) ScaleAndAlign(stage, report);
 
@@ -504,16 +507,46 @@ namespace Orbiters.ReFit
         // Posing
         // ------------------------------------------------------------------
 
-        /// <summary>Drives a staged avatar into the muscle-neutral humanoid pose, facing identity rotation.</summary>
-        private static void ApplyNeutralPose(GameObject cloneRoot, ReFitReport report)
+        private static void ApplyNeutralPosePair(NormalizedStage stage, ReFitReport report)
         {
-            var animator = HumanoidBoneMapper.FindHumanoidAnimator(cloneRoot);
-            if (animator == null)
+            if (stage == null || stage.sourceRoot == null) return;
+
+            var sourceAnimator = HumanoidBoneMapper.FindHumanoidAnimator(stage.sourceRoot);
+            var targetAnimator = !stage.sourceIsTarget && stage.targetRoot != null
+                ? HumanoidBoneMapper.FindHumanoidAnimator(stage.targetRoot)
+                : sourceAnimator;
+
+            if (stage.sourceIsTarget)
             {
-                report.Warn("no-neutral-pose",
-                    $"'{cloneRoot.name}' is not a humanoid avatar; assuming it is already posed consistently with the other model.");
+                stage.sourceNeutralPoseApplied = ApplyNeutralPose(stage.sourceRoot, sourceAnimator, report);
+                stage.targetNeutralPoseApplied = stage.sourceNeutralPoseApplied;
                 return;
             }
+
+            if (sourceAnimator != null && targetAnimator != null)
+            {
+                stage.sourceNeutralPoseApplied = ApplyNeutralPose(stage.sourceRoot, sourceAnimator, report);
+                stage.targetNeutralPoseApplied = ApplyNeutralPose(stage.targetRoot, targetAnimator, report);
+                return;
+            }
+
+            if (sourceAnimator == null)
+                ReportNoNeutralPose(stage.sourceRoot, report);
+            if (targetAnimator == null)
+                ReportNoNeutralPose(stage.targetRoot, report);
+
+            if (sourceAnimator != targetAnimator)
+            {
+                report.Warn("neutral-pose-skipped-asymmetric",
+                    "Only one side has a humanoid Animator, so ReFit left both staged avatars in their current/imported pose. " +
+                    "Applying a neutral humanoid pose to only one side changes the comparison frame and can create false refit deltas.");
+            }
+        }
+
+        /// <summary>Drives a staged avatar into the muscle-neutral humanoid pose, facing identity rotation.</summary>
+        private static bool ApplyNeutralPose(GameObject cloneRoot, Animator animator, ReFitReport report)
+        {
+            if (cloneRoot == null || animator == null) return false;
 
             try
             {
@@ -525,11 +558,20 @@ namespace Orbiters.ReFit
                 pose.bodyRotation = Quaternion.identity;
                 handler.SetHumanPose(ref pose);
                 handler.Dispose();
+                return true;
             }
             catch (Exception e)
             {
                 report.Warn("neutral-pose-failed", $"Could not apply the neutral pose to '{cloneRoot.name}': {e.Message}");
+                return false;
             }
+        }
+
+        private static void ReportNoNeutralPose(GameObject cloneRoot, ReFitReport report)
+        {
+            if (cloneRoot == null) return;
+            report.Warn("no-neutral-pose",
+                $"'{cloneRoot.name}' is not a humanoid avatar; assuming it is already posed consistently with the other model.");
         }
 
         // ------------------------------------------------------------------
@@ -538,23 +580,13 @@ namespace Orbiters.ReFit
 
         private static void ScaleAndAlign(NormalizedStage stage, ReFitReport report)
         {
-            // 1) Scale: prefer humanoid landmarks, fall back to the body meshes' world height so that
-            //    non-humanoid rigs (and FBX imported at a different unit scale) are still matched.
-            float ms = Measure(stage.sourceHumanMap);
-            float mt = Measure(stage.targetHumanMap);
-            bool usedBounds = false;
-            if (ms <= 1e-5f || mt <= 1e-5f)
-            {
-                var sb = BakedWorldBounds(stage.sourceBody);
-                var tb = BakedWorldBounds(stage.targetBody);
-                ms = sb.HasValue ? sb.Value.size.y : -1f;
-                mt = tb.HasValue ? tb.Value.size.y : -1f;
-                usedBounds = true;
-            }
+            var sourceBounds = BakedWorldBounds(stage.sourceBody);
+            var targetBounds = BakedWorldBounds(stage.targetBody);
+            var measure = SelectScaleMeasure(stage, sourceBounds, targetBounds, report);
 
-            if (ms > 1e-5f && mt > 1e-5f)
+            if (measure.valid)
             {
-                stage.appliedScale = mt / ms;
+                stage.appliedScale = measure.target / measure.source;
                 if (Mathf.Abs(stage.appliedScale - 1f) > 1e-3f)
                 {
                     stage.sourceRoot.transform.localScale *= stage.appliedScale;
@@ -563,8 +595,7 @@ namespace Orbiters.ReFit
                     if (stage.assetStageRoot != null && !stage.assetInTargetSpace)
                         stage.assetStageRoot.localScale *= stage.appliedScale;
                     report.Info("scale-matched",
-                        $"Scaled the source side by x{stage.appliedScale:0.###} to match the target size" +
-                        (usedBounds ? " (measured from the body meshes)." : "."));
+                        $"Scaled the source side by x{stage.appliedScale:0.###} to match the target size (measured from {measure.label}).");
                 }
             }
             else
@@ -572,29 +603,109 @@ namespace Orbiters.ReFit
                 report.Warn("scale-unmeasured", "Could not measure either avatar; skipping scale matching.");
             }
 
-            // 2) Alignment: prefer hips, fall back to the body meshes' centers (recomputed after scaling).
-            if (stage.sourceHumanMap.TryGetValue(HumanBodyBones.Hips, out var srcHips) && srcHips != null &&
-                stage.targetHumanMap.TryGetValue(HumanBodyBones.Hips, out var tgtHips) && tgtHips != null)
+            // 2) Alignment: body surfaces are the comparison reference. Use skeleton hips only when mesh
+            //    centers cannot be measured.
+            sourceBounds = BakedWorldBounds(stage.sourceBody);
+            targetBounds = BakedWorldBounds(stage.targetBody);
+            if (sourceBounds.HasValue && targetBounds.HasValue)
+            {
+                stage.sourceRoot.transform.position += targetBounds.Value.center - sourceBounds.Value.center;
+            }
+            else if (stage.sourceHumanMap.TryGetValue(HumanBodyBones.Hips, out var srcHips) && srcHips != null &&
+                     stage.targetHumanMap.TryGetValue(HumanBodyBones.Hips, out var tgtHips) && tgtHips != null)
             {
                 stage.sourceRoot.transform.position += tgtHips.position - srcHips.position;
             }
-            else
-            {
-                var sb = BakedWorldBounds(stage.sourceBody);
-                var tb = BakedWorldBounds(stage.targetBody);
-                if (sb.HasValue && tb.HasValue)
-                    stage.sourceRoot.transform.position += tb.Value.center - sb.Value.center;
-            }
         }
 
-        /// <summary>Characteristic length usable on both maps: armspan first, hips-to-head second.</summary>
-        private static float Measure(Dictionary<HumanBodyBones, Transform> map)
+        private static ScaleMeasure SelectScaleMeasure(
+            NormalizedStage stage,
+            Bounds? sourceBounds,
+            Bounds? targetBounds,
+            ReFitReport report)
         {
-            if (TryGet(map, HumanBodyBones.LeftHand, out var lh) && TryGet(map, HumanBodyBones.RightHand, out var rh))
-                return Vector3.Distance(lh.position, rh.position);
+            var bounds = MakeScaleMeasure(
+                sourceBounds.HasValue ? sourceBounds.Value.size.y : -1f,
+                targetBounds.HasValue ? targetBounds.Value.size.y : -1f,
+                "body mesh bounds");
+            var torso = MakeScaleMeasure(
+                MeasureTorso(stage.sourceHumanMap),
+                MeasureTorso(stage.targetHumanMap),
+                "hips/head landmarks");
+            var armspan = MakeScaleMeasure(
+                MeasureArmspan(stage.sourceHumanMap),
+                MeasureArmspan(stage.targetHumanMap),
+                "hand-span landmarks");
+
+            if (bounds.valid)
+            {
+                WarnAboutRejectedScaleOutlier(bounds, torso, report);
+                WarnAboutRejectedScaleOutlier(bounds, armspan, report);
+                return bounds;
+            }
+
+            if (torso.valid)
+            {
+                WarnAboutRejectedScaleOutlier(torso, armspan, report);
+                return torso;
+            }
+
+            if (armspan.valid)
+            {
+                if (!stage.sourceNeutralPoseApplied || !stage.targetNeutralPoseApplied)
+                    report.Warn("scale-armspan-unposed",
+                        "Using hand-span scale as a last resort even though both avatars were not neutral-posed. " +
+                        "This can be wrong when one rig is in A-pose and the other is in T-pose.");
+                return armspan;
+            }
+
+            return new ScaleMeasure();
+        }
+
+        private static ScaleMeasure MakeScaleMeasure(float source, float target, string label)
+        {
+            return new ScaleMeasure
+            {
+                valid = source > 1e-5f && target > 1e-5f,
+                source = source,
+                target = target,
+                label = label
+            };
+        }
+
+        private static void WarnAboutRejectedScaleOutlier(ScaleMeasure selected, ScaleMeasure rejected, ReFitReport report)
+        {
+            if (!selected.valid || !rejected.valid) return;
+
+            float selectedScale = selected.target / selected.source;
+            float rejectedScale = rejected.target / rejected.source;
+            float disagreement = Mathf.Abs((rejectedScale / Mathf.Max(selectedScale, 1e-5f)) - 1f);
+            if (disagreement <= 0.15f) return;
+
+            report.Info("scale-outlier-ignored",
+                $"Ignoring {rejected.label} scale x{rejectedScale:0.###} because {selected.label} scale x{selectedScale:0.###} is the active surface reference.");
+        }
+
+        private static float MeasureTorso(Dictionary<HumanBodyBones, Transform> map)
+        {
             if (TryGet(map, HumanBodyBones.Hips, out var hips) && TryGet(map, HumanBodyBones.Head, out var head))
                 return Vector3.Distance(hips.position, head.position);
             return -1f;
+        }
+
+        private static float MeasureArmspan(Dictionary<HumanBodyBones, Transform> map)
+        {
+            if (TryGet(map, HumanBodyBones.LeftHand, out var lh) && TryGet(map, HumanBodyBones.RightHand, out var rh))
+                return Vector3.Distance(lh.position, rh.position);
+            return -1f;
+        }
+
+        private struct ScaleMeasure
+        {
+            public bool valid;
+            public float source;
+            public float target;
+            public string label;
         }
 
         /// <summary>World-space AABB of a skinned renderer in its current pose, baked deterministically.</summary>
@@ -602,8 +713,10 @@ namespace Orbiters.ReFit
         {
             if (smr == null || smr.sharedMesh == null) return null;
             var baked = new Mesh();
+            var weights = CaptureBlendShapeWeights(smr);
             try
             {
+                SetAllBlendShapeWeights(smr, 0f);
                 smr.BakeMesh(baked);
                 var verts = baked.vertices;
                 if (verts.Length == 0) return null;
@@ -622,8 +735,35 @@ namespace Orbiters.ReFit
             }
             finally
             {
+                RestoreBlendShapeWeights(smr, weights);
                 UnityEngine.Object.DestroyImmediate(baked);
             }
+        }
+
+        private static float[] CaptureBlendShapeWeights(SkinnedMeshRenderer smr)
+        {
+            if (smr == null || smr.sharedMesh == null || smr.sharedMesh.blendShapeCount == 0)
+                return Array.Empty<float>();
+
+            var weights = new float[smr.sharedMesh.blendShapeCount];
+            for (int i = 0; i < weights.Length; i++)
+                weights[i] = smr.GetBlendShapeWeight(i);
+            return weights;
+        }
+
+        private static void SetAllBlendShapeWeights(SkinnedMeshRenderer smr, float weight)
+        {
+            if (smr == null || smr.sharedMesh == null) return;
+            for (int i = 0; i < smr.sharedMesh.blendShapeCount; i++)
+                smr.SetBlendShapeWeight(i, weight);
+        }
+
+        private static void RestoreBlendShapeWeights(SkinnedMeshRenderer smr, float[] weights)
+        {
+            if (smr == null || smr.sharedMesh == null || weights == null) return;
+            int count = Mathf.Min(weights.Length, smr.sharedMesh.blendShapeCount);
+            for (int i = 0; i < count; i++)
+                smr.SetBlendShapeWeight(i, weights[i]);
         }
 
         private static bool TryGet(Dictionary<HumanBodyBones, Transform> map, HumanBodyBones b, out Transform t)

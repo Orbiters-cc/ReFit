@@ -208,7 +208,6 @@ namespace Orbiters.ReFit
 
                 // Resolve requested blendshapes
                 var requestedNames = RequestedShapeNames(request);
-                var basisOverride = new Dictionary<int, float>();
                 foreach (var name in requestedNames)
                 {
                     int idx = stage.targetBody.sharedMesh.GetBlendShapeIndex(name);
@@ -224,7 +223,6 @@ namespace Orbiters.ReFit
                         shapeIndex = idx,
                         mirrorWeight = stage.targetBody.GetBlendShapeWeight(idx)
                     });
-                    basisOverride[idx] = 0f;
                 }
                 if (request.mode != ReFitMode.MeshToMesh && state.shapes.Count == 0)
                 {
@@ -236,11 +234,13 @@ namespace Orbiters.ReFit
                 // Snapshots
                 progress?.Invoke(0.08f, "Capturing meshes");
                 state.asset = MeshSnapshot.Capture(stage.assetRenderer, true, null, report);
-                state.targetBasis = MeshSnapshot.Capture(stage.targetBody, false, basisOverride.Count > 0 ? basisOverride : null, report);
+                state.targetBasis = MeshSnapshot.Capture(stage.targetBody, false,
+                    BuildZeroBlendShapeOverrides(stage.targetBody), report);
                 if (state.wantMesh)
                     state.sourceBody = stage.sourceBody == stage.targetBody
                         ? state.targetBasis
-                        : MeshSnapshot.Capture(stage.sourceBody, false, null, report);
+                        : MeshSnapshot.Capture(stage.sourceBody, false,
+                            BuildZeroBlendShapeOverrides(stage.sourceBody), report);
 
                 // Per-shape mesh-local frame deltas (main thread: Mesh API)
                 int vertexCount = state.targetBasis.localVertices.Length;
@@ -295,6 +295,18 @@ namespace Orbiters.ReFit
                 names.Add(request.targetBlendshape);
             }
             return names;
+        }
+
+        private static Dictionary<int, float> BuildZeroBlendShapeOverrides(SkinnedMeshRenderer renderer)
+        {
+            var mesh = renderer != null ? renderer.sharedMesh : null;
+            if (mesh == null || mesh.blendShapeCount == 0)
+                return null;
+
+            var overrides = new Dictionary<int, float>(mesh.blendShapeCount);
+            for (int i = 0; i < mesh.blendShapeCount; i++)
+                overrides[i] = 0f;
+            return overrides;
         }
 
         private static bool ValidateRequest(ReFitRequest request, ReFitReport report)

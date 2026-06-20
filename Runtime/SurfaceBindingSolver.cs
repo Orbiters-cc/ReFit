@@ -32,6 +32,8 @@ namespace Orbiters.ReFit
     /// </summary>
     public static class SurfaceBindingSolver
     {
+        private const float NearEquivalentSurfaceEpsilon = 0.01f;
+
         /// <summary>
         /// Binds every welding group of <paramref name="asset"/> to the surface of <paramref name="body"/>.
         /// <paramref name="assetGroupRegions"/> / <paramref name="bodyTriRegions"/> may be null to skip region filtering.
@@ -94,6 +96,23 @@ namespace Orbiters.ReFit
             BodyRegion region, BodyRegion[] bodyTriRegions, Vector3 referenceNormal, float cosMaxAngle, bool useNormal)
         {
             bool useRegion = bodyTriRegions != null && region != BodyRegion.Unknown;
+            var nearEquivalent = bvh.ClosestPoint(point, Mathf.Min(maxDistance, NearEquivalentSurfaceEpsilon), null);
+            if (nearEquivalent.found)
+            {
+                return new SurfaceBinding
+                {
+                    valid = true,
+                    triangle = nearEquivalent.triangle,
+                    bary = nearEquivalent.bary,
+                    point = nearEquivalent.position,
+                    distance = nearEquivalent.distance,
+                    requestedRegion = region,
+                    hitRegion = TriangleRegion(nearEquivalent.triangle, bodyTriRegions),
+                    usedRelaxedFallback = useNormal || useRegion,
+                    normalDot = Vector3.Dot(referenceNormal, body.FaceNormal(nearEquivalent.triangle))
+                };
+            }
+
             var hit = ClosestPointWithFallback(
                 point, body, bvh, maxDistance, region, bodyTriRegions, referenceNormal, cosMaxAngle, useNormal, useRegion,
                 out bool usedRelaxedFallback);

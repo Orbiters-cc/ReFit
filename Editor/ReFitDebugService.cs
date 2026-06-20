@@ -251,6 +251,7 @@ namespace Orbiters.ReFit.Editor
             Log("debug-request",
                 $"mode={request.mode}, asset='{NameOf(request.assetRenderer)}', source='{NameOf(request.sourceAvatar)}', target='{NameOf(request.targetAvatar)}', " +
                 $"targetShape='{request.targetBlendshape}', replaceArmature={BoolSetting(settings, s => s.replaceArmature)}, transferWeights={BoolSetting(settings, s => s.transferWeights)}, " +
+                $"captureProjectionDebug={BoolSetting(settings, s => s.captureProjectionDebug)}, " +
                 $"maxProjectionDistance={FloatSetting(settings, s => s.maxProjectionDistance)}, falloffStartDistance={FloatSetting(settings, s => s.falloffStartDistance)}.");
         }
 

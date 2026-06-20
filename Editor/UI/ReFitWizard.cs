@@ -577,6 +577,12 @@ namespace Orbiters.ReFit.Editor
             content.Add(debug);
             Help("When enabled, ReFit logs diagnostics and creates scene copies of the asset after each apply step.");
 
+            var projection = new Toggle("Projection gizmos") { value = ReFitProjectionGizmoService.Enabled };
+            projection.AddToClassList("refit-field");
+            projection.RegisterValueChangedCallback(e => ReFitProjectionGizmoService.Enabled = e.newValue);
+            content.Add(projection);
+            Help("When enabled with debug mode, ReFit stores source/target projection lines on debug snapshots. Details appear only when hovering a line in the Scene view.");
+
             var flush = new Button(() =>
             {
                 var removed = ReFitDebugService.FlushSceneDebugObjects();
@@ -590,6 +596,8 @@ namespace Orbiters.ReFit.Editor
 
         private ReFitRequest BuildRequest()
         {
+            var requestSettings = settings.Clone();
+            requestSettings.captureProjectionDebug = ReFitDebugService.Enabled && ReFitProjectionGizmoService.Enabled;
             return new ReFitRequest
             {
                 mode = mode,
@@ -597,7 +605,7 @@ namespace Orbiters.ReFit.Editor
                 sourceAvatar = mode == ReFitMode.Blendshape ? null : sourceAvatar,
                 targetAvatar = targetAvatar,
                 targetBlendshape = mode == ReFitMode.MeshToMesh ? null : blendshape,
-                settings = settings
+                settings = requestSettings
             };
         }
 

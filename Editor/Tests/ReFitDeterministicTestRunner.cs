@@ -70,8 +70,17 @@ namespace Orbiters.ReFit.Editor.Tests
                     "Armature replacement removes stale accessory skeleton",
                     MeshAndBlendshape_ArmatureReplacement_RemovesStaleAccessorySkeleton);
                 RunCase(failures,
+                    "Armature replacement adds target-derived non-deforming leaf helpers",
+                    ArmatureReplacement_TargetChildCreatesLeafTailHelper);
+                RunCase(failures,
                     "Armature replacement materializes child-first bone plans without hierarchy drift",
                     ArmatureReplacement_ChildFirstPlan_MaterializesWithoutDrift);
+                RunCase(failures,
+                    "Weight transfer preserves mapped original weights when projections cross regions",
+                    WeightTransfer_PreservesMappedOriginalWeightsWhenProjectionCrossesRegions);
+                RunCase(failures,
+                    "Projection debug captures binding and weight decision data",
+                    ProjectionDebug_CapturesBindingAndWeightDecisionData);
                 RunCase(failures,
                     "Armature replacement cleans rerun target-space stale skeleton",
                     ArmatureReplacement_RerunTargetSpace_RemovesUnusedLocalSkeleton);
@@ -346,6 +355,144 @@ namespace Orbiters.ReFit.Editor.Tests
                         "The rebuilt clothing armature included a target-only lower leg bone that has no clothing equivalent.");
                     AssertTrue(oldAccessoryHips == null && oldAccessoryChest == null,
                         "The stale source-space accessory skeleton was left in the scene after armature replacement.");
+                }
+                finally
+                {
+                    DestroyComputationMesh(comp);
+                }
+            }
+        }
+
+        private static void ArmatureReplacement_TargetChildCreatesLeafTailHelper()
+        {
+            using (var fixture = ReFitTestFixture.Create())
+            {
+                var targetUpperArm = fixture.target.bones[(int)RigBone.LeftUpperArm];
+                var targetLowerArm = NewChild(targetUpperArm, "LeftLowerArm");
+                targetLowerArm.position = targetUpperArm.position + new Vector3(-0.32f, -0.04f, 0.02f);
+
+                var request = BuildMeshAndBlendshapeRequest(fixture, fixture.sourceSpaceAccessory.renderer, true);
+                var comp = new ReFitEngine().Run(request);
+                try
+                {
+                    AssertComputationSucceeded(comp);
+                    AssertTrue(comp.leafTailHints != null && comp.leafTailHints.Length > 0,
+                        "The computation did not record any leaf-tail hints.");
+
+                    var applied = ReFitAssetPipeline.ApplyToScene(request, comp, comp.report);
+                    AssertTrue(applied != null, "ApplyToScene returned no renderer.");
+                    AssertTrue(!RendererHasBone(applied, "LeftLowerArm"),
+                        "The target-only lower arm was inserted as a deforming renderer bone instead of a helper child.");
+
+                    var rebuiltUpperArm = FindRendererBone(applied, "LeftUpperArm");
+                    AssertTrue(rebuiltUpperArm != null, "Could not find rebuilt LeftUpperArm renderer bone.");
+                    var helper = FindDirectChildStartingWith(rebuiltUpperArm, "__ReFitLeafTail_LeftLowerArm");
+                    AssertTrue(helper != null,
+                        $"Rebuilt LeftUpperArm did not receive a target-derived non-deforming tail helper. Children: {ChildNames(rebuiltUpperArm)}");
+                    AssertTrue(Array.IndexOf(applied.bones, helper) < 0,
+                        "The leaf-tail helper must not be part of SkinnedMeshRenderer.bones.");
+
+                    float expected = Vector3.Distance(targetUpperArm.position, targetLowerArm.position);
+                    float actual = Vector3.Distance(rebuiltUpperArm.position, helper.position);
+                    AssertLessOrEqual(Mathf.Abs(actual - expected), 0.01f,
+                        $"Leaf-tail helper length should match the target child length. Expected {expected:0.###}m, got {actual:0.###}m.");
+                }
+                finally
+                {
+                    DestroyComputationMesh(comp);
+                }
+            }
+        }
+
+        private static void WeightTransfer_PreservesMappedOriginalWeightsWhenProjectionCrossesRegions()
+        {
+            var asset = new MeshSnapshot
+            {
+                localVertices = new[] { Vector3.zero, Vector3.right, Vector3.up },
+                groupRep = new[] { 0, 1, 2 },
+                groupOfVertex = new[] { 0, 1, 2 },
+                boneWeights = new[]
+                {
+                    MakeWeight(0, 1f),
+                    MakeWeight(0, 1f),
+                    MakeWeight(2, 1f)
+                },
+                rigid = false
+            };
+            var body = new MeshSnapshot
+            {
+                triangles = new[] { 0, 1, 2 },
+                boneWeights = new[]
+                {
+                    MakeWeight(3, 1f), // bad arm -> leg projection
+                    MakeWeight(1, 1f), // compatible arm transition
+                    MakeWeight(4, 1f)  // left/right leg transition is allowed
+                },
+                rigid = false
+            };
+            var bindings = new[]
+            {
+                Binding(new Vector3(1f, 0f, 0f), BodyRegion.LeftLeg),
+                Binding(new Vector3(0f, 1f, 0f), BodyRegion.LeftArm),
+                Binding(new Vector3(0f, 0f, 1f), BodyRegion.RightLeg)
+            };
+            var boneRegions = new[]
+            {
+                BodyRegion.Unknown,
+                BodyRegion.Unknown,
+                BodyRegion.Unknown,
+                BodyRegion.Unknown,
+                BodyRegion.Unknown
+            };
+
+            var weights = WeightTransfer.Transfer(asset, body, bindings,
+                new[] { 3, 1, 4, 3, 4 },
+                new[] { 0, 1, 2, 3, 4 },
+                new[] { false, false, false, false, false },
+                boneRegions, new[] { BodyRegion.LeftArm, BodyRegion.LeftArm, BodyRegion.LeftLeg },
+                new ReFitSettings { keepExtraBoneVertices = false },
+                new ReFitReport(), out var debug);
+
+            AssertGreater(WeightOf(weights[0], 0), 0.99f,
+                "An arm vertex accepted an incompatible leg projection instead of preserving the mapped original arm weight.");
+            AssertTrue(debug.decisionsByVertex[0] == ReFitWeightDecision.Original,
+                $"Expected incompatible arm/leg projection to use Original, got {debug.decisionsByVertex[0]}.");
+
+            AssertGreater(WeightOf(weights[1], 0), 0.6f,
+                "Compatible arm projection should keep a comparable share of the original mapped arm weight.");
+            AssertGreater(WeightOf(weights[1], 1), 0.15f,
+                "Compatible arm projection should still contribute target arm weight.");
+            AssertTrue(debug.decisionsByVertex[1] == ReFitWeightDecision.Blended,
+                $"Expected compatible arm projection to be blended, got {debug.decisionsByVertex[1]}.");
+
+            AssertGreater(WeightOf(weights[2], 4), 0.15f,
+                "Left/right leg projection should be allowed as a transition instead of hard-rejected.");
+            AssertTrue(debug.decisionsByVertex[2] == ReFitWeightDecision.Blended,
+                $"Expected left/right leg projection to be blended, got {debug.decisionsByVertex[2]}.");
+        }
+
+        private static void ProjectionDebug_CapturesBindingAndWeightDecisionData()
+        {
+            using (var fixture = ReFitTestFixture.Create())
+            {
+                var request = BuildMeshAndBlendshapeRequest(fixture, fixture.sourceSpaceAccessory.renderer, true);
+                request.settings.transferWeights = true;
+                request.settings.captureProjectionDebug = true;
+                var comp = new ReFitEngine().Run(request);
+                try
+                {
+                    AssertComputationSucceeded(comp);
+                    AssertTrue(comp.projectionDebug != null && comp.projectionDebug.points != null &&
+                               comp.projectionDebug.points.Length > 0,
+                        "Projection debug data was not captured.");
+
+                    var point = comp.projectionDebug.points[0];
+                    AssertTrue(point.sourceTriangle >= 0 || !point.sourceValid,
+                        "Projection debug did not store a valid source triangle or invalid-source marker.");
+                    AssertTrue(point.weightDecision != ReFitWeightDecision.None,
+                        "Projection debug did not store a weight-transfer decision.");
+                    AssertTrue(!string.IsNullOrEmpty(point.finalWeights),
+                        "Projection debug did not store final weight details.");
                 }
                 finally
                 {
@@ -810,6 +957,52 @@ namespace Orbiters.ReFit.Editor.Tests
                 if (bones[i] != null && string.Equals(bones[i].name, boneName, StringComparison.OrdinalIgnoreCase))
                     return true;
             return false;
+        }
+
+        private static Transform FindRendererBone(SkinnedMeshRenderer renderer, string boneName)
+        {
+            var bones = renderer.bones;
+            if (bones == null) return null;
+            for (int i = 0; i < bones.Length; i++)
+                if (bones[i] != null && string.Equals(bones[i].name, boneName, StringComparison.OrdinalIgnoreCase))
+                    return bones[i];
+            return null;
+        }
+
+        private static Transform FindDirectChildStartingWith(Transform parent, string prefix)
+        {
+            if (parent == null) return null;
+            for (int i = 0; i < parent.childCount; i++)
+            {
+                var child = parent.GetChild(i);
+                if (child.name.StartsWith(prefix, StringComparison.Ordinal))
+                    return child;
+            }
+            return null;
+        }
+
+        private static string ChildNames(Transform parent)
+        {
+            if (parent == null) return "<null>";
+            var names = new List<string>();
+            for (int i = 0; i < parent.childCount; i++)
+                names.Add(parent.GetChild(i).name);
+            return names.Count > 0 ? string.Join(", ", names.ToArray()) : "<none>";
+        }
+
+        private static SurfaceBinding Binding(Vector3 bary, BodyRegion hitRegion)
+        {
+            return new SurfaceBinding
+            {
+                valid = true,
+                triangle = 0,
+                bary = bary,
+                point = Vector3.zero,
+                distance = 0f,
+                requestedRegion = hitRegion,
+                hitRegion = hitRegion,
+                normalDot = 1f
+            };
         }
 
         private static void AssertRootBoneInRendererBones(SkinnedMeshRenderer renderer, string label)

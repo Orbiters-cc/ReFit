@@ -95,17 +95,18 @@ namespace Orbiters.ReFit.Editor
             get { return root; }
         }
 
-        public void Capture(string label, SkinnedMeshRenderer renderer)
+        public void Capture(string label, SkinnedMeshRenderer renderer, ReFitProjectionDebugData projectionDebug = null)
         {
-            Capture(label, renderer, false);
+            Capture(label, renderer, false, projectionDebug);
         }
 
         public void CaptureScenePoseAsDefault(string label, SkinnedMeshRenderer renderer)
         {
-            Capture(label, renderer, true);
+            Capture(label, renderer, true, null);
         }
 
-        private void Capture(string label, SkinnedMeshRenderer renderer, bool bakeScenePoseAsDefault)
+        private void Capture(string label, SkinnedMeshRenderer renderer, bool bakeScenePoseAsDefault,
+            ReFitProjectionDebugData projectionDebug)
         {
             if (renderer == null) return;
             try
@@ -136,6 +137,7 @@ namespace Orbiters.ReFit.Editor
                 ConfigureClone(clone, renderer, cloneRenderer);
                 if (bakeScenePoseAsDefault && cloneRenderer != null)
                     PoseNormalizer.BakeCurrentSkinPoseAsDefault(cloneRenderer, report);
+                AttachProjectionDebug(cloneRenderer, projectionDebug);
                 clone.transform.SetParent(root.transform, true);
                 PositionClone(clone, cloneRenderer != null ? (Renderer)cloneRenderer : clone.GetComponentInChildren<Renderer>(true));
                 LogSnapshot(label, renderer, clone, cloneRenderer);
@@ -146,6 +148,18 @@ namespace Orbiters.ReFit.Editor
                 Log("debug-snapshot-failed", $"Could not create debug snapshot '{label}': {e.Message}");
                 Debug.LogException(e);
             }
+        }
+
+        private static void AttachProjectionDebug(SkinnedMeshRenderer cloneRenderer, ReFitProjectionDebugData projectionDebug)
+        {
+            if (cloneRenderer == null || projectionDebug == null || projectionDebug.points == null ||
+                projectionDebug.points.Length == 0)
+                return;
+
+            var component = cloneRenderer.gameObject.AddComponent<ReFitProjectionDebugComponent>();
+            component.targetRenderer = cloneRenderer;
+            component.data = projectionDebug;
+            component.visible = true;
         }
 
         public void Finish()

@@ -168,12 +168,14 @@ namespace Orbiters.ReFit
             public int[] bodyBoneToNew;
             public int[] assetBoneToNew;
             public bool[] assetBoneIsExtra;
+            public BodyRegion[] newBoneRegions;
             public bool transferWeights;
 
             // background outputs
             public Vector3[] primaryLocalDeltas;
             public Vector3[] primaryNormalDeltas;
             public BoneWeight[] newWeights;
+            public ReFitWeightTransferDebugInfo weightDebug;
 
             // background progress
             public volatile string backgroundLabel = "Computing...";
@@ -266,8 +268,10 @@ namespace Orbiters.ReFit
                 if (state.replace)
                 {
                     progress?.Invoke(0.2f, "Resolving the target armature");
-                    state.replace = BuildBonePlan(stage, state.asset, state.targetBasis, state.comp, report,
-                        out state.newBindposes, out state.bodyBoneToNew, out state.assetBoneToNew, out state.assetBoneIsExtra);
+                    state.replace = BuildBonePlan(stage, state.asset, state.targetBasis, state.comp,
+                        sourceRegions, targetRegions, report,
+                        out state.newBindposes, out state.bodyBoneToNew, out state.assetBoneToNew,
+                        out state.assetBoneIsExtra, out state.newBoneRegions);
                     if (!state.replace)
                         report.Warn("armature-replace-skipped", "Could not build the target bone plan; keeping the asset's original armature.");
                 }
@@ -437,9 +441,13 @@ namespace Orbiters.ReFit
                 SetBackgroundProgress(state, 0.9f, "Transferring skin weights");
                 state.newWeights = state.transferWeights
                     ? WeightTransfer.Transfer(asset, targetBasis, targetBindings, state.bodyBoneToNew,
-                        state.assetBoneToNew, state.assetBoneIsExtra, settings, state.Report)
+                        state.assetBoneToNew, state.assetBoneIsExtra, state.newBoneRegions, state.assetGroupRegions,
+                        settings, state.Report, out state.weightDebug)
                     : RemapAllOriginal(asset, state.assetBoneToNew);
             }
+
+            if (settings.captureProjectionDebug)
+                state.comp.projectionDebug = BuildProjectionDebugData(state, bindings, targetBindings, falloff);
 
             SetBackgroundProgress(state, 1f, "Finishing");
         }
@@ -448,6 +456,101 @@ namespace Orbiters.ReFit
         {
             state.backgroundProgress = t;
             state.backgroundLabel = label;
+        }
+
+        private static ReFitProjectionDebugData BuildProjectionDebugData(
+            State state, SurfaceBinding[] sourceBindings, SurfaceBinding[] targetBindings, float[] falloff)
+        {
+            var asset = state.asset;
+            if (asset == null || sourceBindings == null || targetBindings == null || falloff == null)
+                return null;
+
+            int groupCount = Mathf.Min(asset.GroupCount, Mathf.Min(sourceBindings.Length, targetBindings.Length));
+            int max = state.settings.maxProjectionDebugGroups;
+            int captureCount = max > 0 ? Mathf.Min(max, groupCount) : groupCount;
+            var points = new ReFitProjectionDebugPoint[captureCount];
+            var weightDebug = state.weightDebug;
+
+            for (int g = 0; g < captureCount; g++)
+            {
+                int vertex = asset.groupRep[g];
+                var source = sourceBindings[g];
+                var target = targetBindings[g];
+                var point = new ReFitProjectionDebugPoint
+                {
+                    groupIndex = g,
+                    vertexIndex = vertex,
+                    assetLocalPoint = asset.localVertices[vertex],
+                    sourceHitLocalPoint = source.valid
+                        ? asset.rendererWorldToLocal.MultiplyPoint3x4(source.point)
+                        : asset.localVertices[vertex],
+                    targetHitLocalPoint = target.valid
+                        ? asset.rendererWorldToLocal.MultiplyPoint3x4(target.point)
+                        : asset.localVertices[vertex],
+                    sourceTriangle = source.triangle,
+                    targetTriangle = target.triangle,
+                    sourceBarycentric = source.bary,
+                    targetBarycentric = target.bary,
+                    sourceDistance = source.distance,
+                    targetDistance = target.distance,
+                    falloff = falloff[g],
+                    normalDot = target.valid ? target.normalDot : source.normalDot,
+                    assetRegion = state.assetGroupRegions != null && g < state.assetGroupRegions.Length
+                        ? state.assetGroupRegions[g]
+                        : BodyRegion.Unknown,
+                    sourceHitRegion = source.hitRegion,
+                    targetHitRegion = target.hitRegion,
+                    sourceUsedRelaxedFallback = source.usedRelaxedFallback,
+                    targetUsedRelaxedFallback = target.usedRelaxedFallback,
+                    sourceValid = source.valid,
+                    targetValid = target.valid
+                };
+
+                if (weightDebug != null)
+                {
+                    if (weightDebug.decisionsByVertex != null && vertex < weightDebug.decisionsByVertex.Length)
+                        point.weightDecision = weightDebug.decisionsByVertex[vertex];
+                    if (weightDebug.projectedByGroup != null && g < weightDebug.projectedByGroup.Length &&
+                        weightDebug.projectedValidByGroup != null && g < weightDebug.projectedValidByGroup.Length &&
+                        weightDebug.projectedValidByGroup[g])
+                        point.projectedWeights = FormatWeights(weightDebug.projectedByGroup[g], state.comp.bones);
+                    if (weightDebug.originalByVertex != null && vertex < weightDebug.originalByVertex.Length &&
+                        weightDebug.originalValidByVertex != null && vertex < weightDebug.originalValidByVertex.Length &&
+                        weightDebug.originalValidByVertex[vertex])
+                        point.originalWeights = FormatWeights(weightDebug.originalByVertex[vertex], state.comp.bones);
+                    if (weightDebug.finalByVertex != null && vertex < weightDebug.finalByVertex.Length)
+                        point.finalWeights = FormatWeights(weightDebug.finalByVertex[vertex], state.comp.bones);
+                }
+
+                if (!source.valid || !target.valid)
+                    point.note = "unbound";
+                else if (source.usedRelaxedFallback || target.usedRelaxedFallback)
+                    point.note = "relaxed fallback";
+
+                points[g] = point;
+            }
+
+            return new ReFitProjectionDebugData { points = points };
+        }
+
+        private static string FormatWeights(BoneWeight weight, ReFitBoneRef[] bones)
+        {
+            var sb = new System.Text.StringBuilder(96);
+            AppendWeight(sb, weight.boneIndex0, weight.weight0, bones);
+            AppendWeight(sb, weight.boneIndex1, weight.weight1, bones);
+            AppendWeight(sb, weight.boneIndex2, weight.weight2, bones);
+            AppendWeight(sb, weight.boneIndex3, weight.weight3, bones);
+            return sb.Length > 0 ? sb.ToString() : "-";
+        }
+
+        private static void AppendWeight(System.Text.StringBuilder sb, int index, float weight, ReFitBoneRef[] bones)
+        {
+            if (weight <= 0.0001f || index < 0) return;
+            if (sb.Length > 0) sb.Append(", ");
+            string name = index < (bones != null ? bones.Length : 0) && bones[index] != null && !string.IsNullOrEmpty(bones[index].name)
+                ? bones[index].name
+                : ("bone" + index);
+            sb.Append(name).Append('=').Append((weight * 100f).ToString("0.#")).Append('%');
         }
 
         /// <summary>Converts per-group world deltas into per-vertex mesh-space blendshape deltas.</summary>
@@ -603,13 +706,16 @@ namespace Orbiters.ReFit
         // ------------------------------------------------------------------
 
         private static bool BuildBonePlan(NormalizedStage stage, MeshSnapshot asset, MeshSnapshot targetBody,
-            ReFitComputation comp, ReFitReport report,
-            out Matrix4x4[] bindposes, out int[] bodyBoneToNewOut, out int[] assetBoneToNewOut, out bool[] assetBoneIsExtraOut)
+            ReFitComputation comp, Dictionary<Transform, BodyRegion> sourceRegions,
+            Dictionary<Transform, BodyRegion> targetRegions, ReFitReport report,
+            out Matrix4x4[] bindposes, out int[] bodyBoneToNewOut, out int[] assetBoneToNewOut,
+            out bool[] assetBoneIsExtraOut, out BodyRegion[] newBoneRegionsOut)
         {
             bindposes = null;
             bodyBoneToNewOut = null;
             assetBoneToNewOut = null;
             assetBoneIsExtraOut = null;
+            newBoneRegionsOut = null;
 
             var targetRoot = stage.targetRoot.transform;
             var targetNameIndex = HumanoidBoneMapper.BuildNameIndex(targetRoot, stage.targetExcludedAssetRoot);
@@ -618,8 +724,14 @@ namespace Orbiters.ReFit
 
             var stageBones = new List<Transform>();
             var refs = new List<ReFitBoneRef>();
+            var newBoneRegions = new List<BodyRegion>();
             var indexOf = new Dictionary<Transform, int>();
             var keptSet = new HashSet<Transform>();
+            var originalAssetBonesByNew = new Dictionary<int, List<Transform>>();
+            var assetBoneSet = new HashSet<Transform>();
+            if (asset.bones != null)
+                foreach (var bone in asset.bones)
+                    if (bone != null) assetBoneSet.Add(bone);
 
             int AddTargetBone(Transform t)
             {
@@ -628,7 +740,20 @@ namespace Orbiters.ReFit
                 stageBones.Add(t);
                 indexOf[t] = idx;
                 refs.Add(new ReFitBoneRef { origin = ReFitBoneOrigin.Target, name = t.name, path = ReFitUtility.IndexPath(t, targetRoot) });
+                newBoneRegions.Add(RegionOf(t, targetRegions));
                 return idx;
+            }
+
+            void AddOriginalAssetBone(int newIndex, Transform assetBone)
+            {
+                if (newIndex < 0 || assetBone == null) return;
+                if (!originalAssetBonesByNew.TryGetValue(newIndex, out var list))
+                {
+                    list = new List<Transform>();
+                    originalAssetBonesByNew[newIndex] = list;
+                }
+                if (!list.Contains(assetBone))
+                    list.Add(assetBone);
             }
 
             // Reverse human map of the source (bone transform -> human bone) for chain resolution.
@@ -746,18 +871,27 @@ namespace Orbiters.ReFit
                 if (target != null)
                 {
                     assetBoneToNew[k] = AddTargetBone(target);
+                    AddOriginalAssetBone(assetBoneToNew[k], bone);
                     mappedCount++;
                 }
                 else
                 {
-                    if (indexOf.TryGetValue(bone, out int existing)) { assetBoneToNew[k] = existing; assetBoneIsExtra[k] = true; continue; }
+                    if (indexOf.TryGetValue(bone, out int existing))
+                    {
+                        assetBoneToNew[k] = existing;
+                        assetBoneIsExtra[k] = true;
+                        AddOriginalAssetBone(existing, bone);
+                        continue;
+                    }
                     int idx = stageBones.Count;
                     stageBones.Add(bone);
                     indexOf[bone] = idx;
                     refs.Add(new ReFitBoneRef { origin = keptOrigin, name = bone.name, path = ReFitUtility.IndexPath(bone, keptOriginRoot) });
+                    newBoneRegions.Add(RegionOfKeptBone(bone, stage, sourceRegions));
                     keptSet.Add(bone);
                     assetBoneToNew[k] = idx;
                     assetBoneIsExtra[k] = true;
+                    AddOriginalAssetBone(idx, bone);
                     keptCount++;
                 }
             }
@@ -824,10 +958,234 @@ namespace Orbiters.ReFit
 
             comp.bones = refs.ToArray();
             comp.keptPlacements = placements.ToArray();
+            comp.leafTailHints = BuildLeafTailHints(stageBones, originalAssetBonesByNew, assetBoneSet);
             bodyBoneToNewOut = bodyBoneToNew;
             assetBoneToNewOut = assetBoneToNew;
             assetBoneIsExtraOut = assetBoneIsExtra;
+            newBoneRegionsOut = newBoneRegions.ToArray();
             return true;
+        }
+
+        private static BodyRegion RegionOf(Transform bone, Dictionary<Transform, BodyRegion> regions)
+        {
+            if (bone != null && regions != null && regions.TryGetValue(bone, out var region))
+                return region;
+            return BodyRegion.Unknown;
+        }
+
+        private static BodyRegion RegionOfKeptBone(Transform bone, NormalizedStage stage,
+            Dictionary<Transform, BodyRegion> sourceRegions)
+        {
+            if (bone == null) return BodyRegion.Unknown;
+            if (stage.assetOnSourceAvatar)
+                return RegionOf(bone, sourceRegions);
+            if (stage.assetBoneToSource != null && stage.assetBoneToSource.TryGetValue(bone, out var source) && source != null)
+                return RegionOf(source, sourceRegions);
+            return BodyRegion.Unknown;
+        }
+
+        private static ReFitLeafTailHint[] BuildLeafTailHints(List<Transform> stageBones,
+            Dictionary<int, List<Transform>> originalAssetBonesByNew, HashSet<Transform> assetBoneSet)
+        {
+            if (stageBones == null || stageBones.Count == 0) return Array.Empty<ReFitLeafTailHint>();
+
+            var represented = new HashSet<Transform>();
+            foreach (var bone in stageBones)
+                if (bone != null) represented.Add(bone);
+
+            var hints = new List<ReFitLeafTailHint>();
+            for (int i = 0; i < stageBones.Count; i++)
+            {
+                var bone = stageBones[i];
+                if (bone == null || HasRepresentedDescendant(bone, represented)) continue;
+
+                if (TryTargetTailHint(i, bone, represented, out var hint) ||
+                    TryOriginalTailHint(i, bone, originalAssetBonesByNew, assetBoneSet, out hint))
+                    hints.Add(hint);
+            }
+
+            return hints.ToArray();
+        }
+
+        private static bool HasRepresentedDescendant(Transform bone, HashSet<Transform> represented)
+        {
+            if (bone == null || represented == null) return false;
+            var queue = new Queue<Transform>();
+            for (int i = 0; i < bone.childCount; i++)
+                queue.Enqueue(bone.GetChild(i));
+
+            while (queue.Count > 0)
+            {
+                var child = queue.Dequeue();
+                if (child != null && represented.Contains(child))
+                    return true;
+                if (child == null) continue;
+                for (int i = 0; i < child.childCount; i++)
+                    queue.Enqueue(child.GetChild(i));
+            }
+            return false;
+        }
+
+        private static bool TryTargetTailHint(int boneIndex, Transform targetBone, HashSet<Transform> represented,
+            out ReFitLeafTailHint hint)
+        {
+            hint = null;
+            if (targetBone == null) return false;
+            var tail = FindPreferredTailChild(targetBone, represented);
+            if (tail == null) return false;
+            var local = targetBone.InverseTransformPoint(tail.position);
+            if (local.sqrMagnitude < 1e-8f) return false;
+            hint = new ReFitLeafTailHint
+            {
+                boneIndex = boneIndex,
+                name = "__ReFitLeafTail_" + SafeObjectName(tail.name),
+                localPosition = local,
+                source = "target:" + tail.name
+            };
+            return true;
+        }
+
+        private static bool TryOriginalTailHint(int boneIndex, Transform finalBoneFrame,
+            Dictionary<int, List<Transform>> originalAssetBonesByNew, HashSet<Transform> assetBoneSet,
+            out ReFitLeafTailHint hint)
+        {
+            hint = null;
+            if (finalBoneFrame == null || originalAssetBonesByNew == null ||
+                !originalAssetBonesByNew.TryGetValue(boneIndex, out var originals))
+                return false;
+
+            foreach (var original in originals)
+            {
+                if (original == null) continue;
+                var child = FindPreferredTailChild(original, assetBoneSet);
+                if (child == null) continue;
+                var local = finalBoneFrame.InverseTransformPoint(child.position);
+                if (local.sqrMagnitude < 1e-8f) continue;
+                hint = new ReFitLeafTailHint
+                {
+                    boneIndex = boneIndex,
+                    name = "__ReFitLeafTail_" + SafeObjectName(child.name),
+                    localPosition = local,
+                    source = "asset-child:" + child.name
+                };
+                return true;
+            }
+
+            foreach (var original in originals)
+            {
+                if (original == null || original.parent == null) continue;
+                var direction = original.position - original.parent.position;
+                float parentLength = direction.magnitude;
+                if (parentLength <= 1e-5f) continue;
+                var inferred = original.position + direction.normalized * Mathf.Clamp(parentLength * 0.45f, 0.025f, 0.2f);
+                var local = finalBoneFrame.InverseTransformPoint(inferred);
+                if (local.sqrMagnitude < 1e-8f) continue;
+                hint = new ReFitLeafTailHint
+                {
+                    boneIndex = boneIndex,
+                    name = "__ReFitLeafTail_Inferred",
+                    localPosition = local,
+                    source = "asset-inferred:" + original.name
+                };
+                return true;
+            }
+
+            return false;
+        }
+
+        private static Transform FindPreferredTailChild(Transform bone, HashSet<Transform> excluded)
+        {
+            if (bone == null) return null;
+            HumanoidBoneMapper.TryInferHumanoidBone(bone, out var boneHuman);
+            Transform bestExpected = null;
+            int bestExpectedScore = int.MinValue;
+
+            var queue = new Queue<(Transform transform, int depth)>();
+            for (int i = 0; i < bone.childCount; i++)
+                queue.Enqueue((bone.GetChild(i), 1));
+
+            while (queue.Count > 0)
+            {
+                var entry = queue.Dequeue();
+                var child = entry.transform;
+                if (child == null) continue;
+                if (!IsExcludedTailCandidate(child, excluded))
+                {
+                    int score = TailChildScore(boneHuman, bone.position, child, entry.depth);
+                    if (score > bestExpectedScore)
+                    {
+                        bestExpected = child;
+                        bestExpectedScore = score;
+                    }
+                }
+
+                if (entry.depth < 4)
+                    for (int i = 0; i < child.childCount; i++)
+                        queue.Enqueue((child.GetChild(i), entry.depth + 1));
+            }
+
+            if (bestExpected != null && bestExpectedScore >= 1000)
+                return bestExpected;
+
+            Transform bestDirect = null;
+            float bestDistance = 0f;
+            for (int i = 0; i < bone.childCount; i++)
+            {
+                var child = bone.GetChild(i);
+                if (IsExcludedTailCandidate(child, excluded)) continue;
+                float distance = Vector3.Distance(bone.position, child.position);
+                if (distance > bestDistance)
+                {
+                    bestDistance = distance;
+                    bestDirect = child;
+                }
+            }
+
+            return bestDirect ?? bestExpected;
+        }
+
+        private static int TailChildScore(HumanBodyBones parentHuman, Vector3 parentPosition, Transform child, int depth)
+        {
+            int score = Mathf.Max(0, 50 - depth);
+            if (HumanoidBoneMapper.TryInferHumanoidBone(child, out var childHuman) &&
+                IsExpectedLeafChild(parentHuman, childHuman))
+                score += 2000;
+            score += Mathf.RoundToInt(Vector3.Distance(parentPosition, child.position) * 100f);
+            return score;
+        }
+
+        private static bool IsExpectedLeafChild(HumanBodyBones parent, HumanBodyBones child)
+        {
+            switch (parent)
+            {
+                case HumanBodyBones.LeftLowerArm: return child == HumanBodyBones.LeftHand;
+                case HumanBodyBones.RightLowerArm: return child == HumanBodyBones.RightHand;
+                case HumanBodyBones.LeftUpperArm: return child == HumanBodyBones.LeftLowerArm || child == HumanBodyBones.LeftHand;
+                case HumanBodyBones.RightUpperArm: return child == HumanBodyBones.RightLowerArm || child == HumanBodyBones.RightHand;
+                case HumanBodyBones.LeftLowerLeg: return child == HumanBodyBones.LeftFoot;
+                case HumanBodyBones.RightLowerLeg: return child == HumanBodyBones.RightFoot;
+                case HumanBodyBones.LeftUpperLeg: return child == HumanBodyBones.LeftLowerLeg || child == HumanBodyBones.LeftFoot;
+                case HumanBodyBones.RightUpperLeg: return child == HumanBodyBones.RightLowerLeg || child == HumanBodyBones.RightFoot;
+                case HumanBodyBones.LeftFoot: return child == HumanBodyBones.LeftToes;
+                case HumanBodyBones.RightFoot: return child == HumanBodyBones.RightToes;
+                case HumanBodyBones.Neck: return child == HumanBodyBones.Head;
+                case HumanBodyBones.Chest:
+                case HumanBodyBones.UpperChest: return child == HumanBodyBones.Neck || child == HumanBodyBones.Head;
+                default: return false;
+            }
+        }
+
+        private static bool IsExcludedTailCandidate(Transform candidate, HashSet<Transform> excluded)
+        {
+            return candidate == null || (excluded != null && excluded.Contains(candidate));
+        }
+
+        private static string SafeObjectName(string value)
+        {
+            if (string.IsNullOrEmpty(value)) return "Tail";
+            foreach (var c in System.IO.Path.GetInvalidFileNameChars())
+                value = value.Replace(c, '_');
+            return value.Replace('/', '_').Replace('\\', '_');
         }
 
         private static int[] BuildBodyBoneRemap(Transform[] bodyBones, Dictionary<Transform, int> represented,

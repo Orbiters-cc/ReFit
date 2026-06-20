@@ -73,7 +73,7 @@ namespace Orbiters.ReFit.Editor
             Undo.RecordObject(renderer, "ReFit");
             comp.appliedOriginalMesh = renderer.sharedMesh;
             renderer.sharedMesh = comp.mesh;
-            debug?.Capture("02_generated_mesh_assigned", renderer);
+            debug?.Capture("02_generated_mesh_assigned", renderer, comp.projectionDebug);
 
             // --- armature replacement ------------------------------------------------------
             bool armatureApplied = false;
@@ -120,7 +120,7 @@ namespace Orbiters.ReFit.Editor
                 if (hadSecondaryShape)
                     debug?.Capture("05_transferred_blendshapes_enabled", renderer);
             }
-            debug?.Capture("06_final_result", renderer);
+            debug?.Capture("06_final_result", renderer, comp.projectionDebug);
 
             Selection.activeGameObject = renderer.gameObject;
             EditorGUIUtility.PingObject(renderer.gameObject);
@@ -270,6 +270,7 @@ namespace Orbiters.ReFit.Editor
             }
             // Mesh space changed (staged-pose bindposes): the authored local bounds are no longer reliable.
             renderer.updateWhenOffscreen = true;
+            CreateLeafTailHelpers(comp, bones, report);
             RefreshMeshBindposes(renderer, bones, report);
             ValidateMaterializedArmature(sourceBones, bones, renderer, report);
             RemoveTransientDebugObjects(assetInstanceRoot, report);
@@ -279,6 +280,34 @@ namespace Orbiters.ReFit.Editor
             ValidateFinalArmatureHierarchy(assetInstanceRoot, renderer, newArmatureRoot, bones, report);
             report.Info("armature-rebuilt", $"Built a new clothing armature with {bones.Length - missing}/{bones.Length} resolved bone(s).");
             return missing == 0;
+        }
+
+        private static void CreateLeafTailHelpers(ReFitComputation comp, Transform[] bones, ReFitReport report)
+        {
+            if (comp?.leafTailHints == null || bones == null) return;
+
+            int created = 0;
+            foreach (var hint in comp.leafTailHints)
+            {
+                if (hint == null || hint.boneIndex < 0 || hint.boneIndex >= bones.Length) continue;
+                var parent = bones[hint.boneIndex];
+                if (parent == null || hint.localPosition.sqrMagnitude < 1e-8f) continue;
+                var existing = parent.Find(hint.name);
+                if (existing != null)
+                    Undo.DestroyObjectImmediate(existing.gameObject);
+
+                var helper = new GameObject(string.IsNullOrEmpty(hint.name) ? "__ReFitLeafTail" : hint.name).transform;
+                Undo.RegisterCreatedObjectUndo(helper.gameObject, "ReFit leaf tail helper");
+                helper.SetParent(parent, false);
+                helper.localPosition = hint.localPosition;
+                helper.localRotation = Quaternion.identity;
+                helper.localScale = Vector3.one;
+                created++;
+            }
+
+            if (created > 0)
+                report.Info("leaf-tail-helpers-created",
+                    $"Created {created} non-deforming leaf-tail helper(s) under rebuilt clothing bones.");
         }
 
         private static Transform[] ResolveBoneBlueprints(ReFitRequest request, ReFitComputation comp,

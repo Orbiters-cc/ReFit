@@ -66,6 +66,10 @@ namespace Orbiters.ReFit
         public bool savePrefab = true;
         /// <summary>Normalized landmark mismatch above which a proportion warning is emitted (never blocks).</summary>
         public float proportionWarningThreshold = 0.05f;
+        /// <summary>Capture per-projection diagnostics for editor debug gizmos. Intended for debug runs only.</summary>
+        public bool captureProjectionDebug = false;
+        /// <summary>Maximum number of projection groups captured for debug visualization. 0 or less captures all groups.</summary>
+        public int maxProjectionDebugGroups = 5000;
 
         /// <summary>Creates a deep copy of these settings.</summary>
         public ReFitSettings Clone() => (ReFitSettings)MemberwiseClone();
@@ -182,6 +186,76 @@ namespace Orbiters.ReFit
         public Vector3 localScale;
     }
 
+    /// <summary>Non-deforming tail helper for a rebuilt leaf bone, stored local to the rebuilt bone.</summary>
+    [Serializable]
+    public class ReFitLeafTailHint
+    {
+        public int boneIndex = -1;
+        public string name;
+        public Vector3 localPosition;
+        public string source;
+    }
+
+    /// <summary>How a vertex/group skin weight was selected during armature replacement.</summary>
+    public enum ReFitWeightDecision
+    {
+        None,
+        Projected,
+        Original,
+        Blended,
+        ExtraPreserved,
+        Fallback
+    }
+
+    /// <summary>Debug outputs from weight transfer, aligned to asset groups / vertices.</summary>
+    public class ReFitWeightTransferDebugInfo
+    {
+        public BoneWeight[] projectedByGroup;
+        public bool[] projectedValidByGroup;
+        public BoneWeight[] originalByVertex;
+        public bool[] originalValidByVertex;
+        public BoneWeight[] finalByVertex;
+        public ReFitWeightDecision[] decisionsByVertex;
+    }
+
+    /// <summary>Per-group projection and weight-transfer diagnostics for debug scene gizmos.</summary>
+    [Serializable]
+    public class ReFitProjectionDebugData
+    {
+        public ReFitProjectionDebugPoint[] points;
+    }
+
+    /// <summary>One projection diagnostic line, stored in renderer-local coordinates for debug snapshots.</summary>
+    [Serializable]
+    public class ReFitProjectionDebugPoint
+    {
+        public int groupIndex;
+        public int vertexIndex;
+        public Vector3 assetLocalPoint;
+        public Vector3 sourceHitLocalPoint;
+        public Vector3 targetHitLocalPoint;
+        public int sourceTriangle = -1;
+        public int targetTriangle = -1;
+        public Vector3 sourceBarycentric;
+        public Vector3 targetBarycentric;
+        public float sourceDistance;
+        public float targetDistance;
+        public float falloff;
+        public float normalDot;
+        public BodyRegion assetRegion = BodyRegion.Unknown;
+        public BodyRegion sourceHitRegion = BodyRegion.Unknown;
+        public BodyRegion targetHitRegion = BodyRegion.Unknown;
+        public bool sourceUsedRelaxedFallback;
+        public bool targetUsedRelaxedFallback;
+        public bool sourceValid;
+        public bool targetValid;
+        public ReFitWeightDecision weightDecision = ReFitWeightDecision.None;
+        public string projectedWeights;
+        public string originalWeights;
+        public string finalWeights;
+        public string note;
+    }
+
     /// <summary>
     /// Pure result of the geometry computation (no assets saved, no scene modified).
     /// The editor layer (<c>ReFitAssetPipeline</c>) turns this into saved assets and scene changes.
@@ -206,6 +280,10 @@ namespace Orbiters.ReFit
         public ReFitBoneRef[] bones;
         /// <summary>Kept bone subtree roots that must be (re)attached under target bones.</summary>
         public ReFitKeptBonePlacement[] keptPlacements;
+        /// <summary>Non-deforming leaf-tail helpers to create under rebuilt leaf bones for debug/armature visualization.</summary>
+        public ReFitLeafTailHint[] leafTailHints;
+        /// <summary>Optional per-projection diagnostics captured for editor debug gizmos.</summary>
+        public ReFitProjectionDebugData projectionDebug;
         /// <summary>Index into <see cref="bones"/> to use as the renderer root bone, -1 if unavailable.</summary>
         public int rootBoneIndex = -1;
         /// <summary>Child-index path of the asset renderer inside the asset root hierarchy.</summary>

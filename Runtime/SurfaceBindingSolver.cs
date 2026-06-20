@@ -14,6 +14,14 @@ namespace Orbiters.ReFit
         public Vector3 point;
         /// <summary>World-space distance from the asset vertex to the bound point.</summary>
         public float distance;
+        /// <summary>Region requested by the caller for this binding.</summary>
+        public BodyRegion requestedRegion;
+        /// <summary>Region of the triangle that was finally hit, when known.</summary>
+        public BodyRegion hitRegion;
+        /// <summary>True when the filtered query found nothing and the solver retried without filters.</summary>
+        public bool usedRelaxedFallback;
+        /// <summary>Normal agreement between the query normal and the hit triangle normal.</summary>
+        public float normalDot;
     }
 
     /// <summary>
@@ -59,10 +67,12 @@ namespace Orbiters.ReFit
                 }
 
                 var hit = bvh.ClosestPoint(p, queryRange, filter);
+                bool usedRelaxedFallback = false;
                 if (!hit.found && filter != null)
                 {
                     // Nothing acceptable nearby; relax the filters rather than leaving a hole.
                     hit = bvh.ClosestPoint(p, queryRange, null);
+                    usedRelaxedFallback = hit.found;
                 }
 
                 if (hit.found)
@@ -73,7 +83,11 @@ namespace Orbiters.ReFit
                         triangle = hit.triangle,
                         bary = hit.bary,
                         point = hit.position,
-                        distance = hit.distance
+                        distance = hit.distance,
+                        requestedRegion = region,
+                        hitRegion = TriangleRegion(hit.triangle, bodyTriRegions),
+                        usedRelaxedFallback = usedRelaxedFallback,
+                        normalDot = Vector3.Dot(n, body.FaceNormal(hit.triangle))
                     };
                 }
                 else
@@ -106,15 +120,31 @@ namespace Orbiters.ReFit
                 };
             }
             var hit = bvh.ClosestPoint(point, maxDistance, filter);
-            if (!hit.found && filter != null) hit = bvh.ClosestPoint(point, maxDistance, null);
+            bool usedRelaxedFallback = false;
+            if (!hit.found && filter != null)
+            {
+                hit = bvh.ClosestPoint(point, maxDistance, null);
+                usedRelaxedFallback = hit.found;
+            }
             return new SurfaceBinding
             {
                 valid = hit.found,
                 triangle = hit.triangle,
                 bary = hit.bary,
                 point = hit.position,
-                distance = hit.distance
+                distance = hit.distance,
+                requestedRegion = region,
+                hitRegion = TriangleRegion(hit.triangle, bodyTriRegions),
+                usedRelaxedFallback = usedRelaxedFallback,
+                normalDot = hit.found ? Vector3.Dot(referenceNormal, body.FaceNormal(hit.triangle)) : 0f
             };
+        }
+
+        private static BodyRegion TriangleRegion(int triangle, BodyRegion[] bodyTriRegions)
+        {
+            if (bodyTriRegions == null || triangle < 0 || triangle >= bodyTriRegions.Length)
+                return BodyRegion.Unknown;
+            return bodyTriRegions[triangle];
         }
     }
 

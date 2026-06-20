@@ -28,14 +28,23 @@ namespace Orbiters.ReFit
     [Serializable]
     public class ReFitSettings
     {
+        public const int DefaultPrimarySmoothingIterations = 3;
+        public const float DefaultPrimarySmoothingStrength = 0.6f;
+        public const int DefaultTransferredBlendshapeSmoothingIterations = 0;
+        public const float DefaultTransferredBlendshapeSmoothingStrength = 0f;
+
         /// <summary>Asset vertices farther than this from the body surface are not deformed at all.</summary>
         public float maxProjectionDistance = 0.25f;
         /// <summary>Asset vertices closer than this to the body surface get the full deformation; between this and <see cref="maxProjectionDistance"/> the deformation fades out smoothly.</summary>
         public float falloffStartDistance = 0.06f;
-        /// <summary>Laplacian smoothing iterations applied to the computed deformation field.</summary>
-        public int smoothingIterations = 3;
-        /// <summary>Strength of each smoothing iteration (0..1).</summary>
-        [Range(0f, 1f)] public float smoothingStrength = 0.6f;
+        /// <summary>Laplacian smoothing iterations applied to the primary mesh-to-mesh deformation field.</summary>
+        public int primarySmoothingIterations = DefaultPrimarySmoothingIterations;
+        /// <summary>Strength of each primary mesh-to-mesh smoothing iteration (0..1).</summary>
+        [Range(0f, 1f)] public float primarySmoothingStrength = DefaultPrimarySmoothingStrength;
+        /// <summary>Laplacian smoothing iterations applied to transferred body blendshape deformation fields.</summary>
+        public int transferredBlendshapeSmoothingIterations = DefaultTransferredBlendshapeSmoothingIterations;
+        /// <summary>Strength of each transferred blendshape smoothing iteration (0..1).</summary>
+        [Range(0f, 1f)] public float transferredBlendshapeSmoothingStrength = DefaultTransferredBlendshapeSmoothingStrength;
         /// <summary>Reject body surface candidates whose normal disagrees with the asset vertex normal by more than <see cref="maxNormalAngle"/> degrees.</summary>
         public bool filterByNormal = true;
         /// <summary>Maximum angle (degrees) between asset vertex normal and body face normal for a binding to be accepted.</summary>

@@ -118,6 +118,7 @@ namespace Orbiters.ReFit.Editor
 
             content = new ScrollView(ScrollViewMode.Vertical);
             content.AddToClassList("refit-scroll");
+            content.horizontalScrollerVisibility = ScrollerVisibility.Hidden;
             body.Add(content);
             body.Add(CreateFooterCredit());
 
@@ -527,13 +528,25 @@ namespace Orbiters.ReFit.Editor
             falloff.RegisterValueChangedCallback(e => settings.falloffStartDistance = Mathf.Max(0f, e.newValue));
             parent.Add(falloff);
 
-            var iters = new SliderInt("Smoothing iterations", 0, 10) { value = settings.smoothingIterations, showInputField = true };
-            iters.RegisterValueChangedCallback(e => settings.smoothingIterations = e.newValue);
-            parent.Add(iters);
+            AddIntFieldWithReset(parent, "Primary refit smoothing iterations", 0, 10,
+                settings.primarySmoothingIterations,
+                ReFitSettings.DefaultPrimarySmoothingIterations,
+                value => settings.primarySmoothingIterations = value);
 
-            var strength = new Slider("Smoothing strength", 0f, 1f) { value = settings.smoothingStrength, showInputField = true };
-            strength.RegisterValueChangedCallback(e => settings.smoothingStrength = e.newValue);
-            parent.Add(strength);
+            AddFloatFieldWithReset(parent, "Primary refit smoothing strength", 0f, 1f,
+                settings.primarySmoothingStrength,
+                ReFitSettings.DefaultPrimarySmoothingStrength,
+                value => settings.primarySmoothingStrength = value);
+
+            AddIntFieldWithReset(parent, "Transferred blendshape smoothing iterations", 0, 10,
+                settings.transferredBlendshapeSmoothingIterations,
+                ReFitSettings.DefaultTransferredBlendshapeSmoothingIterations,
+                value => settings.transferredBlendshapeSmoothingIterations = value);
+
+            AddFloatFieldWithReset(parent, "Transferred blendshape smoothing strength", 0f, 1f,
+                settings.transferredBlendshapeSmoothingStrength,
+                ReFitSettings.DefaultTransferredBlendshapeSmoothingStrength,
+                value => settings.transferredBlendshapeSmoothingStrength = value);
 
             var offset = new EnumField("Offset mode", settings.offsetMode);
             offset.RegisterValueChangedCallback(e => settings.offsetMode = (OffsetMode)e.newValue);
@@ -567,9 +580,128 @@ namespace Orbiters.ReFit.Editor
             parent.Add(normals);
         }
 
+        private static void AddIntFieldWithReset(VisualElement parent, string label, int min, int max,
+            int currentValue, int defaultValue, Action<int> apply)
+        {
+            var row = CreateResetFieldRow();
+
+            var field = new IntegerField(label) { value = Mathf.Clamp(currentValue, min, max) };
+            PrepareResetField(field);
+            field.RegisterValueChangedCallback(e =>
+            {
+                var value = Mathf.Clamp(e.newValue, min, max);
+                if (value != e.newValue)
+                    field.SetValueWithoutNotify(value);
+                apply(value);
+            });
+            row.Add(field);
+
+            var reset = new Button(() =>
+            {
+                var value = Mathf.Clamp(defaultValue, min, max);
+                field.SetValueWithoutNotify(value);
+                apply(value);
+            })
+            { text = "Reset" };
+            PrepareResetButton(reset);
+            row.Add(reset);
+
+            parent.Add(row);
+        }
+
+        private static void AddFloatFieldWithReset(VisualElement parent, string label, float min, float max,
+            float currentValue, float defaultValue, Action<float> apply)
+        {
+            var row = CreateResetFieldRow();
+
+            var field = new FloatField(label) { value = Mathf.Clamp(currentValue, min, max) };
+            PrepareResetField(field);
+            field.RegisterValueChangedCallback(e =>
+            {
+                var value = Mathf.Clamp(e.newValue, min, max);
+                if (!Mathf.Approximately(value, e.newValue))
+                    field.SetValueWithoutNotify(value);
+                apply(value);
+            });
+            row.Add(field);
+
+            var reset = new Button(() =>
+            {
+                var value = Mathf.Clamp(defaultValue, min, max);
+                field.SetValueWithoutNotify(value);
+                apply(value);
+            })
+            { text = "Reset" };
+            PrepareResetButton(reset);
+            row.Add(reset);
+
+            parent.Add(row);
+        }
+
+        private static VisualElement CreateResetFieldRow()
+        {
+            var row = new VisualElement();
+            row.style.flexDirection = FlexDirection.Row;
+            row.style.alignItems = Align.Center;
+            row.style.marginTop = 2;
+            row.style.width = Length.Percent(100);
+            row.style.flexGrow = 1f;
+            row.style.overflow = Overflow.Hidden;
+            return row;
+        }
+
+        private static void PrepareResetField(BaseField<int> field)
+        {
+            PrepareResetField((VisualElement)field);
+            PrepareResetFieldLabel(field);
+        }
+
+        private static void PrepareResetField(BaseField<float> field)
+        {
+            PrepareResetField((VisualElement)field);
+            PrepareResetFieldLabel(field);
+        }
+
+        private static void PrepareResetField(VisualElement field)
+        {
+            field.style.flexGrow = 1f;
+            field.style.flexShrink = 1f;
+            field.style.flexBasis = 0;
+            field.style.minWidth = 0;
+            field.style.marginRight = 6;
+        }
+
+        private static void PrepareResetFieldLabel<T>(BaseField<T> field)
+        {
+            if (field.labelElement == null) return;
+            field.labelElement.style.flexShrink = 1f;
+            field.labelElement.style.minWidth = 0;
+            field.labelElement.style.whiteSpace = WhiteSpace.Normal;
+        }
+
+        private static void PrepareResetButton(Button reset)
+        {
+            reset.AddToClassList("refit-back");
+            reset.style.flexGrow = 0f;
+            reset.style.flexShrink = 0f;
+            reset.style.width = 64;
+            reset.style.minWidth = 64;
+            reset.style.maxWidth = 64;
+        }
+
         private void BuildToolSettings()
         {
             Question("Settings");
+
+            var operation = new Label("Operation");
+            operation.AddToClassList("refit-section");
+            content.Add(operation);
+            BuildSettings(content);
+
+            var debugSection = new Label("Debug");
+            debugSection.AddToClassList("refit-section");
+            debugSection.style.marginTop = 18;
+            content.Add(debugSection);
 
             var debug = new Toggle("Debug mode") { value = ReFitDebugService.Enabled };
             debug.AddToClassList("refit-field");

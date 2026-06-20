@@ -406,7 +406,8 @@ namespace Orbiters.ReFit
                     }
                     primaryGroupDeltas[g] = d * falloff[g];
                 });
-                DeltaField.Smooth(primaryGroupDeltas, asset.groupAdjacency, settings.smoothingIterations, settings.smoothingStrength);
+                DeltaField.Smooth(primaryGroupDeltas, asset.groupAdjacency,
+                    settings.primarySmoothingIterations, settings.primarySmoothingStrength);
 
                 state.primaryLocalDeltas = ToLocalDeltas(state, primaryGroupDeltas, true);
                 if (settings.recalculateNormalDeltas)
@@ -438,7 +439,9 @@ namespace Orbiters.ReFit
                               + worldShapeDelta[targetBasis.triangles[t + 2]] * bary.z;
                         groupDeltas[g] = d * falloff[g];
                     });
-                    DeltaField.Smooth(groupDeltas, asset.groupAdjacency, settings.smoothingIterations, settings.smoothingStrength);
+                    DeltaField.Smooth(groupDeltas, asset.groupAdjacency,
+                        settings.transferredBlendshapeSmoothingIterations,
+                        settings.transferredBlendshapeSmoothingStrength);
 
                     shape.localDeltas = ToLocalDeltas(state, groupDeltas, false);
                     if (settings.recalculateNormalDeltas)

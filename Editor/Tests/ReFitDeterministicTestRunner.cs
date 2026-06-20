@@ -19,6 +19,7 @@ namespace Orbiters.ReFit.Editor.Tests
         private const float ChestForwardDeltaMinimum = 0.06f;
         private const float ArmOutwardDeltaMinimum = 0.02f;
         private const float WaistDeltaMaximum = 0.012f;
+        private const string LocalizedPeakShapeName = "LocalizedRearDelt";
         private const string FbxFixtureV1Path = "Packages/orbiters.refit/ReFit unit test v1.fbx";
         private const string FbxFixtureV2DifferentArmaturePath = "Packages/orbiters.refit/ReFit unit test v2 clothing with different armature.fbx";
         private const string FbxShapeName = "custom blendshape";
@@ -68,6 +69,15 @@ namespace Orbiters.ReFit.Editor.Tests
                 RunCase(failures,
                     "Active non-target body blendshapes do not affect primary refit",
                     MeshAndBlendshape_ActiveNonTargetBodyShapes_DoNotAffectPrimaryRefit);
+                RunCase(failures,
+                    "Primary smoothing does not smooth transferred blendshapes",
+                    TransferredBlendshapeSmoothing_IsIndependentFromPrimarySmoothing);
+                RunCase(failures,
+                    "Transferred blendshape smoothing preserves explicit peak control",
+                    TransferredBlendshapeSmoothing_PreservesLocalizedPeaksWhenDisabled);
+                RunCase(failures,
+                    "Transferred blendshape keeps clothing outside shaped skin",
+                    TransferredBlendshape_PreservesSignedSkinClearance);
                 RunCase(failures,
                     "Blendshape-only transfer works on target-space clothing and preserves root bone",
                     BlendshapeOnly_TargetSpaceAccessory_TransfersMuscle_PreservesRootBone);
@@ -155,8 +165,10 @@ namespace Orbiters.ReFit.Editor.Tests
                     {
                         maxProjectionDistance = 0.25f,
                         falloffStartDistance = 0.08f,
-                        smoothingIterations = 0,
-                        smoothingStrength = 0f,
+                        primarySmoothingIterations = 0,
+                        primarySmoothingStrength = 0f,
+                        transferredBlendshapeSmoothingIterations = 0,
+                        transferredBlendshapeSmoothingStrength = 0f,
                         filterByNormal = false,
                         filterByBoneRegion = false,
                         transferWeights = true,
@@ -348,6 +360,159 @@ namespace Orbiters.ReFit.Editor.Tests
                         $"Current target body blendshape weights must not leak into the default mesh-to-mesh comparison. " +
                         $"Max drift was {maxPrimaryDrift * 1000f:0.###} mm.");
                     AssertTransferredMuscleShape(comp.mesh, SingleSecondaryShape(comp));
+                }
+                finally
+                {
+                    DestroyComputationMesh(comp);
+                }
+            }
+        }
+
+        private static void TransferredBlendshapeSmoothing_IsIndependentFromPrimarySmoothing()
+        {
+            using (var fixture = ReFitTestFixture.Create())
+            {
+                AddLocalizedPeakBlendshape(fixture.target.mesh, LocalizedPeakShapeName);
+
+                var baselineRequest = BuildMeshAndBlendshapeRequest(fixture, fixture.sourceSpaceAccessory.renderer, false);
+                baselineRequest.targetBlendshape = LocalizedPeakShapeName;
+                baselineRequest.settings.primarySmoothingIterations = 0;
+                baselineRequest.settings.primarySmoothingStrength = 0f;
+                baselineRequest.settings.transferredBlendshapeSmoothingIterations = 0;
+                baselineRequest.settings.transferredBlendshapeSmoothingStrength = 0f;
+
+                var highPrimaryRequest = BuildMeshAndBlendshapeRequest(fixture, fixture.sourceSpaceAccessory.renderer, false);
+                highPrimaryRequest.targetBlendshape = LocalizedPeakShapeName;
+                highPrimaryRequest.settings.primarySmoothingIterations = 8;
+                highPrimaryRequest.settings.primarySmoothingStrength = 1f;
+                highPrimaryRequest.settings.transferredBlendshapeSmoothingIterations = 0;
+                highPrimaryRequest.settings.transferredBlendshapeSmoothingStrength = 0f;
+
+                var baseline = new ReFitEngine().Run(baselineRequest);
+                var highPrimary = new ReFitEngine().Run(highPrimaryRequest);
+                try
+                {
+                    AssertComputationSucceeded(baseline);
+                    AssertComputationSucceeded(highPrimary);
+
+                    float maxDelta = MaxBlendShapeDifference(
+                        baseline.mesh, SingleSecondaryShape(baseline),
+                        highPrimary.mesh, SingleSecondaryShape(highPrimary));
+
+                    AssertLessOrEqual(maxDelta, 0.0001f,
+                        "Changing primary refit smoothing changed the transferred blendshape even though transferred smoothing was disabled.");
+                }
+                finally
+                {
+                    DestroyComputationMesh(baseline);
+                    DestroyComputationMesh(highPrimary);
+                }
+            }
+        }
+
+        private static void TransferredBlendshapeSmoothing_PreservesLocalizedPeaksWhenDisabled()
+        {
+            using (var fixture = ReFitTestFixture.Create())
+            {
+                AddLocalizedPeakBlendshape(fixture.target.mesh, LocalizedPeakShapeName);
+
+                var noSmoothRequest = BuildMeshAndBlendshapeRequest(fixture, fixture.sourceSpaceAccessory.renderer, false);
+                noSmoothRequest.targetBlendshape = LocalizedPeakShapeName;
+                noSmoothRequest.settings.transferredBlendshapeSmoothingIterations = 0;
+                noSmoothRequest.settings.transferredBlendshapeSmoothingStrength = 0f;
+
+                var smoothRequest = BuildMeshAndBlendshapeRequest(fixture, fixture.sourceSpaceAccessory.renderer, false);
+                smoothRequest.targetBlendshape = LocalizedPeakShapeName;
+                smoothRequest.settings.transferredBlendshapeSmoothingIterations = 4;
+                smoothRequest.settings.transferredBlendshapeSmoothingStrength = 0.6f;
+
+                var noSmooth = new ReFitEngine().Run(noSmoothRequest);
+                var smooth = new ReFitEngine().Run(smoothRequest);
+                try
+                {
+                    AssertComputationSucceeded(noSmooth);
+                    AssertComputationSucceeded(smooth);
+
+                    float unsmoothedPeak = MaxMagnitudeInRegion(noSmooth.mesh, SingleSecondaryShape(noSmooth), IsLeftUpperSleeve);
+                    float smoothedPeak = MaxMagnitudeInRegion(smooth.mesh, SingleSecondaryShape(smooth), IsLeftUpperSleeve);
+                    Debug.Log($"[ReFit Tests] Localized transferred peak: unsmoothed={unsmoothedPeak:0.000000} smoothed={smoothedPeak:0.000000}");
+
+                    AssertGreater(unsmoothedPeak, 0.055f,
+                        "Disabled transferred smoothing did not preserve the localized body-shape peak.");
+                    AssertGreater(unsmoothedPeak - smoothedPeak, 0.008f,
+                        "Explicit transferred smoothing did not measurably flatten the localized peak; the test fixture is not exercising the control.");
+                }
+                finally
+                {
+                    DestroyComputationMesh(noSmooth);
+                    DestroyComputationMesh(smooth);
+                }
+            }
+        }
+
+        private static void TransferredBlendshape_PreservesSignedSkinClearance()
+        {
+            using (var fixture = ReFitTestFixture.Create())
+            {
+                var request = BuildMeshAndBlendshapeRequest(fixture, fixture.sourceSpaceAccessory.renderer, false);
+                request.settings.transferredBlendshapeSmoothingIterations = 0;
+                request.settings.transferredBlendshapeSmoothingStrength = 0f;
+
+                var comp = new ReFitEngine().Run(request);
+                try
+                {
+                    AssertComputationSucceeded(comp);
+
+                    var shapeName = SingleSecondaryShape(comp);
+                    var assetShapeDeltas = GetBlendShapeDeltas(comp.mesh, shapeName);
+                    var bodyShapeDeltas = GetBlendShapeDeltas(fixture.target.mesh, BodyShapeName);
+                    int bodyShapeIndex = fixture.target.mesh.GetBlendShapeIndex(BodyShapeName);
+                    var targetOverrides = new Dictionary<int, float> { { bodyShapeIndex, 0f } };
+                    var report = new ReFitReport();
+                    var targetBasis = MeshSnapshot.Capture(fixture.target.renderer, false, targetOverrides, report);
+                    var assetBasis = MeshSnapshot.Capture(fixture.sourceSpaceAccessory.renderer, false, null, report);
+                    var targetBvh = SurfaceBvh.Build(targetBasis);
+                    var worldBodyDeltas = WorldShapeDeltas(targetBasis, bodyShapeDeltas);
+
+                    int tested = 0;
+                    int signFlips = 0;
+                    float minSourceClearance = float.MaxValue;
+                    float minShapedClearance = float.MaxValue;
+                    float maxClearanceLoss = 0f;
+
+                    for (int i = 0; i < assetBasis.worldVertices.Length; i++)
+                    {
+                        var hit = targetBvh.ClosestPoint(assetBasis.worldVertices[i], 0.4f, null);
+                        if (!hit.found) continue;
+
+                        var normal = targetBasis.BaryNormal(hit.triangle, hit.bary);
+                        float sourceClearance = Vector3.Dot(assetBasis.worldVertices[i] - hit.position, normal);
+                        if (sourceClearance < 0.015f) continue;
+
+                        var shapedBodyPoint = hit.position + SampleWorldShapeDelta(targetBasis, worldBodyDeltas, hit.triangle, hit.bary);
+                        var shapedAssetPoint = assetBasis.worldVertices[i] + assetBasis.skinMatrices[i].MultiplyVector(assetShapeDeltas[i]);
+                        float shapedClearance = Vector3.Dot(shapedAssetPoint - shapedBodyPoint, normal);
+
+                        tested++;
+                        minSourceClearance = Mathf.Min(minSourceClearance, sourceClearance);
+                        minShapedClearance = Mathf.Min(minShapedClearance, shapedClearance);
+                        maxClearanceLoss = Mathf.Max(maxClearanceLoss, sourceClearance - shapedClearance);
+                        if (shapedClearance <= 0f) signFlips++;
+                    }
+
+                    Debug.Log(
+                        $"[ReFit Tests] Signed clearance: tested={tested}, flips={signFlips}, " +
+                        $"sourceMin={minSourceClearance:0.000000}, shapedMin={minShapedClearance:0.000000}, " +
+                        $"maxLoss={maxClearanceLoss:0.000000}");
+
+                    AssertGreater(tested, 20,
+                        "Signed-clearance test did not find enough high-confidence clothing/body projection pairs.");
+                    AssertTrue(signFlips == 0,
+                        $"Transferred blendshape moved {signFlips} clothing vertices under the shaped target skin.");
+                    AssertGreater(minShapedClearance, 0.012f,
+                        "Transferred blendshape did not keep the clothing safely above the shaped target skin.");
+                    AssertLessOrEqual(maxClearanceLoss, 0.008f,
+                        "Transferred blendshape lost too much clothing/body clearance compared with the default fit.");
                 }
                 finally
                 {
@@ -954,8 +1119,10 @@ namespace Orbiters.ReFit.Editor.Tests
             {
                 maxProjectionDistance = 0.3f,
                 falloffStartDistance = 0.08f,
-                smoothingIterations = 0,
-                smoothingStrength = 0f,
+                primarySmoothingIterations = 0,
+                primarySmoothingStrength = 0f,
+                transferredBlendshapeSmoothingIterations = 0,
+                transferredBlendshapeSmoothingStrength = 0f,
                 filterByNormal = false,
                 filterByBoneRegion = false,
                 transferWeights = false,
@@ -1040,6 +1207,36 @@ namespace Orbiters.ReFit.Editor.Tests
             return max;
         }
 
+        private static float MaxBlendShapeDifference(Mesh a, string shapeA, Mesh b, string shapeB)
+        {
+            var deltasA = GetBlendShapeDeltas(a, shapeA);
+            var deltasB = GetBlendShapeDeltas(b, shapeB);
+            AssertTrue(deltasA.Length == deltasB.Length,
+                $"Cannot compare blendshapes with different vertex counts: {deltasA.Length} vs {deltasB.Length}.");
+
+            float max = 0f;
+            for (int i = 0; i < deltasA.Length; i++)
+                max = Mathf.Max(max, (deltasA[i] - deltasB[i]).magnitude);
+            return max;
+        }
+
+        private static float MaxMagnitudeInRegion(Mesh mesh, string shapeName, Func<Vector3, bool> contains)
+        {
+            var vertices = mesh.vertices;
+            var deltas = GetBlendShapeDeltas(mesh, shapeName);
+            int count = 0;
+            float max = 0f;
+            for (int i = 0; i < vertices.Length; i++)
+            {
+                if (!contains(vertices[i])) continue;
+                count++;
+                max = Mathf.Max(max, deltas[i].magnitude);
+            }
+
+            AssertTrue(count > 0, $"No vertices matched the requested peak region for shape '{shapeName}'.");
+            return max;
+        }
+
         private static RegionMetrics MeasureRegion(Mesh mesh, string shapeName, Func<Vector3, bool> contains)
         {
             var vertices = mesh.vertices;
@@ -1072,6 +1269,55 @@ namespace Orbiters.ReFit.Editor.Tests
             var deltas = new Vector3[mesh.vertexCount];
             mesh.GetBlendShapeFrameVertices(shapeIndex, frame, deltas, null, null);
             return deltas;
+        }
+
+        private static Vector3[] WorldShapeDeltas(MeshSnapshot snapshot, Vector3[] localDeltas)
+        {
+            AssertTrue(snapshot != null, "Cannot convert shape deltas without a mesh snapshot.");
+            AssertTrue(localDeltas != null && localDeltas.Length == snapshot.localVertices.Length,
+                "Shape delta count does not match the target snapshot vertex count.");
+
+            var world = new Vector3[localDeltas.Length];
+            for (int i = 0; i < world.Length; i++)
+                world[i] = snapshot.skinMatrices[i].MultiplyVector(localDeltas[i]);
+            return world;
+        }
+
+        private static Vector3 SampleWorldShapeDelta(MeshSnapshot snapshot, Vector3[] worldDeltas, int triangle, Vector3 bary)
+        {
+            int t = triangle * 3;
+            return worldDeltas[snapshot.triangles[t]] * bary.x +
+                   worldDeltas[snapshot.triangles[t + 1]] * bary.y +
+                   worldDeltas[snapshot.triangles[t + 2]] * bary.z;
+        }
+
+        private static bool IsLeftUpperSleeve(Vector3 vertex)
+        {
+            return vertex.x <= -0.7f && vertex.y >= 0.95f && vertex.y <= 1.45f;
+        }
+
+        private static void AddLocalizedPeakBlendshape(Mesh mesh, string shapeName)
+        {
+            AssertTrue(mesh.GetBlendShapeIndex(shapeName) < 0,
+                $"Mesh '{mesh.name}' already contains blendshape '{shapeName}'.");
+
+            var vertices = mesh.vertices;
+            var deltas = new Vector3[vertices.Length];
+            int affected = 0;
+            for (int i = 0; i < vertices.Length; i++)
+            {
+                var v = vertices[i];
+                float dx = (v.x + 0.9f) / 0.3f;
+                float dy = (v.y - 1.2f) / 0.3f;
+                float weight = Mathf.Clamp01(1f - Mathf.Sqrt(dx * dx + dy * dy));
+                if (weight <= 0f) continue;
+
+                deltas[i] = new Vector3(-0.08f, 0f, 0.08f) * weight;
+                affected++;
+            }
+
+            AssertGreater(affected, 0, "Localized peak fixture did not affect any target body vertices.");
+            mesh.AddBlendShapeFrame(shapeName, 100f, deltas, null, null);
         }
 
         private static SurfaceMetrics MeasureSurfaceDistance(SkinnedMeshRenderer from, SkinnedMeshRenderer to)

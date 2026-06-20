@@ -72,8 +72,10 @@ namespace Orbiters.ReFit.Editor
 
             Undo.RecordObject(renderer, "ReFit");
             comp.appliedOriginalMesh = renderer.sharedMesh;
+            CaptureGeneratedMeshPreviewWithOriginalSkinning(debug, renderer, comp);
             renderer.sharedMesh = comp.mesh;
-            debug?.Capture("02_generated_mesh_assigned", renderer, comp.projectionDebug);
+            if (!comp.armatureReplaced)
+                debug?.Capture("02_generated_mesh_assigned", renderer, comp.projectionDebug);
 
             // --- armature replacement ------------------------------------------------------
             bool armatureApplied = false;
@@ -125,6 +127,37 @@ namespace Orbiters.ReFit.Editor
             Selection.activeGameObject = renderer.gameObject;
             EditorGUIUtility.PingObject(renderer.gameObject);
             return renderer;
+        }
+
+        private static void CaptureGeneratedMeshPreviewWithOriginalSkinning(ReFitDebugSession debug,
+            SkinnedMeshRenderer renderer, ReFitComputation comp)
+        {
+            if (debug == null || renderer == null || comp == null || comp.mesh == null)
+                return;
+            if (!comp.armatureReplaced)
+                return;
+
+            var originalMesh = renderer.sharedMesh;
+            if (originalMesh == null || originalMesh.vertexCount != comp.mesh.vertexCount)
+                return;
+
+            var previewMesh = Object.Instantiate(comp.mesh);
+            previewMesh.name = comp.mesh.name.Replace("(Clone)", "") + "_OriginalSkinningPreview";
+            previewMesh.hideFlags = HideFlags.HideAndDontSave;
+            previewMesh.bindposes = originalMesh.bindposes;
+            previewMesh.boneWeights = originalMesh.boneWeights;
+            previewMesh.RecalculateBounds();
+
+            try
+            {
+                renderer.sharedMesh = previewMesh;
+                debug.Capture("02_generated_mesh_original_skinning", renderer, comp.projectionDebug);
+            }
+            finally
+            {
+                renderer.sharedMesh = originalMesh;
+                Object.DestroyImmediate(previewMesh);
+            }
         }
 
         /// <summary>

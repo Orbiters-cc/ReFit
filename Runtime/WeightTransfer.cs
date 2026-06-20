@@ -79,13 +79,23 @@ namespace Orbiters.ReFit
                     var originalRegion = DominantRegion(original, newBoneRegions);
                     if (originalRegion == BodyRegion.Unknown && assetGroupRegions != null && g < assetGroupRegions.Length)
                         originalRegion = assetGroupRegions[g];
-                    var projectedRegion = DominantRegion(projected[g], newBoneRegions);
+                    var projectedWeight = projected[g];
+                    if (IsStrictRegion(originalRegion) &&
+                        !TryKeepOnlyRegion(projectedWeight, originalRegion, newBoneRegions, out projectedWeight))
+                    {
+                        result[i] = original;
+                        debug.decisionsByVertex[i] = ReFitWeightDecision.Original;
+                        rejected++;
+                        continue;
+                    }
+
+                    var projectedRegion = DominantRegion(projectedWeight, newBoneRegions);
                     if (projectedRegion == BodyRegion.Unknown)
                         projectedRegion = targetBindings[g].hitRegion;
                     if (WeightRegionsCompatible(originalRegion, projectedRegion))
                     {
                         float share = ProjectionBlendShare(originalRegion, projectedRegion, targetBindings[g]);
-                        result[i] = BlendWeights(original, projected[g], 1f - share, share);
+                        result[i] = BlendWeights(original, projectedWeight, 1f - share, share);
                         debug.decisionsByVertex[i] = ReFitWeightDecision.Blended;
                         blended++;
                         continue;
@@ -262,8 +272,6 @@ namespace Orbiters.ReFit
         {
             if (original == BodyRegion.Unknown || projected == BodyRegion.Unknown) return true;
             if (original == projected) return true;
-            if (original == BodyRegion.Torso || projected == BodyRegion.Torso) return true;
-            if (IsLeg(original) && IsLeg(projected)) return true;
             return false;
         }
 
@@ -277,9 +285,28 @@ namespace Orbiters.ReFit
             return share;
         }
 
-        private static bool IsLeg(BodyRegion region)
+        private static bool TryKeepOnlyRegion(BoneWeight weight, BodyRegion region, BodyRegion[] boneRegions, out BoneWeight filtered)
         {
-            return region == BodyRegion.LeftLeg || region == BodyRegion.RightLeg;
+            var acc = new Dictionary<int, float>(4);
+            KeepRegion(acc, weight.boneIndex0, weight.weight0, region, boneRegions);
+            KeepRegion(acc, weight.boneIndex1, weight.weight1, region, boneRegions);
+            KeepRegion(acc, weight.boneIndex2, weight.weight2, region, boneRegions);
+            KeepRegion(acc, weight.boneIndex3, weight.weight3, region, boneRegions);
+            return NormalizeTop4(acc, out filtered);
+        }
+
+        private static void KeepRegion(Dictionary<int, float> acc, int index, float weight,
+            BodyRegion region, BodyRegion[] boneRegions)
+        {
+            if (weight <= 0f || index < 0 || boneRegions == null || index >= boneRegions.Length) return;
+            if (boneRegions[index] != region) return;
+            acc.TryGetValue(index, out var current);
+            acc[index] = current + weight;
+        }
+
+        private static bool IsStrictRegion(BodyRegion region)
+        {
+            return region != BodyRegion.Unknown && region != BodyRegion.Torso;
         }
     }
 }

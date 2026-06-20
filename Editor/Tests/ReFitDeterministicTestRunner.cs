@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using Orbiters.XRayGizmos.Editor;
 using UnityEditor;
 using UnityEngine;
 using Object = UnityEngine.Object;
@@ -73,14 +74,23 @@ namespace Orbiters.ReFit.Editor.Tests
                     "Armature replacement adds target-derived non-deforming leaf helpers",
                     ArmatureReplacement_TargetChildCreatesLeafTailHelper);
                 RunCase(failures,
+                    "Armature leaf helpers use the next anatomical segment before deeper descendants",
+                    ArmatureReplacement_LeafTailPrefersShinOverFoot);
+                RunCase(failures,
                     "Armature replacement materializes child-first bone plans without hierarchy drift",
                     ArmatureReplacement_ChildFirstPlan_MaterializesWithoutDrift);
                 RunCase(failures,
                     "Weight transfer preserves mapped original weights when projections cross regions",
                     WeightTransfer_PreservesMappedOriginalWeightsWhenProjectionCrossesRegions);
                 RunCase(failures,
+                    "Target-space accessory keeps source bone regions for projection filtering",
+                    ProjectionDebug_TargetSpaceAccessoryClassifiesAssetRegions);
+                RunCase(failures,
                     "Projection debug captures binding and weight decision data",
                     ProjectionDebug_CapturesBindingAndWeightDecisionData);
+                RunCase(failures,
+                    "XRay extra gizmo registry exposes external toggles",
+                    XRayExtraGizmoRegistry_RegistersAndTogglesExternalGizmo);
                 RunCase(failures,
                     "Armature replacement cleans rerun target-space stale skeleton",
                     ArmatureReplacement_RerunTargetSpace_RemovesUnusedLocalSkeleton);
@@ -426,7 +436,7 @@ namespace Orbiters.ReFit.Editor.Tests
                 {
                     MakeWeight(3, 1f), // bad arm -> leg projection
                     MakeWeight(1, 1f), // compatible arm transition
-                    MakeWeight(4, 1f)  // left/right leg transition is allowed
+                    MakeWeight(4, 1f)  // bad left-leg -> right-leg projection
                 },
                 rigid = false
             };
@@ -438,11 +448,11 @@ namespace Orbiters.ReFit.Editor.Tests
             };
             var boneRegions = new[]
             {
-                BodyRegion.Unknown,
-                BodyRegion.Unknown,
-                BodyRegion.Unknown,
-                BodyRegion.Unknown,
-                BodyRegion.Unknown
+                BodyRegion.LeftArm,
+                BodyRegion.LeftArm,
+                BodyRegion.LeftLeg,
+                BodyRegion.LeftLeg,
+                BodyRegion.RightLeg
             };
 
             var weights = WeightTransfer.Transfer(asset, body, bindings,
@@ -465,10 +475,70 @@ namespace Orbiters.ReFit.Editor.Tests
             AssertTrue(debug.decisionsByVertex[1] == ReFitWeightDecision.Blended,
                 $"Expected compatible arm projection to be blended, got {debug.decisionsByVertex[1]}.");
 
-            AssertGreater(WeightOf(weights[2], 4), 0.15f,
-                "Left/right leg projection should be allowed as a transition instead of hard-rejected.");
-            AssertTrue(debug.decisionsByVertex[2] == ReFitWeightDecision.Blended,
-                $"Expected left/right leg projection to be blended, got {debug.decisionsByVertex[2]}.");
+            AssertGreater(WeightOf(weights[2], 2), 0.99f,
+                "A left-leg vertex accepted a right-leg projection instead of preserving its mapped original leg weight.");
+            AssertTrue(debug.decisionsByVertex[2] == ReFitWeightDecision.Original,
+                $"Expected left/right leg projection to use Original, got {debug.decisionsByVertex[2]}.");
+        }
+
+        private static void ArmatureReplacement_LeafTailPrefersShinOverFoot()
+        {
+            var root = new GameObject("__ReFitTest_LeafTailChain");
+            try
+            {
+                root.hideFlags = HideFlags.HideAndDontSave;
+                var upperLeg = NewChild(root.transform, "Left leg");
+                var shin = NewChild(upperLeg, "shin.L");
+                var foot = NewChild(shin, "foot.L");
+                upperLeg.position = Vector3.zero;
+                shin.position = new Vector3(-0.03f, -0.34f, 0.04f);
+                foot.position = new Vector3(-0.06f, -0.68f, -0.28f);
+
+                var method = typeof(ReFitEngine).GetMethod("FindPreferredTailChild",
+                    System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic);
+                AssertTrue(method != null, "Could not reflect ReFitEngine.FindPreferredTailChild.");
+
+                var selected = method.Invoke(null, new object[] { upperLeg, new HashSet<Transform>() }) as Transform;
+                AssertSame(selected, shin,
+                    $"Left leg leaf-tail selection should use shin.L before deeper foot.L, got '{(selected != null ? selected.name : "null")}'.");
+            }
+            finally
+            {
+                Object.DestroyImmediate(root);
+            }
+        }
+
+        private static void ProjectionDebug_TargetSpaceAccessoryClassifiesAssetRegions()
+        {
+            using (var fixture = ReFitTestFixture.Create())
+            {
+                fixture.targetSpaceAccessory.root.transform.SetParent(fixture.target.root.transform, true);
+                var request = BuildMeshAndBlendshapeRequest(fixture, fixture.targetSpaceAccessory.renderer, true);
+                request.settings.filterByBoneRegion = true;
+                request.settings.captureProjectionDebug = true;
+                request.settings.transferWeights = true;
+
+                var comp = new ReFitEngine().Run(request);
+                try
+                {
+                    AssertComputationSucceeded(comp);
+                    AssertTrue(comp.projectionDebug != null && comp.projectionDebug.points != null &&
+                               comp.projectionDebug.points.Length > 0,
+                        "Target-space accessory did not capture projection debug points.");
+
+                    int classified = 0;
+                    foreach (var point in comp.projectionDebug.points)
+                        if (point != null && point.assetRegion != BodyRegion.Unknown)
+                            classified++;
+
+                    AssertGreater(classified, 0,
+                        "All target-space accessory projection points were classified as Unknown; asset bones were not mapped to source regions.");
+                }
+                finally
+                {
+                    DestroyComputationMesh(comp);
+                }
+            }
         }
 
         private static void ProjectionDebug_CapturesBindingAndWeightDecisionData()
@@ -498,6 +568,35 @@ namespace Orbiters.ReFit.Editor.Tests
                 {
                     DestroyComputationMesh(comp);
                 }
+            }
+        }
+
+        private static void XRayExtraGizmoRegistry_RegistersAndTogglesExternalGizmo()
+        {
+            const string id = "orbiters.refit.tests.fake-extra-gizmo";
+            bool enabled = false;
+            XRayExternalGizmoRegistry.Register(id, "Fake ReFit gizmo", () => enabled, value => enabled = value);
+            try
+            {
+                XRayExternalGizmoEntry found = null;
+                foreach (var entry in XRayExternalGizmoRegistry.Entries)
+                {
+                    if (entry.Id == id)
+                    {
+                        found = entry;
+                        break;
+                    }
+                }
+
+                AssertTrue(found != null, "The registered external gizmo did not appear in XRayExternalGizmoRegistry.Entries.");
+                found.SetEnabled(true);
+                AssertTrue(enabled, "The registered external gizmo did not receive its enabled toggle.");
+                XRayExternalGizmoRegistry.SetAll(false);
+                AssertTrue(!enabled, "XRayExternalGizmoRegistry.SetAll(false) did not disable the registered gizmo.");
+            }
+            finally
+            {
+                XRayExternalGizmoRegistry.Unregister(id);
             }
         }
 

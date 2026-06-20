@@ -220,14 +220,13 @@ namespace Orbiters.ReFit
         }
 
         /// <summary>
-        /// Whether a binding between two regions is plausible. Unknown and Torso are compatible with everything;
-        /// left/right limb pairs, arm/leg pairs and head/limb pairs are rejected.
+        /// Whether a surface binding between two regions is plausible. Unknown is left permissive so weakly
+        /// classified assets can still bind, but classified limbs must stay on their own body region.
         /// </summary>
         public static bool RegionsCompatible(BodyRegion a, BodyRegion b)
         {
             if (a == BodyRegion.Unknown || b == BodyRegion.Unknown) return true;
             if (a == b) return true;
-            if (a == BodyRegion.Torso || b == BodyRegion.Torso) return true;
             return false;
         }
 

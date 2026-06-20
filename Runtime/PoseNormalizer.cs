@@ -639,16 +639,21 @@ namespace Orbiters.ReFit
         private static void PoseAsset(NormalizedStage stage, ReFitReport report)
         {
             if (stage.assetOnSourceAvatar || stage.assetRenderer == null) return; // shares the source armature, already posed
+
+            var assetTransforms = stage.assetStageRoot != null
+                ? stage.assetStageRoot.GetComponentsInChildren<Transform>(true)
+                : Array.Empty<Transform>();
+            stage.assetBoneToSource = HumanoidBoneMapper.MatchBonesByName(assetTransforms, stage.sourceRoot.transform);
+
             if (stage.assetInTargetSpace)
             {
                 // The asset already sits in the target's space; the source body has been scaled/aligned to that
-                // same space, so they overlap. Re-posing the asset onto the source would misalign it.
-                report.Info("asset-target-space", "The asset already fits the target; binding it in place.");
+                // same space, so they overlap. Keep the current transforms, but still build the source-bone map
+                // above so region filtering and weight projection can classify the clothing vertices.
+                report.Info("asset-target-space",
+                    $"The asset already fits the target; binding it in place after matching {CountMappedSkinBones(stage)}/{CountSkinBones(stage)} skinned bone(s) to the source.");
                 return;
             }
-
-            var assetTransforms = stage.assetStageRoot.GetComponentsInChildren<Transform>(true);
-            stage.assetBoneToSource = HumanoidBoneMapper.MatchBonesByName(assetTransforms, stage.sourceRoot.transform);
 
             // Apply parent-first so children read already-updated parents.
             int applied = 0;
@@ -690,6 +695,31 @@ namespace Orbiters.ReFit
             {
                 report.Info("armature-matched", $"Posed the asset onto the source avatar ({boneMatched}/{boneCount} skinned bones matched).");
             }
+        }
+
+        private static int CountSkinBones(NormalizedStage stage)
+        {
+            int count = 0;
+            var bones = stage?.assetRenderer != null ? stage.assetRenderer.bones : null;
+            if (bones == null) return 0;
+            foreach (var bone in bones)
+                if (bone != null)
+                    count++;
+            return count;
+        }
+
+        private static int CountMappedSkinBones(NormalizedStage stage)
+        {
+            int count = 0;
+            var bones = stage?.assetRenderer != null ? stage.assetRenderer.bones : null;
+            if (bones == null || stage.assetBoneToSource == null) return 0;
+            foreach (var bone in bones)
+            {
+                if (bone == null) continue;
+                if (stage.assetBoneToSource.TryGetValue(bone, out var source) && source != null)
+                    count++;
+            }
+            return count;
         }
     }
 }

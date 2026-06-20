@@ -1097,6 +1097,11 @@ namespace Orbiters.ReFit
         {
             if (bone == null) return null;
             HumanoidBoneMapper.TryInferHumanoidBone(bone, out var boneHuman);
+
+            var directExpected = FindDirectExpectedTailChild(bone, excluded, boneHuman);
+            if (directExpected != null)
+                return directExpected;
+
             Transform bestExpected = null;
             int bestExpectedScore = int.MinValue;
 
@@ -1154,18 +1159,40 @@ namespace Orbiters.ReFit
             return score;
         }
 
+        private static Transform FindDirectExpectedTailChild(Transform bone, HashSet<Transform> excluded,
+            HumanBodyBones parentHuman)
+        {
+            Transform best = null;
+            float bestDistance = -1f;
+            for (int i = 0; i < bone.childCount; i++)
+            {
+                var child = bone.GetChild(i);
+                if (IsExcludedTailCandidate(child, excluded)) continue;
+                if (!HumanoidBoneMapper.TryInferHumanoidBone(child, out var childHuman)) continue;
+                if (!IsExpectedLeafChild(parentHuman, childHuman)) continue;
+
+                float distance = Vector3.Distance(bone.position, child.position);
+                if (distance > bestDistance)
+                {
+                    best = child;
+                    bestDistance = distance;
+                }
+            }
+            return best;
+        }
+
         private static bool IsExpectedLeafChild(HumanBodyBones parent, HumanBodyBones child)
         {
             switch (parent)
             {
                 case HumanBodyBones.LeftLowerArm: return child == HumanBodyBones.LeftHand;
                 case HumanBodyBones.RightLowerArm: return child == HumanBodyBones.RightHand;
-                case HumanBodyBones.LeftUpperArm: return child == HumanBodyBones.LeftLowerArm || child == HumanBodyBones.LeftHand;
-                case HumanBodyBones.RightUpperArm: return child == HumanBodyBones.RightLowerArm || child == HumanBodyBones.RightHand;
+                case HumanBodyBones.LeftUpperArm: return child == HumanBodyBones.LeftLowerArm;
+                case HumanBodyBones.RightUpperArm: return child == HumanBodyBones.RightLowerArm;
                 case HumanBodyBones.LeftLowerLeg: return child == HumanBodyBones.LeftFoot;
                 case HumanBodyBones.RightLowerLeg: return child == HumanBodyBones.RightFoot;
-                case HumanBodyBones.LeftUpperLeg: return child == HumanBodyBones.LeftLowerLeg || child == HumanBodyBones.LeftFoot;
-                case HumanBodyBones.RightUpperLeg: return child == HumanBodyBones.RightLowerLeg || child == HumanBodyBones.RightFoot;
+                case HumanBodyBones.LeftUpperLeg: return child == HumanBodyBones.LeftLowerLeg;
+                case HumanBodyBones.RightUpperLeg: return child == HumanBodyBones.RightLowerLeg;
                 case HumanBodyBones.LeftFoot: return child == HumanBodyBones.LeftToes;
                 case HumanBodyBones.RightFoot: return child == HumanBodyBones.RightToes;
                 case HumanBodyBones.Neck: return child == HumanBodyBones.Head;

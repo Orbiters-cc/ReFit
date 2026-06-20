@@ -1,6 +1,7 @@
 using UnityEditor;
 using UnityEngine;
 using UnityEngine.Rendering;
+using Orbiters.XRayGizmos.Editor;
 
 namespace Orbiters.ReFit.Editor
 {
@@ -13,6 +14,12 @@ namespace Orbiters.ReFit.Editor
 
         static ReFitProjectionGizmoService()
         {
+            XRayExternalGizmoRegistry.Register(
+                "orbiters.refit.projection-rays",
+                "ReFit projection rays",
+                () => Enabled,
+                value => Enabled = value,
+                "Asset/source/target projection diagnostics");
             SceneView.duringSceneGui += OnSceneGui;
         }
 
@@ -22,6 +29,7 @@ namespace Orbiters.ReFit.Editor
             set
             {
                 EditorPrefs.SetBool(EnabledKey, value);
+                XRayExternalGizmoRegistry.NotifyChanged();
                 SceneView.RepaintAll();
             }
         }
@@ -59,10 +67,13 @@ namespace Orbiters.ReFit.Editor
                     var source = localToWorld.MultiplyPoint3x4(point.sourceHitLocalPoint);
                     var target = localToWorld.MultiplyPoint3x4(point.targetHitLocalPoint);
 
-                    Handles.color = new Color(0.15f, 0.55f, 1f, 0.65f);
+                    Handles.color = new Color(0.95f, 0.55f, 0.12f, 0.65f);
                     Handles.DrawLine(asset, source);
                     Handles.color = DecisionColor(point);
                     Handles.DrawLine(source, target);
+                    DrawPoint(asset, new Color(1f, 0.75f, 0.2f, 0.85f), 0.0075f);
+                    DrawPoint(source, new Color(0.1f, 0.65f, 1f, 0.85f), 0.006f);
+                    DrawPoint(target, DecisionColor(point), 0.006f);
 
                     UpdateHovered(point, asset, source, ref hovered, ref hoveredPosition, ref bestHoverDistance);
                     UpdateHovered(point, source, target, ref hovered, ref hoveredPosition, ref bestHoverDistance);
@@ -76,6 +87,13 @@ namespace Orbiters.ReFit.Editor
             }
 
             Handles.zTest = previousZTest;
+        }
+
+        private static void DrawPoint(Vector3 position, Color color, float scale)
+        {
+            Handles.color = color;
+            float size = HandleUtility.GetHandleSize(position) * scale;
+            Handles.SphereHandleCap(0, position, Quaternion.identity, size, EventType.Repaint);
         }
 
         private static void UpdateHovered(ReFitProjectionDebugPoint point, Vector3 a, Vector3 b,

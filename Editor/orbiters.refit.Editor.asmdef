@@ -2,7 +2,8 @@
   "name": "orbiters.refit.Editor",
   "rootNamespace": "Orbiters.ReFit.Editor",
   "references": [
-    "orbiters.refit"
+    "orbiters.refit",
+    "orbiters.xraygizmos.Editor"
   ],
   "includePlatforms": [
     "Editor"

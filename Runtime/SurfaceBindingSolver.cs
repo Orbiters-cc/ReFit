@@ -55,25 +55,9 @@ namespace Orbiters.ReFit
                 var n = asset.worldNormals[rep];
                 var region = useRegion ? assetGroupRegions[g] : BodyRegion.Unknown;
 
-                Func<int, bool> filter = null;
-                if (useNormal || useRegion)
-                {
-                    filter = t =>
-                    {
-                        if (useRegion && !HumanoidBoneMapper.RegionsCompatible(region, bodyTriRegions[t])) return false;
-                        if (useNormal && Vector3.Dot(n, body.FaceNormal(t)) < cosMaxAngle) return false;
-                        return true;
-                    };
-                }
-
-                var hit = bvh.ClosestPoint(p, queryRange, filter);
-                bool usedRelaxedFallback = false;
-                if (!hit.found && filter != null)
-                {
-                    // Nothing acceptable nearby; relax the filters rather than leaving a hole.
-                    hit = bvh.ClosestPoint(p, queryRange, null);
-                    usedRelaxedFallback = hit.found;
-                }
+                var hit = ClosestPointWithFallback(
+                    p, body, bvh, queryRange, region, bodyTriRegions, n, cosMaxAngle, useNormal, useRegion,
+                    out bool usedRelaxedFallback);
 
                 if (hit.found)
                 {
@@ -109,23 +93,10 @@ namespace Orbiters.ReFit
         public static SurfaceBinding BindPoint(Vector3 point, MeshSnapshot body, SurfaceBvh bvh, float maxDistance,
             BodyRegion region, BodyRegion[] bodyTriRegions, Vector3 referenceNormal, float cosMaxAngle, bool useNormal)
         {
-            Func<int, bool> filter = null;
-            if (useNormal || (bodyTriRegions != null && region != BodyRegion.Unknown))
-            {
-                filter = t =>
-                {
-                    if (bodyTriRegions != null && !HumanoidBoneMapper.RegionsCompatible(region, bodyTriRegions[t])) return false;
-                    if (useNormal && Vector3.Dot(referenceNormal, body.FaceNormal(t)) < cosMaxAngle) return false;
-                    return true;
-                };
-            }
-            var hit = bvh.ClosestPoint(point, maxDistance, filter);
-            bool usedRelaxedFallback = false;
-            if (!hit.found && filter != null)
-            {
-                hit = bvh.ClosestPoint(point, maxDistance, null);
-                usedRelaxedFallback = hit.found;
-            }
+            bool useRegion = bodyTriRegions != null && region != BodyRegion.Unknown;
+            var hit = ClosestPointWithFallback(
+                point, body, bvh, maxDistance, region, bodyTriRegions, referenceNormal, cosMaxAngle, useNormal, useRegion,
+                out bool usedRelaxedFallback);
             return new SurfaceBinding
             {
                 valid = hit.found,
@@ -145,6 +116,47 @@ namespace Orbiters.ReFit
             if (bodyTriRegions == null || triangle < 0 || triangle >= bodyTriRegions.Length)
                 return BodyRegion.Unknown;
             return bodyTriRegions[triangle];
+        }
+
+        private static SurfaceBvh.Hit ClosestPointWithFallback(Vector3 point, MeshSnapshot body, SurfaceBvh bvh, float maxDistance,
+            BodyRegion region, BodyRegion[] bodyTriRegions, Vector3 referenceNormal, float cosMaxAngle,
+            bool useNormal, bool useRegion, out bool usedRelaxedFallback)
+        {
+            usedRelaxedFallback = false;
+
+            Func<int, bool> fullFilter = null;
+            if (useNormal || useRegion)
+            {
+                fullFilter = t =>
+                {
+                    if (useRegion && !HumanoidBoneMapper.RegionsCompatible(region, bodyTriRegions[t])) return false;
+                    if (useNormal && Vector3.Dot(referenceNormal, body.FaceNormal(t)) < cosMaxAngle) return false;
+                    return true;
+                };
+            }
+
+            var hit = bvh.ClosestPoint(point, maxDistance, fullFilter);
+            if (hit.found || fullFilter == null)
+                return hit;
+
+            if (useRegion && useNormal)
+            {
+                Func<int, bool> regionOnly = t => HumanoidBoneMapper.RegionsCompatible(region, bodyTriRegions[t]);
+                hit = bvh.ClosestPoint(point, maxDistance, regionOnly);
+                if (hit.found)
+                {
+                    usedRelaxedFallback = true;
+                    return hit;
+                }
+            }
+
+            if (!useRegion || region == BodyRegion.Unknown || region == BodyRegion.Torso)
+            {
+                hit = bvh.ClosestPoint(point, maxDistance, null);
+                usedRelaxedFallback = hit.found;
+            }
+
+            return hit;
         }
     }
 

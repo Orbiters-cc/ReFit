@@ -164,6 +164,8 @@ namespace Orbiters.ReFit
     public class ReFitBoneRef
     {
         public ReFitBoneOrigin origin;
+        /// <summary>Diagnostic name of the referenced bone at computation time.</summary>
+        public string name;
         /// <summary>Child-index path relative to the origin root (target avatar root, asset root or source avatar root).</summary>
         public int[] path;
     }

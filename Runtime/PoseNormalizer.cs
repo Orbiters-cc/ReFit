@@ -24,6 +24,8 @@ namespace Orbiters.ReFit
         public Dictionary<HumanBodyBones, Transform> targetHumanMap;
         /// <summary>Root transform of the staged standalone asset (null when the asset lives on the source avatar).</summary>
         public Transform assetStageRoot;
+        /// <summary>Nested target-space asset copy inside <see cref="targetRoot"/> that must be ignored for target skeleton/body indexing.</summary>
+        public Transform targetExcludedAssetRoot;
         /// <summary>True when the asset renderer is part of the source avatar hierarchy (shares its armature).</summary>
         public bool assetOnSourceAvatar;
         /// <summary>
@@ -80,7 +82,7 @@ namespace Orbiters.ReFit
                 stage.sourceHumanMap = HumanoidBoneMapper.GetHumanoidMap(stage.sourceRoot, report);
                 stage.targetHumanMap = stage.sourceIsTarget
                     ? stage.sourceHumanMap
-                    : HumanoidBoneMapper.GetHumanoidMap(stage.targetRoot, report);
+                    : HumanoidBoneMapper.GetHumanoidMap(stage.targetRoot, report, stage.targetExcludedAssetRoot);
 
                 ApplyNeutralPose(stage.sourceRoot, report);
                 if (!stage.sourceIsTarget) ApplyNeutralPose(stage.targetRoot, report);
@@ -138,17 +140,17 @@ namespace Orbiters.ReFit
                     report.Error("asset-clone-failed", "Could not locate the asset renderer inside the staged asset clone.");
                 else
                 {
-                    RemoveTargetNestedAssetCopy(request, stage, realAssetRoot, report);
+                    MarkTargetNestedAssetCopy(request, stage, realAssetRoot, report);
                     RebindExternalBones(request, stage, realAssetRoot, assetClone.transform, report);
                     BakeCurrentSkinPoseAsDefault(stage.assetRenderer, report);
                 }
             }
 
             stage.sourceBody = ResolveBodyRenderer(stage.sourceRoot, request.sourceBodyRenderer,
-                stage.sourceIsTarget ? request.targetAvatar : request.sourceAvatar, stage.assetRenderer, report, "source");
+                stage.sourceIsTarget ? request.targetAvatar : request.sourceAvatar, stage.assetRenderer, report, "source", null);
             stage.targetBody = stage.sourceIsTarget && request.targetBodyRenderer == null && request.sourceBodyRenderer == null
                 ? stage.sourceBody
-                : ResolveBodyRenderer(stage.targetRoot, request.targetBodyRenderer, request.targetAvatar, stage.assetRenderer, report, "target");
+                : ResolveBodyRenderer(stage.targetRoot, request.targetBodyRenderer, request.targetAvatar, stage.assetRenderer, report, "target", stage.targetExcludedAssetRoot);
             if (stage.sourceIsTarget && stage.sourceBody == null) stage.sourceBody = stage.targetBody;
             if (stage.sourceIsTarget && stage.targetBody == null) stage.targetBody = stage.sourceBody;
         }
@@ -353,7 +355,7 @@ namespace Orbiters.ReFit
             total += weight;
         }
 
-        private static void RemoveTargetNestedAssetCopy(ReFitRequest request, NormalizedStage stage,
+        private static void MarkTargetNestedAssetCopy(ReFitRequest request, NormalizedStage stage,
             Transform realAssetRoot, ReFitReport report)
         {
             if (request?.targetAvatar == null || stage?.targetRoot == null || realAssetRoot == null)
@@ -366,9 +368,9 @@ namespace Orbiters.ReFit
             if (targetCopy == null || targetCopy == stage.targetRoot.transform)
                 return;
 
-            UnityEngine.Object.DestroyImmediate(targetCopy.gameObject);
-            report.Info("target-asset-copy-removed",
-                $"Excluded the target-space asset copy '{realAssetRoot.name}' from the staged target skeleton.");
+            stage.targetExcludedAssetRoot = targetCopy;
+            report.Info("target-asset-copy-excluded",
+                $"Keeping the target-space asset copy '{realAssetRoot.name}' in the staged target for stable paths, but excluding it from target skeleton/body indexing.");
         }
 
         /// <summary>Smallest ancestor of the renderer containing the renderer, its bones and root bone (the "asset root").</summary>
@@ -464,7 +466,7 @@ namespace Orbiters.ReFit
         /// "Body", else the skinned renderer with the most vertices (excluding the asset itself).
         /// </summary>
         private static SkinnedMeshRenderer ResolveBodyRenderer(GameObject cloneRoot, SkinnedMeshRenderer overrideRenderer,
-            GameObject realRoot, SkinnedMeshRenderer stagedAsset, ReFitReport report, string label)
+            GameObject realRoot, SkinnedMeshRenderer stagedAsset, ReFitReport report, string label, Transform excludedRoot)
         {
             if (cloneRoot == null) return null;
 
@@ -473,7 +475,7 @@ namespace Orbiters.ReFit
                 var path = ReFitUtility.IndexPath(overrideRenderer.transform, realRoot.transform);
                 var t = ReFitUtility.ResolvePath(cloneRoot.transform, path);
                 var smr = t != null ? t.GetComponent<SkinnedMeshRenderer>() : null;
-                if (smr != null) return smr;
+                if (smr != null && !IsExcluded(smr.transform, excludedRoot)) return smr;
                 report.Warn("body-override-failed", $"Could not resolve the {label} body override in the staged clone; auto-detecting instead.");
             }
 
@@ -482,6 +484,7 @@ namespace Orbiters.ReFit
             foreach (var smr in cloneRoot.GetComponentsInChildren<SkinnedMeshRenderer>(true))
             {
                 if (smr == stagedAsset || smr.sharedMesh == null) continue;
+                if (IsExcluded(smr.transform, excludedRoot)) continue;
                 if (string.Equals(smr.name, "Body", StringComparison.OrdinalIgnoreCase)) return smr;
                 if (smr.sharedMesh.vertexCount > bestVerts) { bestVerts = smr.sharedMesh.vertexCount; best = smr; }
             }
@@ -490,6 +493,11 @@ namespace Orbiters.ReFit
             else
                 report.Info("body-autodetect", $"Using '{best.name}' as the {label} body renderer.");
             return best;
+        }
+
+        private static bool IsExcluded(Transform transform, Transform excludedRoot)
+        {
+            return transform != null && excludedRoot != null && transform.IsChildOf(excludedRoot);
         }
 
         // ------------------------------------------------------------------

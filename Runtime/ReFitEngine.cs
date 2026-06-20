@@ -612,8 +612,8 @@ namespace Orbiters.ReFit
             assetBoneIsExtraOut = null;
 
             var targetRoot = stage.targetRoot.transform;
-            var targetNameIndex = HumanoidBoneMapper.BuildNameIndex(targetRoot);
-            var targetHumanIndex = HumanoidBoneMapper.BuildHumanoidBoneIndex(targetRoot, stage.targetHumanMap);
+            var targetNameIndex = HumanoidBoneMapper.BuildNameIndex(targetRoot, stage.targetExcludedAssetRoot);
+            var targetHumanIndex = HumanoidBoneMapper.BuildHumanoidBoneIndex(targetRoot, stage.targetHumanMap, stage.targetExcludedAssetRoot);
             var sourceHumanIndex = HumanoidBoneMapper.BuildHumanoidBoneIndex(stage.sourceRoot.transform, stage.sourceHumanMap);
 
             var stageBones = new List<Transform>();
@@ -627,7 +627,7 @@ namespace Orbiters.ReFit
                 idx = stageBones.Count;
                 stageBones.Add(t);
                 indexOf[t] = idx;
-                refs.Add(new ReFitBoneRef { origin = ReFitBoneOrigin.Target, path = ReFitUtility.IndexPath(t, targetRoot) });
+                refs.Add(new ReFitBoneRef { origin = ReFitBoneOrigin.Target, name = t.name, path = ReFitUtility.IndexPath(t, targetRoot) });
                 return idx;
             }
 
@@ -754,7 +754,7 @@ namespace Orbiters.ReFit
                     int idx = stageBones.Count;
                     stageBones.Add(bone);
                     indexOf[bone] = idx;
-                    refs.Add(new ReFitBoneRef { origin = keptOrigin, path = ReFitUtility.IndexPath(bone, keptOriginRoot) });
+                    refs.Add(new ReFitBoneRef { origin = keptOrigin, name = bone.name, path = ReFitUtility.IndexPath(bone, keptOriginRoot) });
                     keptSet.Add(bone);
                     assetBoneToNew[k] = idx;
                     assetBoneIsExtra[k] = true;

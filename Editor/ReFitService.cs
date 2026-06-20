@@ -30,7 +30,15 @@ namespace Orbiters.ReFit.Editor
             ReFitDebugSession debug = null;
             try
             {
+                var preflightReport = PrepareSceneAsset(request);
+                if (preflightReport.HasErrors)
+                {
+                    result.report = preflightReport;
+                    return result;
+                }
+
                 var computation = new ReFitEngine().Run(request, progress);
+                MergeReport(preflightReport, computation.report);
                 result.report = computation.report;
                 if (!computation.success)
                 {
@@ -79,10 +87,19 @@ namespace Orbiters.ReFit.Editor
             var result = new ReFitResult();
             ReFitComputation computation = null;
             ReFitDebugSession debug = null;
+            var preflightReport = PrepareSceneAsset(request);
+            if (preflightReport.HasErrors)
+            {
+                result.report = preflightReport;
+                onComplete?.Invoke(result);
+                yield break;
+            }
+
             yield return new ReFitEngine().RunCoroutine(request, progress, c => computation = c);
 
             try
             {
+                MergeReport(preflightReport, computation.report);
                 result.report = computation.report;
                 if (computation.success)
                 {
@@ -138,6 +155,19 @@ namespace Orbiters.ReFit.Editor
                 report.Error("validate-exception", $"Unexpected error: {e.Message}");
                 return report;
             }
+        }
+
+        private static ReFitReport PrepareSceneAsset(ReFitRequest request)
+        {
+            var report = new ReFitReport();
+            ReFitAssetPipeline.RepairSceneAssetArmature(request, report);
+            return report;
+        }
+
+        private static void MergeReport(ReFitReport from, ReFitReport into)
+        {
+            if (from == null || into == null || from.messages.Count == 0) return;
+            into.messages.InsertRange(0, from.messages);
         }
     }
 }

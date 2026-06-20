@@ -153,6 +153,29 @@ namespace Orbiters.ReFit.Editor
             }
         }
 
+        /// <summary>
+        /// Repairs stale duplicate transform-only armature branches left on a scene asset before a new ReFit run.
+        /// This is intentionally conservative: branches used by the renderer or another renderer are not deleted.
+        /// </summary>
+        public static void RepairSceneAssetArmature(ReFitRequest request, ReFitReport report)
+        {
+            var renderer = request != null ? request.assetRenderer : null;
+            if (renderer == null || EditorUtility.IsPersistent(renderer)) return;
+
+            var assetRoot = PoseNormalizer.FindAssetObjectRoot(renderer, request.sourceAvatar, request.targetAvatar);
+            if (assetRoot == null || IsAvatarRoot(assetRoot, request, request.targetAvatar)) return;
+
+            RemoveTransientDebugObjects(assetRoot, report);
+            int removedDuplicateBranches = RemoveDuplicateSiblingBranches(assetRoot, renderer, report);
+            int removedUnusedArmatures = RemoveUnusedArmatureContainers(assetRoot, null, renderer, null, report);
+            int removed = removedDuplicateBranches + removedUnusedArmatures;
+            if (removed > 0)
+                report.Info("stale-armature-repaired",
+                    $"Removed {removed} stale local armature branch(es) from '{HierarchyPath(assetRoot)}' before running ReFit.");
+
+            ValidateExistingInputArmature(assetRoot, renderer, report);
+        }
+
         // ------------------------------------------------------------------
         // Asset instance resolution
         // ------------------------------------------------------------------
@@ -219,7 +242,7 @@ namespace Orbiters.ReFit.Editor
 
             // Resolve the source transforms first. The renderer will not bind to these transforms directly:
             // they are used as blueprints for a fresh clothing-owned armature.
-            var sourceBones = ResolveBoneBlueprints(request, comp, targetInstance, assetInstanceRoot, out var missing);
+            var sourceBones = ResolveBoneBlueprints(request, comp, targetInstance, assetInstanceRoot, report, out var missing);
             if (missing > 0)
             {
                 report.Error("bones-missing",
@@ -249,20 +272,32 @@ namespace Orbiters.ReFit.Editor
             renderer.updateWhenOffscreen = true;
             RefreshMeshBindposes(renderer, bones, report);
             ValidateMaterializedArmature(sourceBones, bones, renderer, report);
+            RemoveTransientDebugObjects(assetInstanceRoot, report);
             RemoveReplacedAssetArmature(request, targetInstance, assetInstanceRoot, renderer, oldBones, oldRootBone, bones, newArmatureRoot, report);
+            RemoveUnusedArmatureContainers(assetInstanceRoot, newArmatureRoot, renderer, bones, report);
             newArmatureRoot.name = UniqueChildName(assetInstanceRoot, "Armature", newArmatureRoot);
+            ValidateFinalArmatureHierarchy(assetInstanceRoot, renderer, newArmatureRoot, bones, report);
             report.Info("armature-rebuilt", $"Built a new clothing armature with {bones.Length - missing}/{bones.Length} resolved bone(s).");
             return missing == 0;
         }
 
         private static Transform[] ResolveBoneBlueprints(ReFitRequest request, ReFitComputation comp,
-            GameObject targetInstance, Transform assetInstanceRoot, out int missing)
+            GameObject targetInstance, Transform assetInstanceRoot, ReFitReport report, out int missing)
         {
             missing = 0;
             var sources = new Transform[comp.bones != null ? comp.bones.Length : 0];
+            var missingDetails = new List<string>();
             for (int i = 0; i < sources.Length; i++)
             {
                 var boneRef = comp.bones[i];
+                if (boneRef == null)
+                {
+                    missing++;
+                    if (missingDetails.Count < 16)
+                        missingDetails.Add($"{i}: <null bone ref>");
+                    continue;
+                }
+
                 switch (boneRef.origin)
                 {
                     case ReFitBoneOrigin.Target:
@@ -275,9 +310,27 @@ namespace Orbiters.ReFit.Editor
                         sources[i] = request?.sourceAvatar != null ? ReFitUtility.ResolvePath(request.sourceAvatar.transform, boneRef.path) : null;
                         break;
                 }
-                if (sources[i] == null) missing++;
+                if (sources[i] == null)
+                {
+                    missing++;
+                    if (missingDetails.Count < 16)
+                    {
+                        var name = string.IsNullOrEmpty(boneRef.name) ? "<unnamed>" : boneRef.name;
+                        missingDetails.Add($"{i}: name='{name}', origin={boneRef.origin}, path={FormatPath(boneRef.path)}");
+                    }
+                }
+            }
+            if (missingDetails.Count > 0)
+            {
+                var suffix = missing > missingDetails.Count ? $" (+{missing - missingDetails.Count} more)" : string.Empty;
+                report.Warn("bones-missing-detail", "Missing bone blueprint refs: " + string.Join("; ", missingDetails.ToArray()) + suffix + ".");
             }
             return sources;
+        }
+
+        private static string FormatPath(int[] path)
+        {
+            return path == null || path.Length == 0 ? "<root>" : string.Join("/", path);
         }
 
         private static Transform CreateMaterializedArmature(Transform assetInstanceRoot)
@@ -654,6 +707,444 @@ namespace Orbiters.ReFit.Editor
 
             if (removed > 0)
                 report.Info("old-armature-removed", $"Removed {removed} stale asset armature root(s) after replacing the renderer bones.");
+        }
+
+        private static int RemoveDuplicateSiblingBranches(Transform assetRoot, SkinnedMeshRenderer renderer, ReFitReport report)
+        {
+            if (assetRoot == null || renderer == null) return 0;
+
+            var rendererBones = BuildRendererBoneSet(renderer);
+            var otherRendererBones = BuildOtherRendererBoneSet(assetRoot, renderer);
+            int removed = 0;
+
+            foreach (var parent in assetRoot.GetComponentsInChildren<Transform>(true))
+            {
+                var groups = new Dictionary<string, List<Transform>>();
+                for (int i = 0; i < parent.childCount; i++)
+                {
+                    var child = parent.GetChild(i);
+                    var key = SemanticDuplicateKey(child);
+                    if (string.IsNullOrEmpty(key)) continue;
+                    if (!groups.TryGetValue(key, out var group))
+                    {
+                        group = new List<Transform>();
+                        groups[key] = group;
+                    }
+                    group.Add(child);
+                }
+
+                foreach (var entry in groups)
+                {
+                    var group = entry.Value;
+                    if (group.Count < 2) continue;
+
+                    var keep = ChooseDuplicateBranchToKeep(group, renderer.rootBone, rendererBones, otherRendererBones);
+                    foreach (var branch in group)
+                    {
+                        if (branch == keep) continue;
+                        bool usedByRenderer = ContainsAny(branch, rendererBones);
+                        bool usedByOtherRenderer = ContainsAny(branch, otherRendererBones);
+                        if (usedByRenderer || usedByOtherRenderer)
+                        {
+                            report.Error("duplicate-armature-branch-used",
+                                $"Duplicate '{entry.Key}' branches under '{HierarchyPath(parent)}' are still referenced by skinning; " +
+                                $"kept '{HierarchyPath(keep)}' but cannot safely remove '{HierarchyPath(branch)}'.");
+                            continue;
+                        }
+
+                        if (!CanDeleteTransformTree(branch))
+                        {
+                            report.Error("duplicate-armature-branch-has-renderer",
+                                $"Duplicate branch '{HierarchyPath(branch)}' contains renderable content and is not referenced by skinning. " +
+                                "ReFit will not delete renderers as part of armature cleanup.");
+                            continue;
+                        }
+
+                        Undo.DestroyObjectImmediate(branch.gameObject);
+                        removed++;
+                    }
+                }
+            }
+
+            return removed;
+        }
+
+        private static int RemoveUnusedArmatureContainers(Transform assetRoot, Transform keepArmatureRoot,
+            SkinnedMeshRenderer renderer, Transform[] rendererBones, ReFitReport report)
+        {
+            if (assetRoot == null || renderer == null) return 0;
+
+            int removed = 0;
+            for (int guard = 0; guard < 6; guard++)
+            {
+                var protectedTransforms = new HashSet<Transform>();
+                ProtectTransform(protectedTransforms, keepArmatureRoot);
+                ProtectTransform(protectedTransforms, renderer.transform);
+
+                if (rendererBones != null)
+                {
+                    foreach (var bone in rendererBones)
+                        ProtectTransform(protectedTransforms, bone);
+                }
+                else
+                {
+                    ProtectTransform(protectedTransforms, renderer.rootBone);
+                    var currentBones = renderer.bones;
+                    if (currentBones != null)
+                        foreach (var bone in currentBones)
+                            ProtectTransform(protectedTransforms, bone);
+                }
+
+                foreach (var usedRenderer in assetRoot.GetComponentsInChildren<SkinnedMeshRenderer>(true))
+                {
+                    if (usedRenderer == renderer) continue;
+                    ProtectTransform(protectedTransforms, usedRenderer.transform);
+                    ProtectTransform(protectedTransforms, usedRenderer.rootBone);
+                    var usedBones = usedRenderer.bones;
+                    if (usedBones == null) continue;
+                    foreach (var bone in usedBones)
+                        ProtectTransform(protectedTransforms, bone);
+                }
+
+                var roots = new List<Transform>();
+                for (int i = 0; i < assetRoot.childCount; i++)
+                {
+                    var child = assetRoot.GetChild(i);
+                    if (child == keepArmatureRoot || IsProtectedOrContainsProtected(child, protectedTransforms))
+                        continue;
+                    if (!IsArmatureContainerTransform(child) && !ContainsHumanoidBoneName(child))
+                        continue;
+                    if (IsTreeUsedBySkinning(child, assetRoot, renderer, rendererBones))
+                        continue;
+                    if (!CanDeleteTransformTree(child))
+                    {
+                        report.Warn("unused-armature-has-renderer",
+                            $"Unused armature-like object '{HierarchyPath(child)}' contains renderable content and was left in place.");
+                        continue;
+                    }
+                    roots.Add(child);
+                }
+
+                if (roots.Count == 0) break;
+                foreach (var root in roots)
+                {
+                    if (root == null) continue;
+                    Undo.DestroyObjectImmediate(root.gameObject);
+                    removed++;
+                }
+            }
+            if (removed > 0)
+                report.Info("unused-armature-containers-removed",
+                    $"Removed {removed} unused local armature container(s) from '{HierarchyPath(assetRoot)}'.");
+            return removed;
+        }
+
+        private static int RemoveTransientDebugObjects(Transform assetRoot, ReFitReport report)
+        {
+            if (assetRoot == null) return 0;
+
+            var roots = new List<Transform>();
+            foreach (var transform in assetRoot.GetComponentsInChildren<Transform>(true))
+            {
+                if (transform == assetRoot || !IsTransientDebugObject(transform)) continue;
+                bool hasAncestor = false;
+                for (int i = roots.Count - 1; i >= 0; i--)
+                {
+                    if (transform.IsChildOf(roots[i])) { hasAncestor = true; break; }
+                    if (roots[i].IsChildOf(transform)) roots.RemoveAt(i);
+                }
+                if (!hasAncestor) roots.Add(transform);
+            }
+
+            int removed = 0;
+            foreach (var root in roots)
+            {
+                if (root == null) continue;
+                Undo.DestroyObjectImmediate(root.gameObject);
+                removed++;
+            }
+
+            if (removed > 0)
+                report.Info("transient-debug-objects-removed",
+                    $"Removed {removed} transient debug object(s) from '{HierarchyPath(assetRoot)}' before armature cleanup.");
+            return removed;
+        }
+
+        private static void ValidateExistingInputArmature(Transform assetRoot, SkinnedMeshRenderer renderer, ReFitReport report)
+        {
+            var duplicates = CollectDuplicateSemanticSiblings(assetRoot);
+            if (duplicates.Count > 0)
+                report.Error("input-armature-duplicates",
+                    $"The input asset still has duplicate humanoid armature branches after preflight repair: {string.Join("; ", duplicates.ToArray())}.");
+        }
+
+        private static void ValidateFinalArmatureHierarchy(Transform assetRoot, SkinnedMeshRenderer renderer,
+            Transform armatureRoot, Transform[] bones, ReFitReport report)
+        {
+            if (assetRoot == null || renderer == null || armatureRoot == null || report == null) return;
+
+            RemoveTransientDebugObjects(assetRoot, report);
+            RemoveUnusedArmatureContainers(assetRoot, armatureRoot, renderer, bones, report);
+
+            if (renderer.rootBone == null)
+            {
+                report.Error("armature-root-missing", "The rebuilt renderer has no root bone.");
+                return;
+            }
+
+            if (!renderer.rootBone.IsChildOf(armatureRoot))
+                report.Error("armature-root-outside-rebuilt",
+                    $"Renderer root bone '{HierarchyPath(renderer.rootBone)}' is not inside rebuilt armature '{HierarchyPath(armatureRoot)}'.");
+
+            int outsideBones = 0;
+            if (bones != null)
+            {
+                foreach (var bone in bones)
+                    if (bone != null && !bone.IsChildOf(armatureRoot))
+                        outsideBones++;
+            }
+            if (outsideBones > 0)
+                report.Error("armature-bones-outside-rebuilt",
+                    $"{outsideBones} renderer bone(s) are outside rebuilt armature '{HierarchyPath(armatureRoot)}'.");
+
+            var skinnedBranches = new HashSet<Transform>();
+            if (bones != null)
+            {
+                foreach (var bone in bones)
+                {
+                    var branch = DirectChildUnder(bone, armatureRoot);
+                    if (branch != null) skinnedBranches.Add(branch);
+                }
+            }
+            var rootBranch = DirectChildUnder(renderer.rootBone, armatureRoot);
+            if (rootBranch != null) skinnedBranches.Add(rootBranch);
+
+            if (skinnedBranches.Count != 1)
+                report.Error("armature-multiple-root-branches",
+                    $"Rebuilt armature '{HierarchyPath(armatureRoot)}' has {skinnedBranches.Count} skinned root branch(es): {BranchList(skinnedBranches)}.");
+
+            var duplicateFinalBranches = CollectDuplicateSemanticSiblings(armatureRoot);
+            if (duplicateFinalBranches.Count > 0)
+                report.Error("armature-duplicate-branches",
+                    $"Rebuilt armature has duplicate humanoid sibling branches: {string.Join("; ", duplicateFinalBranches.ToArray())}.");
+
+            var extraContainers = new List<string>();
+            for (int i = 0; i < assetRoot.childCount; i++)
+            {
+                var child = assetRoot.GetChild(i);
+                if (child == armatureRoot) continue;
+                if (IsArmatureContainerTransform(child) || ContainsHumanoidBoneName(child))
+                {
+                    if (!IsTreeUsedBySkinning(child, assetRoot, renderer, bones) && CanDeleteTransformTree(child))
+                    {
+                        var removedPath = HierarchyPath(child);
+                        Undo.DestroyObjectImmediate(child.gameObject);
+                        report.Info("final-unused-armature-removed",
+                            $"Removed unused armature-like object '{removedPath}' during final hierarchy validation.");
+                        continue;
+                    }
+                    extraContainers.Add(HierarchyPath(child));
+                }
+            }
+            if (extraContainers.Count > 0)
+                report.Error("armature-parallel-containers",
+                    $"Asset root still has parallel armature-like object(s) after replacement: {string.Join("; ", extraContainers.ToArray())}.");
+
+            report.Info("armature-hierarchy-validation",
+                $"Final hierarchy validation: armature='{HierarchyPath(armatureRoot)}', rootBone='{HierarchyPath(renderer.rootBone)}', " +
+                $"skinnedRootBranches={skinnedBranches.Count}, duplicateSiblingBranches={duplicateFinalBranches.Count}, parallelArmatures={extraContainers.Count}.");
+        }
+
+        private static HashSet<Transform> BuildRendererBoneSet(SkinnedMeshRenderer renderer)
+        {
+            var result = new HashSet<Transform>();
+            if (renderer == null) return result;
+            if (renderer.rootBone != null) result.Add(renderer.rootBone);
+            var bones = renderer.bones;
+            if (bones == null) return result;
+            foreach (var bone in bones)
+                if (bone != null) result.Add(bone);
+            return result;
+        }
+
+        private static HashSet<Transform> BuildOtherRendererBoneSet(Transform assetRoot, SkinnedMeshRenderer renderer)
+        {
+            var result = new HashSet<Transform>();
+            if (assetRoot == null) return result;
+            foreach (var other in assetRoot.GetComponentsInChildren<SkinnedMeshRenderer>(true))
+            {
+                if (other == null || other == renderer) continue;
+                if (other.rootBone != null) result.Add(other.rootBone);
+                var bones = other.bones;
+                if (bones == null) continue;
+                foreach (var bone in bones)
+                    if (bone != null) result.Add(bone);
+            }
+            return result;
+        }
+
+        private static string SemanticDuplicateKey(Transform transform)
+        {
+            if (transform == null) return null;
+            var key = ReFitUtility.NormalizeName(transform.name);
+            if (string.IsNullOrEmpty(key)) return null;
+            if (IsArmatureContainerTransform(transform)) return key;
+            return HumanoidBoneMapper.TryInferHumanoidBone(transform, out _) ? key : null;
+        }
+
+        private static Transform ChooseDuplicateBranchToKeep(List<Transform> branches, Transform rootBone,
+            HashSet<Transform> rendererBones, HashSet<Transform> otherRendererBones)
+        {
+            Transform best = null;
+            int bestScore = int.MinValue;
+            foreach (var branch in branches)
+            {
+                if (branch == null) continue;
+                int score = 0;
+                if (rootBone != null && rootBone.IsChildOf(branch)) score += 100000;
+                score += CountContained(branch, rendererBones) * 100;
+                score += CountContained(branch, otherRendererBones) * 10;
+                score -= branch.GetSiblingIndex();
+                if (best == null || score > bestScore)
+                {
+                    best = branch;
+                    bestScore = score;
+                }
+            }
+            return best;
+        }
+
+        private static int CountContained(Transform root, HashSet<Transform> transforms)
+        {
+            if (root == null || transforms == null) return 0;
+            int count = 0;
+            foreach (var transform in transforms)
+                if (transform != null && transform.IsChildOf(root))
+                    count++;
+            return count;
+        }
+
+        private static bool ContainsAny(Transform root, HashSet<Transform> transforms)
+        {
+            return CountContained(root, transforms) > 0;
+        }
+
+        private static bool IsTreeUsedBySkinning(Transform root, Transform assetRoot,
+            SkinnedMeshRenderer primaryRenderer, Transform[] primaryBones)
+        {
+            if (root == null) return false;
+            if (RendererUsesTree(primaryRenderer, primaryBones, root)) return true;
+
+            if (assetRoot == null) return false;
+            foreach (var renderer in assetRoot.GetComponentsInChildren<SkinnedMeshRenderer>(true))
+            {
+                if (renderer == null || renderer == primaryRenderer) continue;
+                if (RendererUsesTree(renderer, renderer.bones, root)) return true;
+            }
+            return false;
+        }
+
+        private static bool RendererUsesTree(SkinnedMeshRenderer renderer, Transform[] bones, Transform root)
+        {
+            if (renderer == null || root == null) return false;
+            if (renderer.transform != null && renderer.transform.IsChildOf(root)) return true;
+            if (renderer.rootBone != null && renderer.rootBone.IsChildOf(root)) return true;
+
+            var activeBones = bones ?? renderer.bones;
+            if (activeBones == null) return false;
+            foreach (var bone in activeBones)
+                if (bone != null && bone.IsChildOf(root))
+                    return true;
+            return false;
+        }
+
+        private static bool CanDeleteTransformTree(Transform root)
+        {
+            if (root == null) return false;
+            foreach (var transform in root.GetComponentsInChildren<Transform>(true))
+            {
+                var components = transform.GetComponents<Component>();
+                foreach (var component in components)
+                    if (component is Renderer || component is MeshFilter)
+                        return false;
+            }
+            return true;
+        }
+
+        private static void ProtectTransform(HashSet<Transform> protectedTransforms, Transform transform)
+        {
+            if (protectedTransforms == null || transform == null) return;
+            protectedTransforms.Add(transform);
+        }
+
+        private static void ProtectTransformAndDescendants(HashSet<Transform> protectedTransforms, Transform transform)
+        {
+            if (protectedTransforms == null || transform == null) return;
+            foreach (var child in transform.GetComponentsInChildren<Transform>(true))
+                protectedTransforms.Add(child);
+        }
+
+        private static bool IsProtectedOrContainsProtected(Transform root, HashSet<Transform> protectedTransforms)
+        {
+            if (root == null || protectedTransforms == null) return false;
+            foreach (var transform in protectedTransforms)
+                if (transform != null && transform.IsChildOf(root))
+                    return true;
+            return false;
+        }
+
+        private static bool IsArmatureContainerTransform(Transform transform)
+        {
+            if (transform == null) return false;
+            var key = ReFitUtility.NormalizeName(transform.name);
+            return key == "armature" || key == "skeleton" || key == "rig" || key.StartsWith("armature");
+        }
+
+        private static bool IsTransientDebugObject(Transform transform)
+        {
+            if (transform == null) return false;
+            return transform.name.StartsWith("__XRayGizmos_", System.StringComparison.Ordinal);
+        }
+
+        private static List<string> CollectDuplicateSemanticSiblings(Transform root)
+        {
+            var result = new List<string>();
+            if (root == null) return result;
+            foreach (var parent in root.GetComponentsInChildren<Transform>(true))
+            {
+                var counts = new Dictionary<string, int>();
+                for (int i = 0; i < parent.childCount; i++)
+                {
+                    var child = parent.GetChild(i);
+                    var key = SemanticDuplicateKey(child);
+                    if (string.IsNullOrEmpty(key)) continue;
+                    counts.TryGetValue(key, out var count);
+                    counts[key] = count + 1;
+                }
+
+                foreach (var entry in counts)
+                    if (entry.Value > 1)
+                        result.Add($"{HierarchyPath(parent)} has {entry.Value} '{entry.Key}' children");
+            }
+            return result;
+        }
+
+        private static Transform DirectChildUnder(Transform transform, Transform ancestor)
+        {
+            if (transform == null || ancestor == null || !transform.IsChildOf(ancestor)) return null;
+            var current = transform;
+            while (current.parent != null && current.parent != ancestor)
+                current = current.parent;
+            return current.parent == ancestor ? current : null;
+        }
+
+        private static string BranchList(HashSet<Transform> branches)
+        {
+            if (branches == null || branches.Count == 0) return "none";
+            var parts = new List<string>();
+            foreach (var branch in branches)
+                if (branch != null) parts.Add(HierarchyPath(branch));
+            return string.Join(", ", parts.ToArray());
         }
 
         private static bool IsAvatarRoot(Transform root, ReFitRequest request, GameObject targetInstance)

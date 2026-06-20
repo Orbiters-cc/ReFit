@@ -22,7 +22,8 @@ namespace Orbiters.ReFit
     public static class HumanoidBoneMapper
     {
         /// <summary>Returns the humanoid bone map of an avatar (HumanBodyBones -> Transform). Uses the Animator when available, otherwise a name-based fallback.</summary>
-        public static Dictionary<HumanBodyBones, Transform> GetHumanoidMap(GameObject avatarRoot, ReFitReport report)
+        public static Dictionary<HumanBodyBones, Transform> GetHumanoidMap(GameObject avatarRoot, ReFitReport report,
+            Transform excludedRoot = null)
         {
             var map = new Dictionary<HumanBodyBones, Transform>();
             if (avatarRoot == null) return map;
@@ -34,14 +35,14 @@ namespace Orbiters.ReFit
                 {
                     Transform t = null;
                     try { t = animator.GetBoneTransform(b); } catch { }
-                    if (t != null) map[b] = t;
+                    if (t != null && !IsExcluded(t, excludedRoot)) map[b] = t;
                 }
                 if (map.Count > 0) return map;
             }
 
             report?.Warn("no-humanoid-rig",
                 $"'{avatarRoot.name}' has no humanoid Animator avatar. Falling back to bone-name matching; results may be less reliable.");
-            FallbackNameMap(avatarRoot.transform, map);
+            FallbackNameMap(avatarRoot.transform, map, excludedRoot);
             return map;
         }
 
@@ -62,10 +63,10 @@ namespace Orbiters.ReFit
         /// Ambiguous names keep the first occurrence. Humanoid aliases are also indexed, so equivalent
         /// names like "Left arm", "upper_arm.L" and "LeftUpperArm" resolve to the same transform.
         /// </summary>
-        public static Dictionary<string, Transform> BuildNameIndex(Transform root)
+        public static Dictionary<string, Transform> BuildNameIndex(Transform root, Transform excludedRoot = null)
         {
-            var index = BuildExactNameIndex(root);
-            var humanIndex = BuildHumanoidBoneIndex(root);
+            var index = BuildExactNameIndex(root, excludedRoot);
+            var humanIndex = BuildHumanoidBoneIndex(root, null, excludedRoot);
             foreach (var kv in humanIndex)
                 AddHumanAliases(index, kv.Key, kv.Value);
             return index;
@@ -73,18 +74,19 @@ namespace Orbiters.ReFit
 
         /// <summary>Builds a humanoid-bone -> Transform index using Animator data when supplied and name aliases otherwise.</summary>
         public static Dictionary<HumanBodyBones, Transform> BuildHumanoidBoneIndex(Transform root,
-            Dictionary<HumanBodyBones, Transform> seed = null)
+            Dictionary<HumanBodyBones, Transform> seed = null, Transform excludedRoot = null)
         {
             var index = new Dictionary<HumanBodyBones, Transform>();
             if (seed != null)
             {
                 foreach (var kv in seed)
-                    if (kv.Value != null && !index.ContainsKey(kv.Key)) index[kv.Key] = kv.Value;
+                    if (kv.Value != null && !IsExcluded(kv.Value, excludedRoot) && !index.ContainsKey(kv.Key)) index[kv.Key] = kv.Value;
             }
 
             if (root == null) return index;
             foreach (var t in root.GetComponentsInChildren<Transform>(true))
             {
+                if (IsExcluded(t, excludedRoot)) continue;
                 if (TryInferHumanoidBone(t, out var bone) && !index.ContainsKey(bone))
                     index[bone] = t;
             }
@@ -134,12 +136,13 @@ namespace Orbiters.ReFit
             return false;
         }
 
-        private static Dictionary<string, Transform> BuildExactNameIndex(Transform root)
+        private static Dictionary<string, Transform> BuildExactNameIndex(Transform root, Transform excludedRoot = null)
         {
             var index = new Dictionary<string, Transform>();
             if (root == null) return index;
             foreach (var t in root.GetComponentsInChildren<Transform>(true))
             {
+                if (IsExcluded(t, excludedRoot)) continue;
                 var key = ReFitUtility.NormalizeName(t.name);
                 if (key.Length == 0) continue;
                 if (!index.ContainsKey(key)) index[key] = t;
@@ -304,9 +307,9 @@ namespace Orbiters.ReFit
             }
         }
 
-        private static void FallbackNameMap(Transform root, Dictionary<HumanBodyBones, Transform> map)
+        private static void FallbackNameMap(Transform root, Dictionary<HumanBodyBones, Transform> map, Transform excludedRoot = null)
         {
-            var index = BuildExactNameIndex(root);
+            var index = BuildExactNameIndex(root, excludedRoot);
             foreach (var (bone, patterns) in FallbackPatterns)
             {
                 foreach (var p in patterns)
@@ -314,6 +317,11 @@ namespace Orbiters.ReFit
                     if (index.TryGetValue(p, out var t)) { map[bone] = t; break; }
                 }
             }
+        }
+
+        private static bool IsExcluded(Transform transform, Transform excludedRoot)
+        {
+            return transform != null && excludedRoot != null && transform.IsChildOf(excludedRoot);
         }
     }
 }

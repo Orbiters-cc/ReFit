@@ -49,6 +49,8 @@ namespace Orbiters.ReFit.Editor
                 progress?.Invoke(0.92f, "Saving assets");
                 var subfolder = request.assetRenderer != null ? request.assetRenderer.name : "ReFit";
                 result.mesh = computation.mesh;
+                result.primaryShapeName = computation.primaryShapeName;
+                result.secondaryShapeNames = computation.secondaryShapeNames;
                 result.meshAssetPath = ReFitAssetPipeline.SaveMesh(computation.mesh, subfolder, result.report);
 
                 debug = ReFitDebugService.BeginSession(request, result.report);
@@ -106,6 +108,8 @@ namespace Orbiters.ReFit.Editor
                     progress?.Invoke(0.94f, "Saving assets");
                     var subfolder = request.assetRenderer != null ? request.assetRenderer.name : "ReFit";
                     result.mesh = computation.mesh;
+                    result.primaryShapeName = computation.primaryShapeName;
+                    result.secondaryShapeNames = computation.secondaryShapeNames;
                     result.meshAssetPath = ReFitAssetPipeline.SaveMesh(computation.mesh, subfolder, result.report);
 
                     debug = ReFitDebugService.BeginSession(request, result.report);

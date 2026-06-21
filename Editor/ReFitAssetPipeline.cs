@@ -19,6 +19,28 @@ namespace Orbiters.ReFit.Editor
         public SkinnedMeshRenderer sceneRenderer;
         /// <summary>The mesh the renderer used before the re-fit (assign it back to revert).</summary>
         public Mesh originalMesh;
+        /// <summary>Name of the generated primary refit blendshape.</summary>
+        public string primaryShapeName;
+        /// <summary>Names of the generated transferred blendshapes.</summary>
+        public string[] secondaryShapeNames;
+        /// <summary>Gravity blendshape names added after the optional preview is confirmed.</summary>
+        public string[] gravityShapeNames;
+        /// <summary>Default scene/prefab weight used when the optional gravity blendshapes were applied.</summary>
+        public float gravityDefaultWeight;
+
+        public string[] GeneratedShapeNames()
+        {
+            var names = new List<string>();
+            if (!string.IsNullOrEmpty(primaryShapeName))
+                names.Add(primaryShapeName);
+            if (secondaryShapeNames != null)
+            {
+                for (int i = 0; i < secondaryShapeNames.Length; i++)
+                    if (!string.IsNullOrEmpty(secondaryShapeNames[i]) && !names.Contains(secondaryShapeNames[i]))
+                        names.Add(secondaryShapeNames[i]);
+            }
+            return names.ToArray();
+        }
     }
 
     /// <summary>

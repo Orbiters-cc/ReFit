@@ -47,6 +47,7 @@ namespace Orbiters.ReFit.Editor
             FileAssetChoice,
             Summary,
             Settings,
+            GravityPreview,
             Result
         }
 
@@ -64,6 +65,9 @@ namespace Orbiters.ReFit.Editor
         private ReFitReport validateReport;
         private bool validateScheduled;
         private ReFitResult lastResult;
+        private ReFitRequest lastRequest;
+        private ReFitGravityPreview gravityPreview;
+        private float gravityPreviewWeight = 100f;
 
         private ScrollView content;
         private Button backButton;
@@ -140,6 +144,11 @@ namespace Orbiters.ReFit.Editor
         private void GoBack()
         {
             if (history.Count == 0) return;
+            if (current == Step.GravityPreview)
+            {
+                ReFitGravityPreviewService.ClearPreview(gravityPreview);
+                gravityPreview = null;
+            }
             current = history.Pop();
             Render();
         }
@@ -147,12 +156,19 @@ namespace Orbiters.ReFit.Editor
         private void Restart()
         {
             history.Clear();
+            ReFitGravityPreviewService.ClearPreview(gravityPreview);
             current = Step.AssetLocation;
             myAvatar = null; asset = null; assetFileObject = null;
             targetAvatar = null; sourceAvatar = null; blendshape = null;
             mode = ReFitMode.MeshToMesh;
             validateReport = null; lastResult = null;
+            lastRequest = null; gravityPreview = null;
             Render();
+        }
+
+        private void OnDisable()
+        {
+            ReFitGravityPreviewService.ClearPreview(gravityPreview);
         }
 
         private void Render()
@@ -176,6 +192,7 @@ namespace Orbiters.ReFit.Editor
                 case Step.FileAssetChoice: BuildFileAssetChoice(); break;
                 case Step.Summary: BuildSummary(); break;
                 case Step.Settings: BuildToolSettings(); break;
+                case Step.GravityPreview: BuildGravityPreview(); break;
                 case Step.Result: BuildResult(); break;
             }
         }
@@ -745,7 +762,8 @@ namespace Orbiters.ReFit.Editor
         {
             try
             {
-                lastResult = ReFitService.Execute(BuildRequest(),
+                lastRequest = BuildRequest();
+                lastResult = ReFitService.Execute(lastRequest,
                     (t, label) => EditorUtility.DisplayProgressBar("ReFit", label, t));
             }
             finally
@@ -763,7 +781,72 @@ namespace Orbiters.ReFit.Editor
                     refitMesh = lastResult.mesh
                 });
             }
-            Go(Step.Result);
+            if (lastResult != null && lastResult.success &&
+                ReFitGravityPreviewService.TryCreatePreview(lastResult, lastRequest, out gravityPreview))
+            {
+                gravityPreviewWeight = 100f;
+                ReFitGravityPreviewService.ShowPreview(lastResult.sceneRenderer, gravityPreview, gravityPreviewWeight);
+                Go(Step.GravityPreview);
+            }
+            else
+            {
+                gravityPreview = null;
+                Go(Step.Result);
+            }
+        }
+
+        private void BuildGravityPreview()
+        {
+            if (lastResult == null || !lastResult.success || gravityPreview == null ||
+                gravityPreview.frames == null || gravityPreview.frames.Length == 0)
+            {
+                Go(Step.Result);
+                return;
+            }
+
+            Question("Gravity preview");
+            SummaryRow("Detected as", "body clothing");
+            if (gravityPreview.candidate != null)
+            {
+                SummaryRow("Confidence", gravityPreview.candidate.score.ToString("0.00"));
+                if (gravityPreview.candidate.reasons != null && gravityPreview.candidate.reasons.Length > 0)
+                    SummaryRow("Signals", string.Join(", ", gravityPreview.candidate.reasons));
+            }
+            SummaryRow("Preview body", string.IsNullOrEmpty(gravityPreview.bodyRendererName) ? "-" : gravityPreview.bodyRendererName);
+
+            var shapeNames = new List<string>();
+            for (int i = 0; i < gravityPreview.frames.Length; i++)
+                shapeNames.Add(gravityPreview.frames[i].gravityShapeName);
+            SummaryRow("Generated shapes", string.Join(", ", shapeNames));
+
+            var slider = new Slider("Default gravity weight", 0f, ReFitGravityPreviewService.MaximumGravityWeight) { value = gravityPreviewWeight };
+            slider.AddToClassList("refit-field");
+            slider.RegisterValueChangedCallback(e =>
+            {
+                gravityPreviewWeight = e.newValue;
+                ReFitGravityPreviewService.SetWeight(gravityPreviewWeight);
+            });
+            content.Add(slider);
+            Help("The Scene view cyan wire preview shows the additive gravity shape at the selected default weight.");
+
+            var apply = Primary("Apply gravity blendshapes", () =>
+            {
+                ReFitGravityPreviewService.Apply(lastResult, gravityPreview, gravityPreviewWeight);
+                gravityPreview = null;
+                Go(Step.Result);
+            });
+            apply.style.marginTop = 12;
+
+            var skip = new Button(() =>
+            {
+                ReFitGravityPreviewService.ClearPreview(gravityPreview);
+                gravityPreview = null;
+                Go(Step.Result);
+            })
+            { text = "Skip" };
+            skip.AddToClassList("refit-back");
+            skip.style.marginTop = 8;
+            content.Add(skip);
         }
 
         private void BuildResult()
@@ -775,6 +858,11 @@ namespace Orbiters.ReFit.Editor
             {
                 if (!string.IsNullOrEmpty(lastResult.meshAssetPath)) SummaryRow("Mesh asset", lastResult.meshAssetPath);
                 if (!string.IsNullOrEmpty(lastResult.prefabAssetPath)) SummaryRow("Prefab", lastResult.prefabAssetPath);
+                if (lastResult.gravityShapeNames != null && lastResult.gravityShapeNames.Length > 0)
+                {
+                    SummaryRow("Gravity shapes", string.Join(", ", lastResult.gravityShapeNames));
+                    SummaryRow("Gravity default", lastResult.gravityDefaultWeight.ToString("0.#"));
+                }
 
                 var messages = new VisualElement();
                 content.Add(messages);

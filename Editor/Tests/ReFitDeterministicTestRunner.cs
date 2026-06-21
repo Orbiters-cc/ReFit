@@ -115,6 +115,15 @@ namespace Orbiters.ReFit.Editor.Tests
                     "XRay extra gizmo registry exposes external toggles",
                     XRayExtraGizmoRegistry_RegistersAndTogglesExternalGizmo);
                 RunCase(failures,
+                    "Gravity detector recognizes body clothing candidates",
+                    GravityRelaxation_DetectsBodyClothingCandidate);
+                RunCase(failures,
+                    "Gravity relaxation propagates upper torso clearance downward",
+                    GravityRelaxation_PropagatesUpperTorsoClearanceDownward);
+                RunCase(failures,
+                    "Gravity preview uses normal weight with stronger baked deltas",
+                    GravityPreview_UsesNormalWeightWithStrongerBakedDeltas);
+                RunCase(failures,
                     "Armature replacement cleans rerun target-space stale skeleton",
                     ArmatureReplacement_RerunTargetSpace_RemovesUnusedLocalSkeleton);
                 RunCase(failures,
@@ -146,6 +155,79 @@ namespace Orbiters.ReFit.Editor.Tests
         private static void FbxFixture_DifferentClothingArmature_ReproducesAuthoredResultClothing()
         {
             RunFbxFixtureAgainstAuthoredResult(FbxFixtureV2DifferentArmaturePath, "FBX v2");
+        }
+
+        private static void GravityRelaxation_DetectsBodyClothingCandidate()
+        {
+            using (var fixture = ReFitTestFixture.Create())
+            {
+                var candidate = ReFitGravityRelaxation.DetectCandidate(
+                    fixture.targetSpaceAccessory.renderer,
+                    fixture.target.root);
+                AssertTrue(candidate.isCandidate,
+                    $"Expected the target-space Hoodie renderer to be detected as body clothing. Score={candidate.score:0.###}");
+                AssertGreater(candidate.score, 0.44f, "Body clothing candidate score was too low.");
+            }
+        }
+
+        private static void GravityRelaxation_PropagatesUpperTorsoClearanceDownward()
+        {
+            using (var fixture = ReFitTestFixture.Create())
+            {
+                var renderer = fixture.targetSpaceAccessory.renderer;
+                AddSyntheticChestExpansion(renderer.sharedMesh, "refit");
+                renderer.SetBlendShapeWeight(renderer.sharedMesh.GetBlendShapeIndex("refit"), 100f);
+
+                var settings = ReFitGravityRelaxation.DefaultSettings;
+                settings.minimumMeaningfulDelta = 0.0005f;
+                var preview = ReFitGravityRelaxation.GeneratePreview(
+                    renderer,
+                    fixture.target.renderer,
+                    fixture.target.root,
+                    new[] { "refit" },
+                    settings,
+                    new ReFitReport());
+
+                AssertTrue(preview != null && preview.frames != null && preview.frames.Length == 1,
+                    "Gravity relaxation did not produce one preview frame for the synthetic refit shape.");
+
+                var deltas = preview.frames[0].localDeltas;
+                float lowerTorsoAverageZ = AverageLocalDeltaZ(renderer.sharedMesh, deltas,
+                    v => Mathf.Abs(v.x) <= 0.5f && v.y >= 0.45f && v.y <= 0.85f);
+                float upperAnchorAverageZ = AverageLocalDeltaZ(renderer.sharedMesh, deltas,
+                    v => Mathf.Abs(v.x) <= 0.5f && v.y >= 1.05f && v.y <= 1.35f);
+                float sleeveMax = MaxLocalDeltaMagnitude(renderer.sharedMesh, deltas,
+                    v => Mathf.Abs(v.x) >= 0.65f && v.y >= 0.85f && v.y <= 1.45f);
+                float hoodMax = MaxLocalDeltaMagnitude(renderer.sharedMesh, deltas,
+                    v => Mathf.Abs(v.x) <= 0.55f && v.y >= 1.45f);
+                float lowerTorsoMaxAbsX = MaxAbsLocalDeltaComponent(renderer.sharedMesh, deltas,
+                    v => Mathf.Abs(v.x) <= 0.5f && v.y >= 0.45f && v.y <= 0.85f,
+                    delta => delta.x);
+                float lowerTorsoMaxAbsY = MaxAbsLocalDeltaComponent(renderer.sharedMesh, deltas,
+                    v => Mathf.Abs(v.x) <= 0.5f && v.y >= 0.45f && v.y <= 0.85f,
+                    delta => delta.y);
+
+                AssertGreater(lowerTorsoAverageZ, 0.018f,
+                    "Gravity relaxation should push the lower torso hoodie surface forward.");
+                AssertLessOrEqual(upperAnchorAverageZ, 0.003f,
+                    "Gravity relaxation should not double-push the upper torso anchor area.");
+                AssertLessOrEqual(sleeveMax, 0.001f,
+                    "Gravity relaxation should not inflate sleeve or arm vertices.");
+                AssertLessOrEqual(hoodMax, 0.001f,
+                    "Gravity relaxation should not inflate high hood/head-area vertices.");
+                AssertLessOrEqual(lowerTorsoMaxAbsX, 0.001f,
+                    "Gravity relaxation should not add noisy sideways lower-torso deltas.");
+                AssertLessOrEqual(lowerTorsoMaxAbsY, 0.001f,
+                    "Gravity relaxation should not add noisy vertical lower-torso deltas.");
+            }
+        }
+
+        private static void GravityPreview_UsesNormalWeightWithStrongerBakedDeltas()
+        {
+            AssertLessOrEqual(ReFitGravityPreviewService.MaximumGravityWeight, 100f,
+                "Gravity preview should keep standard blendshape weight semantics.");
+            AssertGreater(ReFitGravityRelaxation.DefaultSettings.bakedStrengthMultiplier, 2.99f,
+                "Gravity relaxation should bake a stronger full-weight shape instead of relying on 200% preview weight.");
         }
 
         private static void RunFbxFixtureAgainstAuthoredResult(string fixturePath, string label)
@@ -1295,6 +1377,74 @@ namespace Orbiters.ReFit.Editor.Tests
             var deltas = new Vector3[mesh.vertexCount];
             mesh.GetBlendShapeFrameVertices(shapeIndex, frame, deltas, null, null);
             return deltas;
+        }
+
+        private static void AddSyntheticChestExpansion(Mesh mesh, string shapeName)
+        {
+            var vertices = mesh.vertices;
+            var deltas = new Vector3[vertices.Length];
+            for (int i = 0; i < vertices.Length; i++)
+            {
+                var vertex = vertices[i];
+                if (Mathf.Abs(vertex.x) <= 0.55f && vertex.y >= 1.0f && vertex.y <= 1.35f)
+                    deltas[i] = new Vector3(0f, 0f, 0.11f);
+            }
+            mesh.AddBlendShapeFrame(shapeName, 100f, deltas, null, null);
+        }
+
+        private static float AverageLocalDeltaZ(Mesh mesh, Vector3[] deltas, Func<Vector3, bool> contains)
+        {
+            var vertices = mesh.vertices;
+            float total = 0f;
+            int count = 0;
+            for (int i = 0; i < vertices.Length; i++)
+            {
+                if (!contains(vertices[i]))
+                    continue;
+                total += deltas[i].z;
+                count++;
+            }
+
+            AssertTrue(count > 0, "No vertices matched the requested delta region.");
+            return total / count;
+        }
+
+        private static float MaxLocalDeltaMagnitude(Mesh mesh, Vector3[] deltas, Func<Vector3, bool> contains)
+        {
+            var vertices = mesh.vertices;
+            float max = 0f;
+            int count = 0;
+            for (int i = 0; i < vertices.Length; i++)
+            {
+                if (!contains(vertices[i]))
+                    continue;
+                max = Mathf.Max(max, deltas[i].magnitude);
+                count++;
+            }
+
+            AssertTrue(count > 0, "No vertices matched the requested delta magnitude region.");
+            return max;
+        }
+
+        private static float MaxAbsLocalDeltaComponent(
+            Mesh mesh,
+            Vector3[] deltas,
+            Func<Vector3, bool> contains,
+            Func<Vector3, float> component)
+        {
+            var vertices = mesh.vertices;
+            float max = 0f;
+            int count = 0;
+            for (int i = 0; i < vertices.Length; i++)
+            {
+                if (!contains(vertices[i]))
+                    continue;
+                max = Mathf.Max(max, Mathf.Abs(component(deltas[i])));
+                count++;
+            }
+
+            AssertTrue(count > 0, "No vertices matched the requested delta component region.");
+            return max;
         }
 
         private static Vector3[] WorldShapeDeltas(MeshSnapshot snapshot, Vector3[] localDeltas)

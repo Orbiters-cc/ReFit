@@ -603,18 +603,14 @@ namespace Orbiters.ReFit
                 report.Warn("scale-unmeasured", "Could not measure either avatar; skipping scale matching.");
             }
 
-            // 2) Alignment: body surfaces are the comparison reference. Use skeleton hips only when mesh
-            //    centers cannot be measured.
-            sourceBounds = BakedWorldBounds(stage.sourceBody);
-            targetBounds = BakedWorldBounds(stage.targetBody);
-            if (sourceBounds.HasValue && targetBounds.HasValue)
+            // 2) Alignment: align the source side by avatar root/pivot, not by body-surface center. The surface
+            // center can be an intentional shape difference that the primary refit must preserve.
+            var rootOffset = stage.targetRoot.transform.position - stage.sourceRoot.transform.position;
+            if (rootOffset.sqrMagnitude > 1e-12f)
             {
-                stage.sourceRoot.transform.position += targetBounds.Value.center - sourceBounds.Value.center;
-            }
-            else if (stage.sourceHumanMap.TryGetValue(HumanBodyBones.Hips, out var srcHips) && srcHips != null &&
-                     stage.targetHumanMap.TryGetValue(HumanBodyBones.Hips, out var tgtHips) && tgtHips != null)
-            {
-                stage.sourceRoot.transform.position += tgtHips.position - srcHips.position;
+                stage.sourceRoot.transform.position += rootOffset;
+                if (stage.assetStageRoot != null && !stage.assetInTargetSpace)
+                    stage.assetStageRoot.position += rootOffset;
             }
         }
 
@@ -712,58 +708,33 @@ namespace Orbiters.ReFit
         private static Bounds? BakedWorldBounds(SkinnedMeshRenderer smr)
         {
             if (smr == null || smr.sharedMesh == null) return null;
-            var baked = new Mesh();
-            var weights = CaptureBlendShapeWeights(smr);
-            try
+            var snap = MeshSnapshot.Capture(smr, false, ZeroBlendShapeOverrides(smr), null);
+            var verts = snap.worldVertices;
+            if (verts == null || verts.Length == 0) return null;
+
+            var min = new Vector3(float.MaxValue, float.MaxValue, float.MaxValue);
+            var max = new Vector3(float.MinValue, float.MinValue, float.MinValue);
+            for (int i = 0; i < verts.Length; i++)
             {
-                SetAllBlendShapeWeights(smr, 0f);
-                smr.BakeMesh(baked);
-                var verts = baked.vertices;
-                if (verts.Length == 0) return null;
-                var l2w = smr.transform.localToWorldMatrix; // BakeMesh output is in the renderer's local space
-                var min = new Vector3(float.MaxValue, float.MaxValue, float.MaxValue);
-                var max = new Vector3(float.MinValue, float.MinValue, float.MinValue);
-                foreach (var v in verts)
-                {
-                    var w = l2w.MultiplyPoint3x4(v);
-                    min = Vector3.Min(min, w);
-                    max = Vector3.Max(max, w);
-                }
-                var b = new Bounds();
-                b.SetMinMax(min, max);
-                return b;
+                min = Vector3.Min(min, verts[i]);
+                max = Vector3.Max(max, verts[i]);
             }
-            finally
-            {
-                RestoreBlendShapeWeights(smr, weights);
-                UnityEngine.Object.DestroyImmediate(baked);
-            }
+
+            var b = new Bounds();
+            b.SetMinMax(min, max);
+            return b;
         }
 
-        private static float[] CaptureBlendShapeWeights(SkinnedMeshRenderer smr)
+        private static Dictionary<int, float> ZeroBlendShapeOverrides(SkinnedMeshRenderer smr)
         {
-            if (smr == null || smr.sharedMesh == null || smr.sharedMesh.blendShapeCount == 0)
-                return Array.Empty<float>();
+            var mesh = smr != null ? smr.sharedMesh : null;
+            if (mesh == null || mesh.blendShapeCount == 0)
+                return null;
 
-            var weights = new float[smr.sharedMesh.blendShapeCount];
-            for (int i = 0; i < weights.Length; i++)
-                weights[i] = smr.GetBlendShapeWeight(i);
-            return weights;
-        }
-
-        private static void SetAllBlendShapeWeights(SkinnedMeshRenderer smr, float weight)
-        {
-            if (smr == null || smr.sharedMesh == null) return;
-            for (int i = 0; i < smr.sharedMesh.blendShapeCount; i++)
-                smr.SetBlendShapeWeight(i, weight);
-        }
-
-        private static void RestoreBlendShapeWeights(SkinnedMeshRenderer smr, float[] weights)
-        {
-            if (smr == null || smr.sharedMesh == null || weights == null) return;
-            int count = Mathf.Min(weights.Length, smr.sharedMesh.blendShapeCount);
-            for (int i = 0; i < count; i++)
-                smr.SetBlendShapeWeight(i, weights[i]);
+            var overrides = new Dictionary<int, float>(mesh.blendShapeCount);
+            for (int i = 0; i < mesh.blendShapeCount; i++)
+                overrides[i] = 0f;
+            return overrides;
         }
 
         private static bool TryGet(Dictionary<HumanBodyBones, Transform> map, HumanBodyBones b, out Transform t)

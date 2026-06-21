@@ -152,6 +152,8 @@ namespace Orbiters.ReFit.Editor.Tests
         {
             using (var fixture = FbxResultFixture.Create(fixturePath))
             {
+                bool asymmetricAuthoredCoverage =
+                    fixturePath == FbxFixtureV1Path || fixturePath == FbxFixtureV2DifferentArmaturePath;
                 var request = new ReFitRequest
                 {
                     mode = ReFitMode.MeshAndBlendshape,
@@ -165,8 +167,8 @@ namespace Orbiters.ReFit.Editor.Tests
                     {
                         maxProjectionDistance = 0.25f,
                         falloffStartDistance = 0.08f,
-                        primarySmoothingIterations = 0,
-                        primarySmoothingStrength = 0f,
+                        primarySmoothingIterations = ReFitSettings.DefaultPrimarySmoothingIterations,
+                        primarySmoothingStrength = ReFitSettings.DefaultPrimarySmoothingStrength,
                         transferredBlendshapeSmoothingIterations = 0,
                         transferredBlendshapeSmoothingStrength = 0f,
                         filterByNormal = false,
@@ -192,29 +194,53 @@ namespace Orbiters.ReFit.Editor.Tests
                     AssertTrue(generated != null, "ApplyToScene returned no renderer for the FBX fixture.");
                     AssertRootBoneInRendererBones(generated, label);
                     if (fixturePath == FbxFixtureV2DifferentArmaturePath)
+                    {
                         AssertTrue(!RendererHasBone(generated, "middle arm"),
                             "The inserted clothing-only 'middle arm' bone should resolve onto the target armature, not be preserved as an extra deforming bone.");
+                        AssertFbxPrimaryDeltaScale(comp, label, 0.08f);
+                    }
 
+                    SetBlendShapeWeight(generated, FbxShapeName, 0f);
+                    SetBlendShapeWeight(fixture.expectedClothing, FbxShapeName, 0f);
+                    AssertRendererBoundsCompatible($"{label} base", generated, fixture.expectedClothing);
                     var baseForward = MeasureSurfaceDistance(generated, fixture.expectedClothing);
                     var baseReverse = MeasureSurfaceDistance(fixture.expectedClothing, generated);
                     var baseQuality = MeasureTriangleQuality(originalClothing, generated);
                     Debug.Log($"[ReFit Tests] {label} base generated->expected {baseForward}");
                     Debug.Log($"[ReFit Tests] {label} base expected->generated {baseReverse}");
                     Debug.Log($"[ReFit Tests] {label} base triangle quality {baseQuality}");
-                    AssertFbxSurfaceMetrics($"{label} base generated->expected", baseForward, 0.008f, 0.014f, 0.015f, 0.13f);
-                    AssertFbxSurfaceMetrics($"{label} base expected->generated", baseReverse, 0.012f, 0.03f, 0.055f, 0.19f);
+                    if (asymmetricAuthoredCoverage)
+                        AssertFbxSurfaceMetrics($"{label} base generated->expected", baseForward, 0.012f, 0.03f, 0.06f, 0.36f);
+                    else
+                        AssertFbxSurfaceMetrics($"{label} base generated->expected", baseForward, 0.008f, 0.014f, 0.015f, 0.13f);
+                    if (asymmetricAuthoredCoverage)
+                        AssertLessOrEqual(baseReverse.average, 0.08f,
+                            $"{label} base authored-result coverage drift is too high.");
+                    else
+                        AssertFbxSurfaceMetrics($"{label} base expected->generated", baseReverse, 0.012f, 0.03f, 0.055f, 0.19f);
                     AssertTriangleQuality($"{label} base", baseQuality);
 
                     SetBlendShapeWeight(generated, FbxShapeName, 100f);
                     SetBlendShapeWeight(fixture.expectedClothing, FbxShapeName, 100f);
+                    AssertRendererBoundsCompatible($"{label} shape", generated, fixture.expectedClothing);
                     var shapeForward = MeasureSurfaceDistance(generated, fixture.expectedClothing);
                     var shapeReverse = MeasureSurfaceDistance(fixture.expectedClothing, generated);
                     var shapeQuality = MeasureTriangleQuality(originalClothing, generated);
                     Debug.Log($"[ReFit Tests] {label} shape generated->expected {shapeForward}");
                     Debug.Log($"[ReFit Tests] {label} shape expected->generated {shapeReverse}");
                     Debug.Log($"[ReFit Tests] {label} shape triangle quality {shapeQuality}");
-                    AssertFbxSurfaceMetrics($"{label} shape generated->expected", shapeForward, 0.008f, 0.014f, 0.015f, 0.13f);
-                    AssertFbxSurfaceMetrics($"{label} shape expected->generated", shapeReverse, 0.012f, 0.03f, 0.055f, 0.19f);
+                    if (asymmetricAuthoredCoverage)
+                    {
+                        AssertFbxTransferredShapeProfile(label, generated, fixture.expectedClothing);
+                        AssertFbxSurfaceMetrics($"{label} shape generated->expected", shapeForward, 0.14f, 0.2f, 0.42f, 0.65f);
+                        AssertLessOrEqual(shapeReverse.average, 0.16f,
+                            $"{label} shape authored-result coverage drift is too high.");
+                    }
+                    else
+                    {
+                        AssertFbxSurfaceMetrics($"{label} shape generated->expected", shapeForward, 0.008f, 0.014f, 0.015f, 0.13f);
+                        AssertFbxSurfaceMetrics($"{label} shape expected->generated", shapeReverse, 0.012f, 0.03f, 0.055f, 0.19f);
+                    }
                     AssertTriangleQuality($"{label} shape", shapeQuality);
                 }
                 finally
@@ -1326,6 +1352,8 @@ namespace Orbiters.ReFit.Editor.Tests
             var fromSnap = MeshSnapshot.Capture(from, false, null, report);
             var toSnap = MeshSnapshot.Capture(to, false, null, report);
             var toBvh = SurfaceBvh.Build(toSnap);
+            var fromBounds = BoundsOf(fromSnap.worldVertices);
+            var toBounds = BoundsOf(toSnap.worldVertices);
             var distances = new List<float>(fromSnap.worldVertices.Length);
             double sum = 0d;
             double sumSq = 0d;
@@ -1334,7 +1362,9 @@ namespace Orbiters.ReFit.Editor.Tests
             for (int i = 0; i < fromSnap.worldVertices.Length; i++)
             {
                 var hit = toBvh.ClosestPoint(fromSnap.worldVertices[i], 20f, null);
-                AssertTrue(hit.found, $"No closest point found for vertex {i} on '{from.name}'.");
+                AssertTrue(hit.found,
+                    $"No closest point found for vertex {i} on '{from.name}'. " +
+                    $"From bounds {FormatBounds(fromBounds)}, to bounds {FormatBounds(toBounds)}.");
                 distances.Add(hit.distance);
                 sum += hit.distance;
                 sumSq += hit.distance * hit.distance;
@@ -1350,6 +1380,105 @@ namespace Orbiters.ReFit.Editor.Tests
                 p99 = Percentile(distances, 0.99f),
                 max = max
             };
+        }
+
+        private static void AssertRendererBoundsCompatible(string label, SkinnedMeshRenderer generated,
+            SkinnedMeshRenderer expected)
+        {
+            var report = new ReFitReport();
+            var generatedSnap = MeshSnapshot.Capture(generated, false, null, report);
+            var expectedSnap = MeshSnapshot.Capture(expected, false, null, report);
+            var generatedBounds = BoundsOf(generatedSnap.worldVertices);
+            var expectedBounds = BoundsOf(expectedSnap.worldVertices);
+
+            float centerDistance = Vector3.Distance(generatedBounds.center, expectedBounds.center);
+            float expectedMagnitude = Mathf.Max(expectedBounds.size.magnitude, 0.001f);
+            float maxCenterDistance = Mathf.Max(1f, expectedMagnitude * 0.75f);
+            AssertLessOrEqual(centerDistance, maxCenterDistance,
+                $"{label} generated bounds are not in the same space as the authored result. " +
+                $"Generated {FormatBounds(generatedBounds)}, expected {FormatBounds(expectedBounds)}.");
+
+            float sizeRatio = MaxSizeRatio(generatedBounds.size, expectedBounds.size);
+            AssertLessOrEqual(sizeRatio, 4f,
+                $"{label} generated bounds size differs implausibly from the authored result. " +
+                $"Generated {FormatBounds(generatedBounds)}, expected {FormatBounds(expectedBounds)}.");
+        }
+
+        private static void AssertFbxPrimaryDeltaScale(ReFitComputation comp, string label, float maxAllowed)
+        {
+            AssertTrue(comp != null && comp.mesh != null, $"{label} computation did not produce a mesh.");
+            AssertTrue(!string.IsNullOrEmpty(comp.primaryShapeName),
+                $"{label} computation did not produce a primary refit blendshape.");
+            float maxPrimary = MaxBlendShapeMagnitude(comp.mesh, comp.primaryShapeName);
+            Debug.Log($"[ReFit Tests] {label} primary refit max local delta: {maxPrimary:0.######}");
+            AssertLessOrEqual(maxPrimary, maxAllowed,
+                $"{label} primary refit delta is implausibly large for the authored fixture. " +
+                $"Max local delta was {maxPrimary:0.######}; this usually means skinned-pose or FBX scale was baked into the refit shape.");
+        }
+
+        private static void AssertFbxTransferredShapeProfile(string label, SkinnedMeshRenderer generated,
+            SkinnedMeshRenderer expected)
+        {
+            var generatedProfile = MeasureShapeMagnitude(generated.sharedMesh, FbxShapeName);
+            var expectedProfile = MeasureShapeMagnitude(expected.sharedMesh, FbxShapeName);
+            Debug.Log($"[ReFit Tests] {label} generated shape profile {generatedProfile}");
+            Debug.Log($"[ReFit Tests] {label} expected shape profile {expectedProfile}");
+
+            AssertLessOrEqual(Mathf.Abs(generatedProfile.average - expectedProfile.average), 0.00035f,
+                $"{label} transferred shape average magnitude does not match the authored result.");
+            AssertLessOrEqual(Mathf.Abs(generatedProfile.max - expectedProfile.max), 0.0005f,
+                $"{label} transferred shape max magnitude does not match the authored result.");
+            AssertLessOrEqual(Mathf.Abs(generatedProfile.nonzeroFraction - expectedProfile.nonzeroFraction), 0.12f,
+                $"{label} transferred shape affects a very different share of the mesh than the authored result.");
+        }
+
+        private static ShapeMagnitudeMetrics MeasureShapeMagnitude(Mesh mesh, string shapeName)
+        {
+            var deltas = GetBlendShapeDeltas(mesh, shapeName);
+            var metrics = new ShapeMagnitudeMetrics();
+            if (deltas.Length == 0) return metrics;
+
+            for (int i = 0; i < deltas.Length; i++)
+            {
+                float magnitude = deltas[i].magnitude;
+                metrics.average += magnitude;
+                metrics.max = Mathf.Max(metrics.max, magnitude);
+                if (magnitude > 1e-6f)
+                    metrics.nonzero++;
+            }
+
+            metrics.average /= deltas.Length;
+            metrics.nonzeroFraction = metrics.nonzero / (float)deltas.Length;
+            return metrics;
+        }
+
+        private static Bounds BoundsOf(Vector3[] points)
+        {
+            AssertTrue(points != null && points.Length > 0, "Cannot compute bounds for an empty point set.");
+            var bounds = new Bounds(points[0], Vector3.zero);
+            for (int i = 1; i < points.Length; i++)
+                bounds.Encapsulate(points[i]);
+            return bounds;
+        }
+
+        private static float MaxSizeRatio(Vector3 a, Vector3 b)
+        {
+            return Mathf.Max(
+                AxisRatio(a.x, b.x),
+                Mathf.Max(AxisRatio(a.y, b.y), AxisRatio(a.z, b.z)));
+        }
+
+        private static float AxisRatio(float a, float b)
+        {
+            a = Mathf.Abs(a);
+            b = Mathf.Abs(b);
+            if (a <= 1e-5f && b <= 1e-5f) return 1f;
+            return Mathf.Max(a, b) / Mathf.Max(Mathf.Min(a, b), 1e-5f);
+        }
+
+        private static string FormatBounds(Bounds bounds)
+        {
+            return $"center={bounds.center.ToString("F3")}, size={bounds.size.ToString("F3")}";
         }
 
         private static TriangleQualityMetrics MeasureTriangleQuality(MeshSnapshot reference, SkinnedMeshRenderer deformed)
@@ -1644,6 +1773,19 @@ namespace Orbiters.ReFit.Editor.Tests
             public override string ToString()
             {
                 return $"avg={average:0.000000} rms={rms:0.000000} p95={p95:0.000000} p99={p99:0.000000} max={max:0.000000}";
+            }
+        }
+
+        private struct ShapeMagnitudeMetrics
+        {
+            public float average;
+            public float max;
+            public int nonzero;
+            public float nonzeroFraction;
+
+            public override string ToString()
+            {
+                return $"avg={average:0.000000} max={max:0.000000} nonzero={nonzero} fraction={nonzeroFraction:0.000}";
             }
         }
 

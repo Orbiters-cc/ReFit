@@ -383,6 +383,7 @@ namespace Orbiters.ReFit
 
             // ---- Mesh deformation field --------------------------------------------------
             Vector3[] primaryGroupDeltas = null;
+            var transferBindings = targetBindings;
             if (state.wantMesh)
             {
                 SetBackgroundProgress(state, 0.4f, "Computing the deformation");
@@ -412,6 +413,8 @@ namespace Orbiters.ReFit
                 state.primaryLocalDeltas = ToLocalDeltas(state, primaryGroupDeltas, true);
                 if (settings.recalculateNormalDeltas)
                     state.primaryNormalDeltas = NormalDeltas(asset, state.primaryLocalDeltas, null);
+
+                transferBindings = BindRefittedAssetToTarget(state, bvhTarget, primaryGroupDeltas, targetBindings);
             }
 
             // ---- Blendshape transfer fields ----------------------------------------------
@@ -431,9 +434,9 @@ namespace Orbiters.ReFit
                     var groupDeltas = new Vector3[groupCount];
                     Parallel.For(0, groupCount, g =>
                     {
-                        if (!targetBindings[g].valid) { groupDeltas[g] = Vector3.zero; return; }
-                        int t = targetBindings[g].triangle * 3;
-                        var bary = targetBindings[g].bary;
+                        if (!transferBindings[g].valid) { groupDeltas[g] = Vector3.zero; return; }
+                        int t = transferBindings[g].triangle * 3;
+                        var bary = transferBindings[g].bary;
                         var d = worldShapeDelta[targetBasis.triangles[t]] * bary.x
                               + worldShapeDelta[targetBasis.triangles[t + 1]] * bary.y
                               + worldShapeDelta[targetBasis.triangles[t + 2]] * bary.z;
@@ -455,16 +458,51 @@ namespace Orbiters.ReFit
             {
                 SetBackgroundProgress(state, 0.9f, "Transferring skin weights");
                 state.newWeights = state.transferWeights
-                    ? WeightTransfer.Transfer(asset, targetBasis, targetBindings, state.bodyBoneToNew,
+                    ? WeightTransfer.Transfer(asset, targetBasis, transferBindings, state.bodyBoneToNew,
                         state.assetBoneToNew, state.assetBoneIsExtra, state.newBoneRegions, state.assetGroupRegions,
                         settings, state.Report, out state.weightDebug)
                     : RemapAllOriginal(asset, state.assetBoneToNew);
             }
 
             if (settings.captureProjectionDebug)
-                state.comp.projectionDebug = BuildProjectionDebugData(state, bindings, targetBindings, falloff);
+                state.comp.projectionDebug = BuildProjectionDebugData(state, bindings, transferBindings, falloff);
 
             SetBackgroundProgress(state, 1f, "Finishing");
+        }
+
+        private static SurfaceBinding[] BindRefittedAssetToTarget(
+            State state,
+            SurfaceBvh bvhTarget,
+            Vector3[] primaryGroupDeltas,
+            SurfaceBinding[] fallbackBindings)
+        {
+            var asset = state.asset;
+            var targetBasis = state.targetBasis;
+            var settings = state.settings;
+            int groupCount = asset.GroupCount;
+            var bindings = new SurfaceBinding[groupCount];
+            float cosMax = Mathf.Cos(settings.maxNormalAngle * Mathf.Deg2Rad);
+            float range = Mathf.Max(settings.maxProjectionDistance * 2f, 0.05f);
+
+            Parallel.For(0, groupCount, g =>
+            {
+                int rep = asset.groupRep[g];
+                var queryPoint = asset.worldVertices[rep] +
+                                 (primaryGroupDeltas != null && g < primaryGroupDeltas.Length
+                                     ? primaryGroupDeltas[g]
+                                     : Vector3.zero);
+                var region = state.assetGroupRegions != null ? state.assetGroupRegions[g] : BodyRegion.Unknown;
+                var binding = SurfaceBindingSolver.BindPoint(
+                    queryPoint, targetBasis, bvhTarget, range,
+                    region, settings.filterByBoneRegion ? state.targetTriRegions : null,
+                    asset.worldNormals[rep], cosMax, settings.filterByNormal);
+
+                if (!binding.valid && fallbackBindings != null && g < fallbackBindings.Length)
+                    binding = fallbackBindings[g];
+                bindings[g] = binding;
+            });
+
+            return bindings;
         }
 
         private static void SetBackgroundProgress(State state, float t, string label)
@@ -581,10 +619,10 @@ namespace Orbiters.ReFit
                 var dWorld = groupDeltas[asset.groupOfVertex[i]];
                 if (replace)
                 {
-                    result[i] = isPositionFrame
-                        // New bindposes are captured in the staged pose: mesh space == staged renderer space.
-                        ? w2l.MultiplyPoint3x4(asset.worldVertices[i] + dWorld) - asset.localVertices[i]
-                        : w2l.MultiplyVector(dWorld);
+                    // New bindposes are captured in the staged pose: at rest the rebuilt armature maps mesh
+                    // space through the renderer transform. Store only the requested surface displacement here.
+                    // Re-baking asset.worldVertices would turn an existing skinned-pose offset into a refit delta.
+                    result[i] = w2l.MultiplyVector(dWorld);
                 }
                 else
                 {

@@ -101,6 +101,16 @@ namespace Orbiters.ReFit
         public int clearanceSmoothingIterations = 2;
         /// <summary>Strength of each clearance correction smoothing iteration.</summary>
         [Range(0f, 1f)] public float clearanceSmoothingStrength = 0.5f;
+        /// <summary>Extra edge/triangle surface samples used after smoothing to catch curved-surface clipping between vertices.</summary>
+        public int clearanceSurfaceGuardIterations = 1;
+        /// <summary>Strength of each surface guard iteration.</summary>
+        [Range(0f, 1f)] public float clearanceSurfaceGuardStrength = 0.45f;
+        /// <summary>Maximum per-iteration correction from edge/triangle surface samples, in meters.</summary>
+        public float clearanceMaxSurfaceGuardCorrection = 0.003f;
+        /// <summary>Penetration depth required before edge/triangle surface samples are corrected, in meters.</summary>
+        public float clearanceSurfaceGuardTriggerDistance = 0.0015f;
+        /// <summary>Number of checked samples per triangle edge for the surface guard.</summary>
+        public int clearanceSurfaceGuardEdgeSamples = 1;
 
         /// <summary>Creates a deep copy of these settings.</summary>
         public ReFitSettings Clone() => (ReFitSettings)MemberwiseClone();
@@ -262,10 +272,13 @@ namespace Orbiters.ReFit
         public float maxPenetrationAfter;
         public int safetyGuardGroups;
         public float maxSafetyGuardCorrection;
+        public int surfaceGuardSamples;
+        public int surfaceGuardGroups;
+        public float maxSurfaceGuardCorrection;
         public float maxClearanceLossBefore;
         public float maxExpansion;
 
-        public bool HasCorrections => outwardGroups > 0 || inwardGroups > 0;
+        public bool HasCorrections => outwardGroups > 0 || inwardGroups > 0 || surfaceGuardGroups > 0;
 
         public void Add(ReFitClearanceCorrectionStats other)
         {
@@ -279,6 +292,9 @@ namespace Orbiters.ReFit
             maxPenetrationAfter = Mathf.Max(maxPenetrationAfter, other.maxPenetrationAfter);
             safetyGuardGroups += other.safetyGuardGroups;
             maxSafetyGuardCorrection = Mathf.Max(maxSafetyGuardCorrection, other.maxSafetyGuardCorrection);
+            surfaceGuardSamples += other.surfaceGuardSamples;
+            surfaceGuardGroups += other.surfaceGuardGroups;
+            maxSurfaceGuardCorrection = Mathf.Max(maxSurfaceGuardCorrection, other.maxSurfaceGuardCorrection);
             maxClearanceLossBefore = Mathf.Max(maxClearanceLossBefore, other.maxClearanceLossBefore);
             maxExpansion = Mathf.Max(maxExpansion, other.maxExpansion);
         }
@@ -288,6 +304,7 @@ namespace Orbiters.ReFit
             return $"{label}: eligible={eligibleGroups}, outward={outwardGroups}, inward={inwardGroups}, " +
                    $"maxOut={maxOutwardCorrection * 1000f:0.###}mm, maxIn={maxInwardCorrection * 1000f:0.###}mm, " +
                    $"guarded={safetyGuardGroups}, maxGuard={maxSafetyGuardCorrection * 1000f:0.###}mm, " +
+                   $"surfaceSamples={surfaceGuardSamples}, surfaceGroups={surfaceGuardGroups}, maxSurfaceGuard={maxSurfaceGuardCorrection * 1000f:0.###}mm, " +
                    $"maxPenetrationBefore={maxPenetrationBefore * 1000f:0.###}mm, maxPenetrationAfter={maxPenetrationAfter * 1000f:0.###}mm, " +
                    $"maxClearanceLossBefore={maxClearanceLossBefore * 1000f:0.###}mm, maxExpansion={maxExpansion * 1000f:0.###}mm.";
         }

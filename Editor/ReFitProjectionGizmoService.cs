@@ -13,6 +13,8 @@ namespace Orbiters.ReFit.Editor
         private const string EnabledKey = "Orbiters.ReFit.ProjectionGizmos";
         private const string WeldedGroupsEnabledKey = "Orbiters.ReFit.WeldedGroupGizmos";
         private const float HoverDistancePixels = 8f;
+        private const float SingleWeldedGroupMarkerScale = 0.014f;
+        private const float MultiWeldedGroupMarkerScale = 0.022f;
 
         static ReFitProjectionGizmoService()
         {
@@ -181,7 +183,10 @@ namespace Orbiters.ReFit.Editor
         {
             var color = WeldedGroupColor(group);
             Handles.color = color;
-            float size = HandleUtility.GetHandleSize(position) * (group != null && group.vertexCount > 1 ? 0.0085f : 0.006f);
+            float scale = group != null && group.vertexCount > 1
+                ? MultiWeldedGroupMarkerScale
+                : SingleWeldedGroupMarkerScale;
+            float size = HandleUtility.GetHandleSize(position) * scale;
             Handles.CubeHandleCap(0, position, Quaternion.identity, size, EventType.Repaint);
         }
 

@@ -68,6 +68,9 @@ namespace Orbiters.ReFit.Editor
         private ReFitRequest lastRequest;
         private ReFitGravityPreview gravityPreview;
         private float gravityPreviewWeight = 100f;
+        private bool clearanceAdvanced;
+        private bool clearanceTightnessKnown = true;
+        private float clearanceTightnessPreset = 0.5f;
 
         private ScrollView content;
         private Button backButton;
@@ -577,55 +580,25 @@ namespace Orbiters.ReFit.Editor
             clearance.RegisterValueChangedCallback(e => settings.enableClearanceCorrection = e.newValue);
             parent.Add(clearance);
 
-            AddFloatFieldWithReset(parent, "Expanded-area tightening strength", 0f, 1f,
-                1f - Mathf.Clamp01(settings.clearanceTightnessFactor),
-                1f - Mathf.Clamp01(defaultSettings.clearanceTightnessFactor),
-                value => settings.clearanceTightnessFactor = 1f - Mathf.Clamp01(value));
+            var advanced = new Toggle("Advanced") { value = clearanceAdvanced };
+            advanced.AddToClassList("refit-field");
+            parent.Add(advanced);
 
-            AddFloatFieldWithReset(parent, "Minimum safety distance (m)", 0f, 0.1f,
-                settings.clearanceMinimumSafetyDistance,
-                defaultSettings.clearanceMinimumSafetyDistance,
-                value => settings.clearanceMinimumSafetyDistance = value);
+            var clearanceControls = new VisualElement();
+            parent.Add(clearanceControls);
 
-            AddFloatFieldWithReset(parent, "Max outward safety correction (m)", 0f, 0.25f,
-                settings.clearanceMaxOutwardCorrection,
-                defaultSettings.clearanceMaxOutwardCorrection,
-                value => settings.clearanceMaxOutwardCorrection = value);
+            void RefreshClearanceControls()
+            {
+                clearanceControls.Clear();
+                BuildClearanceControls(clearanceControls, defaultSettings);
+            }
 
-            AddFloatFieldWithReset(parent, "Max inward tightening (m)", 0f, 0.25f,
-                settings.clearanceMaxInwardCorrection,
-                defaultSettings.clearanceMaxInwardCorrection,
-                value => settings.clearanceMaxInwardCorrection = value);
-
-            AddFloatFieldWithReset(parent, "Inward tightening strength", 0f, 1f,
-                settings.clearanceInwardStrength,
-                defaultSettings.clearanceInwardStrength,
-                value => settings.clearanceInwardStrength = value);
-
-            AddFloatFieldWithReset(parent, "Tightening starts at expansion (m)", 0f, 0.2f,
-                settings.clearanceExpansionStart,
-                defaultSettings.clearanceExpansionStart,
-                value =>
-                {
-                    settings.clearanceExpansionStart = value;
-                    if (settings.clearanceExpansionFull < value)
-                        settings.clearanceExpansionFull = value;
-                });
-
-            AddFloatFieldWithReset(parent, "Full tightening at expansion (m)", 0f, 0.3f,
-                settings.clearanceExpansionFull,
-                defaultSettings.clearanceExpansionFull,
-                value => settings.clearanceExpansionFull = Mathf.Max(settings.clearanceExpansionStart, value));
-
-            AddIntFieldWithReset(parent, "Correction smoothing iterations", 0, 10,
-                settings.clearanceSmoothingIterations,
-                defaultSettings.clearanceSmoothingIterations,
-                value => settings.clearanceSmoothingIterations = value);
-
-            AddFloatFieldWithReset(parent, "Correction smoothing strength", 0f, 1f,
-                settings.clearanceSmoothingStrength,
-                defaultSettings.clearanceSmoothingStrength,
-                value => settings.clearanceSmoothingStrength = value);
+            advanced.RegisterValueChangedCallback(e =>
+            {
+                clearanceAdvanced = e.newValue;
+                RefreshClearanceControls();
+            });
+            RefreshClearanceControls();
 
             var offset = new EnumField("Offset mode", settings.offsetMode);
             offset.RegisterValueChangedCallback(e => settings.offsetMode = (OffsetMode)e.newValue);
@@ -657,6 +630,209 @@ namespace Orbiters.ReFit.Editor
             var normals = new Toggle("Recalculate shape normals") { value = settings.recalculateNormalDeltas };
             normals.RegisterValueChangedCallback(e => settings.recalculateNormalDeltas = e.newValue);
             parent.Add(normals);
+        }
+
+        private void BuildClearanceControls(VisualElement parent, ReFitSettings defaultSettings)
+        {
+            if (!clearanceAdvanced)
+            {
+                BuildClearanceTightnessSlider(parent);
+                return;
+            }
+
+            AddFloatFieldWithReset(parent, "Expanded-area tightening strength", 0f, 1f,
+                1f - Mathf.Clamp01(settings.clearanceTightnessFactor),
+                1f - Mathf.Clamp01(defaultSettings.clearanceTightnessFactor),
+                value =>
+                {
+                    MarkClearanceTightnessCustom();
+                    settings.clearanceTightnessFactor = 1f - Mathf.Clamp01(value);
+                });
+
+            AddFloatFieldWithReset(parent, "Minimum safety distance (m)", 0f, 0.1f,
+                settings.clearanceMinimumSafetyDistance,
+                defaultSettings.clearanceMinimumSafetyDistance,
+                value =>
+                {
+                    MarkClearanceTightnessCustom();
+                    settings.clearanceMinimumSafetyDistance = value;
+                });
+
+            AddFloatFieldWithReset(parent, "Max outward safety correction (m)", 0f, 0.25f,
+                settings.clearanceMaxOutwardCorrection,
+                defaultSettings.clearanceMaxOutwardCorrection,
+                value =>
+                {
+                    MarkClearanceTightnessCustom();
+                    settings.clearanceMaxOutwardCorrection = value;
+                });
+
+            AddFloatFieldWithReset(parent, "Max surface guard correction (m)", 0f, 0.1f,
+                settings.clearanceMaxSurfaceGuardCorrection,
+                defaultSettings.clearanceMaxSurfaceGuardCorrection,
+                value =>
+                {
+                    MarkClearanceTightnessCustom();
+                    settings.clearanceMaxSurfaceGuardCorrection = value;
+                });
+
+            AddFloatFieldWithReset(parent, "Surface guard trigger depth (m)", 0f, 0.02f,
+                settings.clearanceSurfaceGuardTriggerDistance,
+                defaultSettings.clearanceSurfaceGuardTriggerDistance,
+                value =>
+                {
+                    MarkClearanceTightnessCustom();
+                    settings.clearanceSurfaceGuardTriggerDistance = value;
+                });
+
+            AddFloatFieldWithReset(parent, "Max inward tightening (m)", 0f, 0.25f,
+                settings.clearanceMaxInwardCorrection,
+                defaultSettings.clearanceMaxInwardCorrection,
+                value =>
+                {
+                    MarkClearanceTightnessCustom();
+                    settings.clearanceMaxInwardCorrection = value;
+                });
+
+            AddFloatFieldWithReset(parent, "Inward tightening strength", 0f, 1f,
+                settings.clearanceInwardStrength,
+                defaultSettings.clearanceInwardStrength,
+                value =>
+                {
+                    MarkClearanceTightnessCustom();
+                    settings.clearanceInwardStrength = value;
+                });
+
+            AddFloatFieldWithReset(parent, "Tightening starts at expansion (m)", 0f, 0.2f,
+                settings.clearanceExpansionStart,
+                defaultSettings.clearanceExpansionStart,
+                value =>
+                {
+                    MarkClearanceTightnessCustom();
+                    settings.clearanceExpansionStart = value;
+                    if (settings.clearanceExpansionFull < value)
+                        settings.clearanceExpansionFull = value;
+                });
+
+            AddFloatFieldWithReset(parent, "Full tightening at expansion (m)", 0f, 0.3f,
+                settings.clearanceExpansionFull,
+                defaultSettings.clearanceExpansionFull,
+                value =>
+                {
+                    MarkClearanceTightnessCustom();
+                    settings.clearanceExpansionFull = Mathf.Max(settings.clearanceExpansionStart, value);
+                });
+
+            AddIntFieldWithReset(parent, "Correction smoothing iterations", 0, 10,
+                settings.clearanceSmoothingIterations,
+                defaultSettings.clearanceSmoothingIterations,
+                value =>
+                {
+                    MarkClearanceTightnessCustom();
+                    settings.clearanceSmoothingIterations = value;
+                });
+
+            AddFloatFieldWithReset(parent, "Correction smoothing strength", 0f, 1f,
+                settings.clearanceSmoothingStrength,
+                defaultSettings.clearanceSmoothingStrength,
+                value =>
+                {
+                    MarkClearanceTightnessCustom();
+                    settings.clearanceSmoothingStrength = value;
+                });
+
+            AddIntFieldWithReset(parent, "Surface guard iterations", 0, 12,
+                settings.clearanceSurfaceGuardIterations,
+                defaultSettings.clearanceSurfaceGuardIterations,
+                value =>
+                {
+                    MarkClearanceTightnessCustom();
+                    settings.clearanceSurfaceGuardIterations = value;
+                });
+
+            AddFloatFieldWithReset(parent, "Surface guard strength", 0f, 1f,
+                settings.clearanceSurfaceGuardStrength,
+                defaultSettings.clearanceSurfaceGuardStrength,
+                value =>
+                {
+                    MarkClearanceTightnessCustom();
+                    settings.clearanceSurfaceGuardStrength = value;
+                });
+
+            AddIntFieldWithReset(parent, "Surface guard edge samples", 1, 3,
+                settings.clearanceSurfaceGuardEdgeSamples,
+                defaultSettings.clearanceSurfaceGuardEdgeSamples,
+                value =>
+                {
+                    MarkClearanceTightnessCustom();
+                    settings.clearanceSurfaceGuardEdgeSamples = value;
+                });
+        }
+
+        private void BuildClearanceTightnessSlider(VisualElement parent)
+        {
+            var slider = new Slider(clearanceTightnessKnown ? "Tightness" : "Tightness (custom)", 0f, 1f)
+            {
+                value = clearanceTightnessKnown ? clearanceTightnessPreset : 0.5f
+            };
+            slider.AddToClassList("refit-field");
+            slider.RegisterValueChangedCallback(e =>
+            {
+                ApplyClearanceTightnessPreset(e.newValue);
+                slider.label = "Tightness";
+            });
+            parent.Add(slider);
+
+            if (!clearanceTightnessKnown)
+                AddInlineHelp(parent, "Custom advanced setup is active. Move the slider to replace it with a tightness preset.");
+        }
+
+        private void ApplyClearanceTightnessPreset(float value)
+        {
+            clearanceTightnessPreset = Mathf.Clamp01(value);
+            clearanceTightnessKnown = true;
+
+            settings.clearanceTightnessFactor = LerpPreset(clearanceTightnessPreset, 0.85f, 0.5f, 0.08f);
+            settings.clearanceMinimumSafetyDistance = LerpPreset(clearanceTightnessPreset, 0.006f, 0.003f, 0.002f);
+            settings.clearanceMaxOutwardCorrection = LerpPreset(clearanceTightnessPreset, 0.04f, 0.04f, 0.12f);
+            settings.clearanceMaxSurfaceGuardCorrection = LerpPreset(clearanceTightnessPreset, 0.001f, 0.003f, 0.08f);
+            settings.clearanceSurfaceGuardTriggerDistance = LerpPreset(clearanceTightnessPreset, 0.003f, 0.0015f, 0.00025f);
+            settings.clearanceMaxInwardCorrection = LerpPreset(clearanceTightnessPreset, 0.005f, 0.015f, 0.18f);
+            settings.clearanceInwardStrength = LerpPreset(clearanceTightnessPreset, 0.2f, 0.65f, 0.82f);
+            settings.clearanceExpansionStart = LerpPreset(clearanceTightnessPreset, 0.035f, 0.01f, 0.002f);
+            settings.clearanceExpansionFull = LerpPreset(clearanceTightnessPreset, 0.12f, 0.06f, 0.025f);
+            settings.clearanceSmoothingIterations = Mathf.RoundToInt(LerpPreset(clearanceTightnessPreset, 3f, 2f, 1f));
+            settings.clearanceSmoothingStrength = LerpPreset(clearanceTightnessPreset, 0.65f, 0.5f, 0.35f);
+            settings.clearanceSurfaceGuardIterations = Mathf.RoundToInt(LerpPreset(clearanceTightnessPreset, 0f, 1f, 6f));
+            settings.clearanceSurfaceGuardStrength = LerpPreset(clearanceTightnessPreset, 0.25f, 0.45f, 1f);
+            settings.clearanceSurfaceGuardEdgeSamples = Mathf.RoundToInt(LerpPreset(clearanceTightnessPreset, 1f, 1f, 3f));
+            settings.clearanceOutwardStrength = 1f;
+        }
+
+        private void MarkClearanceTightnessCustom()
+        {
+            clearanceTightnessKnown = false;
+        }
+
+        private static float SmoothPreset(float value)
+        {
+            float t = Mathf.Clamp01(value);
+            return t * t * (3f - 2f * t);
+        }
+
+        private static float LerpPreset(float value, float loose, float middle, float tight)
+        {
+            value = Mathf.Clamp01(value);
+            if (value <= 0.5f)
+                return Mathf.Lerp(loose, middle, SmoothPreset(value * 2f));
+            return Mathf.Lerp(middle, tight, SmoothPreset((value - 0.5f) * 2f));
+        }
+
+        private static void AddInlineHelp(VisualElement parent, string text)
+        {
+            var label = new Label(text);
+            label.AddToClassList("refit-help");
+            parent.Add(label);
         }
 
         private static void AddIntFieldWithReset(VisualElement parent, string label, int min, int max,

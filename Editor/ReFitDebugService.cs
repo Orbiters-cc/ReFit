@@ -357,6 +357,10 @@ namespace Orbiters.ReFit.Editor
                 $"clearanceRetention={FloatSetting(settings, s => s.clearanceTightnessFactor)}, inwardStrength={FloatSetting(settings, s => s.clearanceInwardStrength)}, " +
                 $"expansionStart={FloatSetting(settings, s => s.clearanceExpansionStart)}, expansionFull={FloatSetting(settings, s => s.clearanceExpansionFull)}, " +
                 $"clearanceSmoothing={IntSetting(settings, s => s.clearanceSmoothingIterations)}x{FloatSetting(settings, s => s.clearanceSmoothingStrength)}, " +
+                $"surfaceGuard={IntSetting(settings, s => s.clearanceSurfaceGuardIterations)}x{FloatSetting(settings, s => s.clearanceSurfaceGuardStrength)}, " +
+                $"maxSurfaceGuard={FloatSetting(settings, s => s.clearanceMaxSurfaceGuardCorrection)}, " +
+                $"surfaceGuardTrigger={FloatSetting(settings, s => s.clearanceSurfaceGuardTriggerDistance)}, " +
+                $"surfaceGuardEdgeSamples={IntSetting(settings, s => s.clearanceSurfaceGuardEdgeSamples)}, " +
                 $"maxProjectionDistance={FloatSetting(settings, s => s.maxProjectionDistance)}, falloffStartDistance={FloatSetting(settings, s => s.falloffStartDistance)}.");
         }
 

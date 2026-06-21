@@ -79,6 +79,12 @@ namespace Orbiters.ReFit.Editor.Tests
                     "Transferred blendshape keeps clothing outside shaped skin",
                     TransferredBlendshape_PreservesSignedSkinClearance);
                 RunCase(failures,
+                    "Clearance correction adaptively tightens expanded areas",
+                    ClearanceCorrection_AdaptivelyTightensExpandedAreas);
+                RunCase(failures,
+                    "Clearance correction strong settings pull expanded areas closer",
+                    ClearanceCorrection_StrongSettingsCanPullExpandedAreasMuchCloser);
+                RunCase(failures,
                     "Blendshape-only transfer works on target-space clothing and preserves root bone",
                     BlendshapeOnly_TargetSpaceAccessory_TransfersMuscle_PreservesRootBone);
                 RunCase(failures,
@@ -111,6 +117,9 @@ namespace Orbiters.ReFit.Editor.Tests
                 RunCase(failures,
                     "Wizard debug mode captures projection data even when rays are hidden",
                     ReFitWizard_DebugModeCapturesProjectionDataWhenGizmoHidden);
+                RunCase(failures,
+                    "Debug snapshots use independent baked mesh instances",
+                    DebugSession_CapturesIndependentSnapshotMeshes);
                 RunCase(failures,
                     "XRay extra gizmo registry exposes external toggles",
                     XRayExtraGizmoRegistry_RegistersAndTogglesExternalGizmo);
@@ -571,60 +580,120 @@ namespace Orbiters.ReFit.Editor.Tests
                 {
                     AssertComputationSucceeded(comp);
 
-                    var shapeName = SingleSecondaryShape(comp);
-                    var assetShapeDeltas = GetBlendShapeDeltas(comp.mesh, shapeName);
-                    var bodyShapeDeltas = GetBlendShapeDeltas(fixture.target.mesh, BodyShapeName);
-                    int bodyShapeIndex = fixture.target.mesh.GetBlendShapeIndex(BodyShapeName);
-                    var targetOverrides = new Dictionary<int, float> { { bodyShapeIndex, 0f } };
-                    var report = new ReFitReport();
-                    var targetBasis = MeshSnapshot.Capture(fixture.target.renderer, false, targetOverrides, report);
-                    var assetBasis = MeshSnapshot.Capture(fixture.sourceSpaceAccessory.renderer, false, null, report);
-                    var targetBvh = SurfaceBvh.Build(targetBasis);
-                    var worldBodyDeltas = WorldShapeDeltas(targetBasis, bodyShapeDeltas);
-
-                    int tested = 0;
-                    int signFlips = 0;
-                    float minSourceClearance = float.MaxValue;
-                    float minShapedClearance = float.MaxValue;
-                    float maxClearanceLoss = 0f;
-
-                    for (int i = 0; i < assetBasis.worldVertices.Length; i++)
-                    {
-                        var hit = targetBvh.ClosestPoint(assetBasis.worldVertices[i], 0.4f, null);
-                        if (!hit.found) continue;
-
-                        var normal = targetBasis.BaryNormal(hit.triangle, hit.bary);
-                        float sourceClearance = Vector3.Dot(assetBasis.worldVertices[i] - hit.position, normal);
-                        if (sourceClearance < 0.015f) continue;
-
-                        var shapedBodyPoint = hit.position + SampleWorldShapeDelta(targetBasis, worldBodyDeltas, hit.triangle, hit.bary);
-                        var shapedAssetPoint = assetBasis.worldVertices[i] + assetBasis.skinMatrices[i].MultiplyVector(assetShapeDeltas[i]);
-                        float shapedClearance = Vector3.Dot(shapedAssetPoint - shapedBodyPoint, normal);
-
-                        tested++;
-                        minSourceClearance = Mathf.Min(minSourceClearance, sourceClearance);
-                        minShapedClearance = Mathf.Min(minShapedClearance, shapedClearance);
-                        maxClearanceLoss = Mathf.Max(maxClearanceLoss, sourceClearance - shapedClearance);
-                        if (shapedClearance <= 0f) signFlips++;
-                    }
+                    var metrics = MeasureTransferredClearance(fixture, comp, request.settings, null);
 
                     Debug.Log(
-                        $"[ReFit Tests] Signed clearance: tested={tested}, flips={signFlips}, " +
-                        $"sourceMin={minSourceClearance:0.000000}, shapedMin={minShapedClearance:0.000000}, " +
-                        $"maxLoss={maxClearanceLoss:0.000000}");
+                        $"[ReFit Tests] Signed clearance: tested={metrics.tested}, flips={metrics.signFlips}, " +
+                        $"sourceMin={metrics.minSourceClearance:0.000000}, desiredMin={metrics.minDesiredClearance:0.000000}, " +
+                        $"shapedMin={metrics.minShapedClearance:0.000000}, maxBelowDesired={metrics.maxBelowDesired:0.000000}, " +
+                        $"maxLoss={metrics.maxClearanceLoss:0.000000}");
 
-                    AssertGreater(tested, 20,
+                    AssertGreater(metrics.tested, 20,
                         "Signed-clearance test did not find enough high-confidence clothing/body projection pairs.");
-                    AssertTrue(signFlips == 0,
-                        $"Transferred blendshape moved {signFlips} clothing vertices under the shaped target skin.");
-                    AssertGreater(minShapedClearance, 0.012f,
+                    AssertTrue(metrics.signFlips == 0,
+                        $"Transferred blendshape moved {metrics.signFlips} clothing vertices under the shaped target skin.");
+                    AssertGreater(metrics.minShapedClearance, request.settings.clearanceMinimumSafetyDistance,
                         "Transferred blendshape did not keep the clothing safely above the shaped target skin.");
-                    AssertLessOrEqual(maxClearanceLoss, 0.008f,
-                        "Transferred blendshape lost too much clothing/body clearance compared with the default fit.");
+                    AssertLessOrEqual(metrics.maxBelowDesired, 0.006f,
+                        "Transferred blendshape fell too far below the adaptive clearance target.");
                 }
                 finally
                 {
                     DestroyComputationMesh(comp);
+                }
+            }
+        }
+
+        private static void ClearanceCorrection_AdaptivelyTightensExpandedAreas()
+        {
+            using (var fixture = ReFitTestFixture.Create())
+            {
+                var disabledRequest = BuildMeshAndBlendshapeRequest(fixture, fixture.sourceSpaceAccessory.renderer, false);
+                disabledRequest.settings.enableClearanceCorrection = false;
+                var enabledRequest = BuildMeshAndBlendshapeRequest(fixture, fixture.sourceSpaceAccessory.renderer, false);
+                enabledRequest.settings.enableClearanceCorrection = true;
+
+                var disabled = new ReFitEngine().Run(disabledRequest);
+                var enabled = new ReFitEngine().Run(enabledRequest);
+                try
+                {
+                    AssertComputationSucceeded(disabled);
+                    AssertComputationSucceeded(enabled);
+                    AssertTrue(enabled.clearanceCorrectionStats != null && enabled.clearanceCorrectionStats.HasCorrections,
+                        "Clearance correction did not report any correction on the expanded-body fixture.");
+
+                    Func<Vector3, bool> chest = v => Mathf.Abs(v.x) <= 0.5f && v.y >= 0.75f && v.y <= 1.35f;
+                    var disabledMetrics = MeasureTransferredClearance(fixture, disabled, enabledRequest.settings, chest);
+                    var enabledMetrics = MeasureTransferredClearance(fixture, enabled, enabledRequest.settings, chest);
+
+                    Debug.Log(
+                        $"[ReFit Tests] Adaptive clearance: disabledAvg={disabledMetrics.averageShapedClearance:0.000000}, " +
+                        $"enabledAvg={enabledMetrics.averageShapedClearance:0.000000}, " +
+                        $"enabledBelowDesired={enabledMetrics.maxBelowDesired:0.000000}, " +
+                        $"stats={enabled.clearanceCorrectionStats.Summary("aggregate")}");
+
+                    AssertGreater(disabledMetrics.tested, 4,
+                        "Adaptive clearance test did not sample enough expanded chest vertices.");
+                    AssertGreater(disabledMetrics.averageShapedClearance - enabledMetrics.averageShapedClearance, 0.002f,
+                        "Clearance correction did not make expanded chest clothing measurably tighter.");
+                    AssertGreater(enabledMetrics.minShapedClearance, enabledRequest.settings.clearanceMinimumSafetyDistance,
+                        "Adaptive clearance correction pushed clothing too close to or under the body.");
+                    AssertLessOrEqual(enabledMetrics.maxBelowDesired, 0.006f,
+                        "Adaptive clearance correction did not stay close enough to its desired clearance.");
+                }
+                finally
+                {
+                    DestroyComputationMesh(disabled);
+                    DestroyComputationMesh(enabled);
+                }
+            }
+        }
+
+        private static void ClearanceCorrection_StrongSettingsCanPullExpandedAreasMuchCloser()
+        {
+            using (var fixture = ReFitTestFixture.Create())
+            {
+                var defaultRequest = BuildMeshAndBlendshapeRequest(fixture, fixture.sourceSpaceAccessory.renderer, false);
+                defaultRequest.settings.enableClearanceCorrection = true;
+
+                var strongRequest = BuildMeshAndBlendshapeRequest(fixture, fixture.sourceSpaceAccessory.renderer, false);
+                strongRequest.settings.enableClearanceCorrection = true;
+                strongRequest.settings.clearanceTightnessFactor = 0f;
+                strongRequest.settings.clearanceMinimumSafetyDistance = 0.001f;
+                strongRequest.settings.clearanceMaxInwardCorrection = 0.2f;
+                strongRequest.settings.clearanceInwardStrength = 1f;
+                strongRequest.settings.clearanceExpansionStart = 0f;
+                strongRequest.settings.clearanceExpansionFull = 0.01f;
+                strongRequest.settings.clearanceSmoothingIterations = 0;
+                strongRequest.settings.clearanceSmoothingStrength = 0f;
+
+                var defaultComp = new ReFitEngine().Run(defaultRequest);
+                var strongComp = new ReFitEngine().Run(strongRequest);
+                try
+                {
+                    AssertComputationSucceeded(defaultComp);
+                    AssertComputationSucceeded(strongComp);
+
+                    Func<Vector3, bool> chest = v => Mathf.Abs(v.x) <= 0.5f && v.y >= 0.75f && v.y <= 1.35f;
+                    var defaultMetrics = MeasureTransferredClearance(fixture, defaultComp, defaultRequest.settings, chest);
+                    var strongMetrics = MeasureTransferredClearance(fixture, strongComp, strongRequest.settings, chest);
+
+                    Debug.Log(
+                        $"[ReFit Tests] Strong clearance: defaultAvg={defaultMetrics.averageShapedClearance:0.000000}, " +
+                        $"strongAvg={strongMetrics.averageShapedClearance:0.000000}, " +
+                        $"strongMin={strongMetrics.minShapedClearance:0.000000}, strongDesiredMin={strongMetrics.minDesiredClearance:0.000000}");
+
+                    AssertGreater(defaultMetrics.tested, 4,
+                        "Strong clearance test did not sample enough expanded chest vertices.");
+                    AssertGreater(defaultMetrics.averageShapedClearance - strongMetrics.averageShapedClearance, 0.004f,
+                        "Strong clearance settings did not pull expanded chest clothing materially closer than the defaults.");
+                    AssertGreater(strongMetrics.minShapedClearance, 0f,
+                        "Strong clearance settings pushed clothing under the body.");
+                }
+                finally
+                {
+                    DestroyComputationMesh(defaultComp);
+                    DestroyComputationMesh(strongComp);
                 }
             }
         }
@@ -987,6 +1056,8 @@ namespace Orbiters.ReFit.Editor.Tests
                     AssertTrue(request != null, "BuildRequest returned null.");
                     AssertTrue(request.settings.captureProjectionDebug,
                         "Debug mode should capture projection data even when the Scene view projection rays are hidden.");
+                    AssertTrue(request.settings.maxProjectionDebugGroups <= 0,
+                        "Wizard debug mode should capture every welded vertex group for Scene view group diagnostics.");
                 }
             }
             finally
@@ -997,9 +1068,54 @@ namespace Orbiters.ReFit.Editor.Tests
             }
         }
 
+        private static void DebugSession_CapturesIndependentSnapshotMeshes()
+        {
+            using (var fixture = ReFitTestFixture.Create())
+            {
+                var request = BuildMeshAndBlendshapeRequest(fixture, fixture.sourceSpaceAccessory.renderer, false);
+                var report = new ReFitReport();
+                var debug = new ReFitDebugSession(request, report);
+                var debugMeshes = new List<Mesh>();
+                try
+                {
+                    debug.Capture("first_state", fixture.sourceSpaceAccessory.renderer);
+                    debug.Capture("second_state", fixture.sourceSpaceAccessory.renderer);
+
+                    var renderers = debug.Root.GetComponentsInChildren<SkinnedMeshRenderer>(true);
+                    foreach (var renderer in renderers)
+                    {
+                        if (renderer == null || renderer.sharedMesh == null)
+                            continue;
+                        if (!renderer.transform.IsChildOf(debug.Root.transform))
+                            continue;
+                        debugMeshes.Add(renderer.sharedMesh);
+                    }
+
+                    AssertGreater(debugMeshes.Count, 1,
+                        "Debug session did not create two snapshot renderers with meshes.");
+                    AssertTrue(debugMeshes[0] != debugMeshes[1],
+                        "Debug snapshots reused the same mesh instance.");
+                    AssertTrue(!string.Equals(debugMeshes[0].name, debugMeshes[1].name, StringComparison.Ordinal),
+                        $"Debug snapshot mesh names should identify their step, but both were '{debugMeshes[0].name}'.");
+                }
+                finally
+                {
+                    if (debug.Root != null)
+                        Object.DestroyImmediate(debug.Root);
+                    foreach (var mesh in debugMeshes)
+                    {
+                        if (mesh != null && !AssetDatabase.Contains(mesh))
+                            Object.DestroyImmediate(mesh);
+                    }
+                }
+            }
+        }
+
         private static void XRayExtraGizmoRegistry_RegistersAndTogglesExternalGizmo()
         {
             const string id = "orbiters.refit.tests.fake-extra-gizmo";
+            bool previousProjection = ReFitProjectionGizmoService.Enabled;
+            bool previousWeldedGroups = ReFitProjectionGizmoService.WeldedGroupsEnabled;
             bool enabled = false;
             XRayExternalGizmoRegistry.Register(id, "Fake ReFit gizmo", () => enabled, value => enabled = value);
             try
@@ -1023,6 +1139,8 @@ namespace Orbiters.ReFit.Editor.Tests
             finally
             {
                 XRayExternalGizmoRegistry.Unregister(id);
+                ReFitProjectionGizmoService.Enabled = previousProjection;
+                ReFitProjectionGizmoService.WeldedGroupsEnabled = previousWeldedGroups;
             }
         }
 
@@ -1457,6 +1575,95 @@ namespace Orbiters.ReFit.Editor.Tests
             for (int i = 0; i < world.Length; i++)
                 world[i] = snapshot.skinMatrices[i].MultiplyVector(localDeltas[i]);
             return world;
+        }
+
+        private static ClearanceMetrics MeasureTransferredClearance(
+            ReFitTestFixture fixture,
+            ReFitComputation comp,
+            ReFitSettings settings,
+            Func<Vector3, bool> contains)
+        {
+            var shapeName = SingleSecondaryShape(comp);
+            var assetShapeDeltas = GetBlendShapeDeltas(comp.mesh, shapeName);
+            Vector3[] primaryDeltas = null;
+            if (!string.IsNullOrEmpty(comp.primaryShapeName))
+                primaryDeltas = GetBlendShapeDeltas(comp.mesh, comp.primaryShapeName);
+
+            var bodyShapeDeltas = GetBlendShapeDeltas(fixture.target.mesh, BodyShapeName);
+            int bodyShapeIndex = fixture.target.mesh.GetBlendShapeIndex(BodyShapeName);
+            var targetOverrides = new Dictionary<int, float> { { bodyShapeIndex, 0f } };
+            var report = new ReFitReport();
+            var targetBasis = MeshSnapshot.Capture(fixture.target.renderer, false, targetOverrides, report);
+            var assetBasis = MeshSnapshot.Capture(fixture.sourceSpaceAccessory.renderer, false, null, report);
+            var targetBvh = SurfaceBvh.Build(targetBasis);
+            var worldBodyDeltas = WorldShapeDeltas(targetBasis, bodyShapeDeltas);
+            var metrics = new ClearanceMetrics
+            {
+                minSourceClearance = float.MaxValue,
+                minDesiredClearance = float.MaxValue,
+                minShapedClearance = float.MaxValue
+            };
+            double shapedTotal = 0d;
+
+            for (int i = 0; i < assetBasis.worldVertices.Length; i++)
+            {
+                if (contains != null && !contains(assetBasis.localVertices[i]))
+                    continue;
+
+                var hit = targetBvh.ClosestPoint(assetBasis.worldVertices[i], 0.4f, null);
+                if (!hit.found) continue;
+
+                var normal = targetBasis.BaryNormal(hit.triangle, hit.bary);
+                float sourceClearance = Vector3.Dot(assetBasis.worldVertices[i] - hit.position, normal);
+                if (sourceClearance < 0.015f) continue;
+
+                var bodyDelta = SampleWorldShapeDelta(targetBasis, worldBodyDeltas, hit.triangle, hit.bary);
+                var shapedBodyPoint = hit.position + bodyDelta;
+                var primaryDelta = primaryDeltas != null
+                    ? assetBasis.skinMatrices[i].MultiplyVector(primaryDeltas[i])
+                    : Vector3.zero;
+                var shapedAssetPoint = assetBasis.worldVertices[i] +
+                                       primaryDelta +
+                                       assetBasis.skinMatrices[i].MultiplyVector(assetShapeDeltas[i]);
+                float shapedClearance = Vector3.Dot(shapedAssetPoint - shapedBodyPoint, normal);
+                float expansion = Mathf.Max(0f, Vector3.Dot(bodyDelta, normal));
+                float desiredClearance = AdaptiveDesiredClearance(sourceClearance, expansion, settings);
+
+                metrics.tested++;
+                metrics.minSourceClearance = Mathf.Min(metrics.minSourceClearance, sourceClearance);
+                metrics.minDesiredClearance = Mathf.Min(metrics.minDesiredClearance, desiredClearance);
+                metrics.minShapedClearance = Mathf.Min(metrics.minShapedClearance, shapedClearance);
+                metrics.maxClearanceLoss = Mathf.Max(metrics.maxClearanceLoss, sourceClearance - shapedClearance);
+                metrics.maxBelowDesired = Mathf.Max(metrics.maxBelowDesired, desiredClearance - shapedClearance);
+                metrics.averageExpansion += expansion;
+                shapedTotal += shapedClearance;
+                if (shapedClearance <= 0f) metrics.signFlips++;
+            }
+
+            if (metrics.tested > 0)
+            {
+                metrics.averageShapedClearance = (float)(shapedTotal / metrics.tested);
+                metrics.averageExpansion /= metrics.tested;
+            }
+            return metrics;
+        }
+
+        private static float AdaptiveDesiredClearance(float sourceClearance, float expansion, ReFitSettings settings)
+        {
+            settings = settings ?? new ReFitSettings();
+            float safe = Mathf.Max(0f, settings.clearanceMinimumSafetyDistance);
+            float source = Mathf.Max(sourceClearance, safe);
+            float tight = Mathf.Max(safe, source * Mathf.Clamp01(settings.clearanceTightnessFactor));
+            float t = Smooth01(settings.clearanceExpansionStart, settings.clearanceExpansionFull, expansion);
+            return Mathf.Lerp(source, tight, t);
+        }
+
+        private static float Smooth01(float start, float end, float value)
+        {
+            if (Mathf.Abs(end - start) <= 1e-6f)
+                return value >= end ? 1f : 0f;
+            float t = Mathf.Clamp01((value - start) / (end - start));
+            return t * t * (3f - 2f * t);
         }
 
         private static Vector3 SampleWorldShapeDelta(MeshSnapshot snapshot, Vector3[] worldDeltas, int triangle, Vector3 bary)
@@ -1924,6 +2131,19 @@ namespace Orbiters.ReFit.Editor.Tests
             {
                 return $"avg={average:0.000000} rms={rms:0.000000} p95={p95:0.000000} p99={p99:0.000000} max={max:0.000000}";
             }
+        }
+
+        private struct ClearanceMetrics
+        {
+            public int tested;
+            public int signFlips;
+            public float minSourceClearance;
+            public float minDesiredClearance;
+            public float minShapedClearance;
+            public float maxBelowDesired;
+            public float maxClearanceLoss;
+            public float averageShapedClearance;
+            public float averageExpansion;
         }
 
         private struct ShapeMagnitudeMetrics

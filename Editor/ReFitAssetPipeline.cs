@@ -144,6 +144,8 @@ namespace Orbiters.ReFit.Editor
                 if (hadSecondaryShape)
                     debug?.Capture("05_transferred_blendshapes_enabled", renderer);
             }
+            if (comp.clearanceCorrectionStats != null && comp.clearanceCorrectionStats.HasCorrections)
+                debug?.Capture("05_clearance_correction_applied", renderer, comp.projectionDebug);
             debug?.Capture("06_final_result", renderer, comp.projectionDebug);
 
             Selection.activeGameObject = renderer.gameObject;

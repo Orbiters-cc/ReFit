@@ -533,6 +533,8 @@ namespace Orbiters.ReFit.Editor
 
         private void BuildSettings(VisualElement parent)
         {
+            var defaultSettings = new ReFitSettings();
+
             var name = new TextField("Blendshape name") { value = settings.blendshapeName };
             name.RegisterValueChangedCallback(e => settings.blendshapeName = e.newValue);
             parent.Add(name);
@@ -564,6 +566,66 @@ namespace Orbiters.ReFit.Editor
                 settings.transferredBlendshapeSmoothingStrength,
                 ReFitSettings.DefaultTransferredBlendshapeSmoothingStrength,
                 value => settings.transferredBlendshapeSmoothingStrength = value);
+
+            var clearanceSection = new Label("Clearance correction");
+            clearanceSection.AddToClassList("refit-section");
+            clearanceSection.style.marginTop = 14;
+            parent.Add(clearanceSection);
+
+            var clearance = new Toggle("Preserve clothing clearance") { value = settings.enableClearanceCorrection };
+            clearance.AddToClassList("refit-field");
+            clearance.RegisterValueChangedCallback(e => settings.enableClearanceCorrection = e.newValue);
+            parent.Add(clearance);
+
+            AddFloatFieldWithReset(parent, "Expanded-area tightening strength", 0f, 1f,
+                1f - Mathf.Clamp01(settings.clearanceTightnessFactor),
+                1f - Mathf.Clamp01(defaultSettings.clearanceTightnessFactor),
+                value => settings.clearanceTightnessFactor = 1f - Mathf.Clamp01(value));
+
+            AddFloatFieldWithReset(parent, "Minimum safety distance (m)", 0f, 0.1f,
+                settings.clearanceMinimumSafetyDistance,
+                defaultSettings.clearanceMinimumSafetyDistance,
+                value => settings.clearanceMinimumSafetyDistance = value);
+
+            AddFloatFieldWithReset(parent, "Max outward safety correction (m)", 0f, 0.25f,
+                settings.clearanceMaxOutwardCorrection,
+                defaultSettings.clearanceMaxOutwardCorrection,
+                value => settings.clearanceMaxOutwardCorrection = value);
+
+            AddFloatFieldWithReset(parent, "Max inward tightening (m)", 0f, 0.25f,
+                settings.clearanceMaxInwardCorrection,
+                defaultSettings.clearanceMaxInwardCorrection,
+                value => settings.clearanceMaxInwardCorrection = value);
+
+            AddFloatFieldWithReset(parent, "Inward tightening strength", 0f, 1f,
+                settings.clearanceInwardStrength,
+                defaultSettings.clearanceInwardStrength,
+                value => settings.clearanceInwardStrength = value);
+
+            AddFloatFieldWithReset(parent, "Tightening starts at expansion (m)", 0f, 0.2f,
+                settings.clearanceExpansionStart,
+                defaultSettings.clearanceExpansionStart,
+                value =>
+                {
+                    settings.clearanceExpansionStart = value;
+                    if (settings.clearanceExpansionFull < value)
+                        settings.clearanceExpansionFull = value;
+                });
+
+            AddFloatFieldWithReset(parent, "Full tightening at expansion (m)", 0f, 0.3f,
+                settings.clearanceExpansionFull,
+                defaultSettings.clearanceExpansionFull,
+                value => settings.clearanceExpansionFull = Mathf.Max(settings.clearanceExpansionStart, value));
+
+            AddIntFieldWithReset(parent, "Correction smoothing iterations", 0, 10,
+                settings.clearanceSmoothingIterations,
+                defaultSettings.clearanceSmoothingIterations,
+                value => settings.clearanceSmoothingIterations = value);
+
+            AddFloatFieldWithReset(parent, "Correction smoothing strength", 0f, 1f,
+                settings.clearanceSmoothingStrength,
+                defaultSettings.clearanceSmoothingStrength,
+                value => settings.clearanceSmoothingStrength = value);
 
             var offset = new EnumField("Offset mode", settings.offsetMode);
             offset.RegisterValueChangedCallback(e => settings.offsetMode = (OffsetMode)e.newValue);
@@ -747,6 +809,8 @@ namespace Orbiters.ReFit.Editor
         {
             var requestSettings = settings.Clone();
             requestSettings.captureProjectionDebug = ReFitDebugService.Enabled;
+            if (requestSettings.captureProjectionDebug)
+                requestSettings.maxProjectionDebugGroups = 0;
             return new ReFitRequest
             {
                 mode = mode,

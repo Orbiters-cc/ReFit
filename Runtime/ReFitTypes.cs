@@ -79,6 +79,28 @@ namespace Orbiters.ReFit
         public bool captureProjectionDebug = false;
         /// <summary>Maximum number of projection groups captured for debug visualization. 0 or less captures all groups.</summary>
         public int maxProjectionDebugGroups = 5000;
+        /// <summary>Preserve clothing/body signed clearance after mesh refit and transferred body blendshapes.</summary>
+        public bool enableClearanceCorrection = true;
+        /// <summary>Small body clearance kept even when the adaptive target clearance is compressed by muscle expansion.</summary>
+        public float clearanceMinimumSafetyDistance = 0.003f;
+        /// <summary>Source clearance multiplier retained on strongly expanded body areas; lower values make clothing fit tighter there.</summary>
+        [Range(0f, 1f)] public float clearanceTightnessFactor = 0.5f;
+        /// <summary>Body expansion distance where adaptive clearance compression starts.</summary>
+        public float clearanceExpansionStart = 0.01f;
+        /// <summary>Body expansion distance where adaptive clearance compression reaches <see cref="clearanceTightnessFactor"/>.</summary>
+        public float clearanceExpansionFull = 0.06f;
+        /// <summary>Maximum outward correction per pass, in meters.</summary>
+        public float clearanceMaxOutwardCorrection = 0.04f;
+        /// <summary>Maximum inward correction per pass, in meters. Keep below outward correction to avoid shrinkwrap.</summary>
+        public float clearanceMaxInwardCorrection = 0.015f;
+        /// <summary>Scale applied to outward correction before clamping.</summary>
+        [Range(0f, 1f)] public float clearanceOutwardStrength = 1f;
+        /// <summary>Scale applied to inward correction before clamping.</summary>
+        [Range(0f, 1f)] public float clearanceInwardStrength = 0.65f;
+        /// <summary>Smoothing iterations applied only to the clearance correction field.</summary>
+        public int clearanceSmoothingIterations = 2;
+        /// <summary>Strength of each clearance correction smoothing iteration.</summary>
+        [Range(0f, 1f)] public float clearanceSmoothingStrength = 0.5f;
 
         /// <summary>Creates a deep copy of these settings.</summary>
         public ReFitSettings Clone() => (ReFitSettings)MemberwiseClone();
@@ -227,6 +249,50 @@ namespace Orbiters.ReFit
         public ReFitWeightDecision[] decisionsByVertex;
     }
 
+    /// <summary>Aggregate stats for the clearance correction pass.</summary>
+    [Serializable]
+    public class ReFitClearanceCorrectionStats
+    {
+        public int eligibleGroups;
+        public int outwardGroups;
+        public int inwardGroups;
+        public float maxOutwardCorrection;
+        public float maxInwardCorrection;
+        public float maxPenetrationBefore;
+        public float maxPenetrationAfter;
+        public int safetyGuardGroups;
+        public float maxSafetyGuardCorrection;
+        public float maxClearanceLossBefore;
+        public float maxExpansion;
+
+        public bool HasCorrections => outwardGroups > 0 || inwardGroups > 0;
+
+        public void Add(ReFitClearanceCorrectionStats other)
+        {
+            if (other == null) return;
+            eligibleGroups += other.eligibleGroups;
+            outwardGroups += other.outwardGroups;
+            inwardGroups += other.inwardGroups;
+            maxOutwardCorrection = Mathf.Max(maxOutwardCorrection, other.maxOutwardCorrection);
+            maxInwardCorrection = Mathf.Max(maxInwardCorrection, other.maxInwardCorrection);
+            maxPenetrationBefore = Mathf.Max(maxPenetrationBefore, other.maxPenetrationBefore);
+            maxPenetrationAfter = Mathf.Max(maxPenetrationAfter, other.maxPenetrationAfter);
+            safetyGuardGroups += other.safetyGuardGroups;
+            maxSafetyGuardCorrection = Mathf.Max(maxSafetyGuardCorrection, other.maxSafetyGuardCorrection);
+            maxClearanceLossBefore = Mathf.Max(maxClearanceLossBefore, other.maxClearanceLossBefore);
+            maxExpansion = Mathf.Max(maxExpansion, other.maxExpansion);
+        }
+
+        public string Summary(string label)
+        {
+            return $"{label}: eligible={eligibleGroups}, outward={outwardGroups}, inward={inwardGroups}, " +
+                   $"maxOut={maxOutwardCorrection * 1000f:0.###}mm, maxIn={maxInwardCorrection * 1000f:0.###}mm, " +
+                   $"guarded={safetyGuardGroups}, maxGuard={maxSafetyGuardCorrection * 1000f:0.###}mm, " +
+                   $"maxPenetrationBefore={maxPenetrationBefore * 1000f:0.###}mm, maxPenetrationAfter={maxPenetrationAfter * 1000f:0.###}mm, " +
+                   $"maxClearanceLossBefore={maxClearanceLossBefore * 1000f:0.###}mm, maxExpansion={maxExpansion * 1000f:0.###}mm.";
+        }
+    }
+
     /// <summary>Per-group projection and weight-transfer diagnostics for debug scene gizmos.</summary>
     [Serializable]
     public class ReFitProjectionDebugData
@@ -251,6 +317,7 @@ namespace Orbiters.ReFit
         public float targetDistance;
         public float falloff;
         public float normalDot;
+        public int weldedVertexCount = 1;
         public BodyRegion assetRegion = BodyRegion.Unknown;
         public BodyRegion sourceHitRegion = BodyRegion.Unknown;
         public BodyRegion targetHitRegion = BodyRegion.Unknown;
@@ -263,6 +330,23 @@ namespace Orbiters.ReFit
         public string originalWeights;
         public string finalWeights;
         public string note;
+    }
+
+    /// <summary>Per-snapshot welded vertex group diagnostics for Scene view mesh-edge overlays.</summary>
+    [Serializable]
+    public class ReFitWeldedGroupDebugData
+    {
+        public ReFitWeldedGroupDebugPoint[] groups;
+    }
+
+    /// <summary>One welded vertex group marker, stored in renderer-local coordinates.</summary>
+    [Serializable]
+    public class ReFitWeldedGroupDebugPoint
+    {
+        public int groupIndex;
+        public int representativeVertexIndex;
+        public int vertexCount;
+        public Vector3 localPoint;
     }
 
     /// <summary>
@@ -293,6 +377,8 @@ namespace Orbiters.ReFit
         public ReFitLeafTailHint[] leafTailHints;
         /// <summary>Optional per-projection diagnostics captured for editor debug gizmos.</summary>
         public ReFitProjectionDebugData projectionDebug;
+        /// <summary>Aggregate stats for the clearance correction pass, when enabled.</summary>
+        public ReFitClearanceCorrectionStats clearanceCorrectionStats;
         /// <summary>Index into <see cref="bones"/> to use as the renderer root bone, -1 if unavailable.</summary>
         public int rootBoneIndex = -1;
         /// <summary>Child-index path of the asset renderer inside the asset root hierarchy.</summary>

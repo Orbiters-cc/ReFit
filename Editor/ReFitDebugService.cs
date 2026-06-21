@@ -97,15 +97,15 @@ namespace Orbiters.ReFit.Editor
 
         public void Capture(string label, SkinnedMeshRenderer renderer, ReFitProjectionDebugData projectionDebug = null)
         {
-            Capture(label, renderer, false, projectionDebug);
+            CaptureSnapshot(label, renderer, projectionDebug);
         }
 
         public void CaptureScenePoseAsDefault(string label, SkinnedMeshRenderer renderer)
         {
-            Capture(label, renderer, true, null);
+            CaptureSnapshot(label, renderer, null);
         }
 
-        private void Capture(string label, SkinnedMeshRenderer renderer, bool bakeScenePoseAsDefault,
+        private void CaptureSnapshot(string label, SkinnedMeshRenderer renderer,
             ReFitProjectionDebugData projectionDebug)
         {
             if (renderer == null) return;
@@ -134,10 +134,10 @@ namespace Orbiters.ReFit.Editor
                     ? cloneRendererTransform.GetComponent<SkinnedMeshRenderer>()
                     : clone.GetComponentInChildren<SkinnedMeshRenderer>(true);
 
-                ConfigureClone(clone, renderer, cloneRenderer);
-                if (bakeScenePoseAsDefault && cloneRenderer != null)
-                    PoseNormalizer.BakeCurrentSkinPoseAsDefault(cloneRenderer, report);
+                var meshName = BuildSnapshotMeshName(renderer, snapshotCount, label);
+                ConfigureClone(clone, renderer, cloneRenderer, meshName);
                 AttachProjectionDebug(cloneRenderer, projectionDebug);
+                AttachWeldedGroupDebug(cloneRenderer);
                 clone.transform.SetParent(root.transform, true);
                 PositionClone(clone, cloneRenderer != null ? (Renderer)cloneRenderer : clone.GetComponentInChildren<Renderer>(true));
                 LogSnapshot(label, renderer, clone, cloneRenderer);
@@ -162,12 +162,63 @@ namespace Orbiters.ReFit.Editor
             component.visible = true;
         }
 
+        private static void AttachWeldedGroupDebug(SkinnedMeshRenderer cloneRenderer)
+        {
+            var data = BuildWeldedGroupDebugData(cloneRenderer);
+            if (data == null || data.groups == null || data.groups.Length == 0)
+                return;
+
+            var component = cloneRenderer.gameObject.AddComponent<ReFitWeldedGroupDebugComponent>();
+            component.targetRenderer = cloneRenderer;
+            component.data = data;
+            component.visible = true;
+        }
+
+        private static ReFitWeldedGroupDebugData BuildWeldedGroupDebugData(SkinnedMeshRenderer renderer)
+        {
+            if (renderer == null || renderer.sharedMesh == null)
+                return null;
+
+            MeshSnapshot snapshot;
+            try
+            {
+                snapshot = MeshSnapshot.Capture(renderer, true, null, null);
+            }
+            catch
+            {
+                return null;
+            }
+
+            if (snapshot == null || snapshot.groupRep == null || snapshot.groupRep.Length == 0)
+                return null;
+
+            var groups = new ReFitWeldedGroupDebugPoint[snapshot.groupRep.Length];
+            for (int g = 0; g < groups.Length; g++)
+            {
+                int vertex = snapshot.groupRep[g];
+                groups[g] = new ReFitWeldedGroupDebugPoint
+                {
+                    groupIndex = g,
+                    representativeVertexIndex = vertex,
+                    vertexCount = snapshot.groupMembers != null && g < snapshot.groupMembers.Length && snapshot.groupMembers[g] != null
+                        ? snapshot.groupMembers[g].Count
+                        : 1,
+                    localPoint = vertex >= 0 && vertex < snapshot.localVertices.Length
+                        ? snapshot.localVertices[vertex]
+                        : Vector3.zero
+                };
+            }
+
+            return new ReFitWeldedGroupDebugData { groups = groups };
+        }
+
         public void Finish()
         {
             Log("debug-session-finished", $"Finished debug session '{root.name}' with {snapshotCount} snapshot(s).");
         }
 
-        private void ConfigureClone(GameObject clone, SkinnedMeshRenderer sourceRenderer, SkinnedMeshRenderer cloneRenderer)
+        private void ConfigureClone(GameObject clone, SkinnedMeshRenderer sourceRenderer, SkinnedMeshRenderer cloneRenderer,
+            string meshName)
         {
             var localPose = CaptureLocalPose(clone);
             foreach (var behaviour in clone.GetComponentsInChildren<Behaviour>(true))
@@ -182,8 +233,8 @@ namespace Orbiters.ReFit.Editor
             {
                 foreach (var renderer in renderers)
                     renderer.enabled = renderer == cloneRenderer;
-                FreezeRendererMesh(sourceRenderer, cloneRenderer);
-                CopyBlendShapeWeights(sourceRenderer, cloneRenderer);
+                FreezeRendererMesh(sourceRenderer, cloneRenderer, meshName);
+                BakeCurrentSnapshotPose(cloneRenderer, meshName);
                 cloneRenderer.updateWhenOffscreen = true;
             }
             else
@@ -193,26 +244,76 @@ namespace Orbiters.ReFit.Editor
             }
         }
 
-        private static void CopyBlendShapeWeights(SkinnedMeshRenderer source, SkinnedMeshRenderer clone)
+        private static string BuildSnapshotMeshName(SkinnedMeshRenderer renderer, int index, string label)
         {
-            if (source == null || clone == null || source.sharedMesh == null || clone.sharedMesh == null)
-                return;
-
-            int count = Mathf.Min(source.sharedMesh.blendShapeCount, clone.sharedMesh.blendShapeCount);
-            for (int i = 0; i < count; i++)
-                clone.SetBlendShapeWeight(i, source.GetBlendShapeWeight(i));
+            var mesh = renderer != null ? renderer.sharedMesh : null;
+            var baseName = mesh != null ? mesh.name.Replace("(Clone)", "") : "Mesh";
+            return $"{baseName}_Debug_{index:00}_{ReFitDebugService.SanitizeName(label)}";
         }
 
-        private static void FreezeRendererMesh(SkinnedMeshRenderer source, SkinnedMeshRenderer clone)
+        private static void FreezeRendererMesh(SkinnedMeshRenderer source, SkinnedMeshRenderer clone, string meshName)
         {
             if (source == null || clone == null || source.sharedMesh == null)
                 return;
 
             var mesh = Object.Instantiate(source.sharedMesh);
-            mesh.name = source.sharedMesh.name.Replace("(Clone)", "") + "_DebugSnapshot";
+            mesh.name = string.IsNullOrEmpty(meshName)
+                ? source.sharedMesh.name.Replace("(Clone)", "") + "_DebugSnapshot"
+                : meshName;
             mesh.hideFlags = HideFlags.None;
-            Undo.RegisterCreatedObjectUndo(mesh, "ReFit debug mesh snapshot");
+            BakeSourceBlendShapesIntoBase(source, mesh);
             clone.sharedMesh = mesh;
+        }
+
+        private static void BakeSourceBlendShapesIntoBase(SkinnedMeshRenderer source, Mesh mesh)
+        {
+            if (source == null || source.sharedMesh == null || mesh == null)
+                return;
+
+            if (source.sharedMesh.blendShapeCount > 0)
+            {
+                try
+                {
+                    var snapshot = MeshSnapshot.Capture(source, false, null, null);
+                    if (snapshot != null && snapshot.localVertices != null &&
+                        snapshot.localVertices.Length == mesh.vertexCount)
+                        mesh.vertices = snapshot.localVertices;
+                }
+                catch
+                {
+                    // A debug snapshot should still exist even if an unusual mesh cannot be sampled.
+                }
+            }
+
+            if (mesh.blendShapeCount > 0)
+                mesh.ClearBlendShapes();
+            mesh.RecalculateBounds();
+        }
+
+        private static void BakeCurrentSnapshotPose(SkinnedMeshRenderer cloneRenderer, string meshName)
+        {
+            if (cloneRenderer == null || cloneRenderer.sharedMesh == null)
+                return;
+
+            var preBakeMesh = cloneRenderer.sharedMesh;
+            if (!PoseNormalizer.BakeCurrentSkinPoseAsDefault(cloneRenderer, null))
+            {
+                Undo.RegisterCreatedObjectUndo(preBakeMesh, "ReFit debug mesh snapshot");
+                return;
+            }
+
+            var bakedMesh = cloneRenderer.sharedMesh;
+            if (bakedMesh == null)
+                return;
+
+            bakedMesh.name = string.IsNullOrEmpty(meshName)
+                ? bakedMesh.name.Replace("(Clone)", "") + "_Baked"
+                : meshName + "_Baked";
+            bakedMesh.hideFlags = HideFlags.None;
+            Undo.RegisterCreatedObjectUndo(bakedMesh, "ReFit debug baked mesh snapshot");
+
+            if (preBakeMesh != null && preBakeMesh != bakedMesh && !AssetDatabase.Contains(preBakeMesh))
+                Object.DestroyImmediate(preBakeMesh);
         }
 
         private static Dictionary<Transform, LocalPose> CaptureLocalPose(GameObject root)
@@ -252,12 +353,17 @@ namespace Orbiters.ReFit.Editor
                 $"mode={request.mode}, asset='{NameOf(request.assetRenderer)}', source='{NameOf(request.sourceAvatar)}', target='{NameOf(request.targetAvatar)}', " +
                 $"targetShape='{request.targetBlendshape}', replaceArmature={BoolSetting(settings, s => s.replaceArmature)}, transferWeights={BoolSetting(settings, s => s.transferWeights)}, " +
                 $"captureProjectionDebug={BoolSetting(settings, s => s.captureProjectionDebug)}, " +
+                $"clearanceCorrection={BoolSetting(settings, s => s.enableClearanceCorrection)}, tightening={FloatSetting(settings, s => 1f - Mathf.Clamp01(s.clearanceTightnessFactor))}, " +
+                $"clearanceRetention={FloatSetting(settings, s => s.clearanceTightnessFactor)}, inwardStrength={FloatSetting(settings, s => s.clearanceInwardStrength)}, " +
+                $"expansionStart={FloatSetting(settings, s => s.clearanceExpansionStart)}, expansionFull={FloatSetting(settings, s => s.clearanceExpansionFull)}, " +
+                $"clearanceSmoothing={IntSetting(settings, s => s.clearanceSmoothingIterations)}x{FloatSetting(settings, s => s.clearanceSmoothingStrength)}, " +
                 $"maxProjectionDistance={FloatSetting(settings, s => s.maxProjectionDistance)}, falloffStartDistance={FloatSetting(settings, s => s.falloffStartDistance)}.");
         }
 
         private void LogSnapshot(string label, SkinnedMeshRenderer renderer, GameObject clone, SkinnedMeshRenderer cloneRenderer)
         {
             var mesh = renderer.sharedMesh;
+            var cloneMesh = cloneRenderer != null ? cloneRenderer.sharedMesh : null;
             var bones = renderer.bones;
             int nullBones = 0;
             bool rootBoneInBones = false;
@@ -278,7 +384,8 @@ namespace Orbiters.ReFit.Editor
                 $"{label}: renderer='{HierarchyPath(renderer.transform)}', mesh='{(mesh != null ? mesh.name : "null")}', " +
                 $"vertices={(mesh != null ? mesh.vertexCount : 0)}, blendShapes={(mesh != null ? mesh.blendShapeCount : 0)} [{BlendShapeSummary(renderer)}], " +
                 $"bones={(bones != null ? bones.Length : 0)}, nullBones={nullBones}, rootBone='{HierarchyPath(renderer.rootBone)}', rootBoneInBones={rootBoneInBones}, bounds=({bounds}), " +
-                $"copy='{clone.name}', copyRenderer='{NameOf(cloneRenderer)}'.");
+                $"copy='{clone.name}', copyRenderer='{NameOf(cloneRenderer)}', copyMesh='{(cloneMesh != null ? cloneMesh.name : "null")}', " +
+                $"copyMeshId={(cloneMesh != null ? cloneMesh.GetInstanceID().ToString() : "null")}, copyBlendShapes={(cloneMesh != null ? cloneMesh.blendShapeCount : 0)}.");
         }
 
         private void Log(string code, string message)
@@ -320,6 +427,11 @@ namespace Orbiters.ReFit.Editor
         private static string FloatSetting(ReFitSettings settings, Func<ReFitSettings, float> getter)
         {
             return settings != null ? getter(settings).ToString("0.###") : "default";
+        }
+
+        private static string IntSetting(ReFitSettings settings, Func<ReFitSettings, int> getter)
+        {
+            return settings != null ? getter(settings).ToString() : "default";
         }
 
         private static string NameOf(Object obj)

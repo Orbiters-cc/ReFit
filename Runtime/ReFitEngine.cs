@@ -380,6 +380,7 @@ namespace Orbiters.ReFit
                 falloff[g] = bindings[g].valid
                     ? DeltaField.Falloff(bindings[g].distance, settings.falloffStartDistance, settings.maxProjectionDistance)
                     : 0f;
+            var clearanceProfile = ReFitClearanceCorrection.BuildProfile(asset, firstSnap, bindings, settings);
 
             // ---- Mesh deformation field --------------------------------------------------
             Vector3[] primaryGroupDeltas = null;
@@ -409,6 +410,18 @@ namespace Orbiters.ReFit
                 });
                 DeltaField.Smooth(primaryGroupDeltas, asset.groupAdjacency,
                     settings.primarySmoothingIterations, settings.primarySmoothingStrength);
+
+                var clearanceStats = ReFitClearanceCorrection.Apply(
+                    asset,
+                    targetBasis,
+                    targetBindings,
+                    clearanceProfile,
+                    null,
+                    primaryGroupDeltas,
+                    null,
+                    falloff,
+                    settings);
+                AddClearanceStats(state, clearanceStats, "primary refit");
 
                 state.primaryLocalDeltas = ToLocalDeltas(state, primaryGroupDeltas, true);
                 if (settings.recalculateNormalDeltas)
@@ -446,6 +459,18 @@ namespace Orbiters.ReFit
                         settings.transferredBlendshapeSmoothingIterations,
                         settings.transferredBlendshapeSmoothingStrength);
 
+                    var clearanceStats = ReFitClearanceCorrection.Apply(
+                        asset,
+                        targetBasis,
+                        transferBindings,
+                        clearanceProfile,
+                        primaryGroupDeltas,
+                        groupDeltas,
+                        worldShapeDelta,
+                        falloff,
+                        settings);
+                    AddClearanceStats(state, clearanceStats, $"transferred '{shape.sourceName}'");
+
                     shape.localDeltas = ToLocalDeltas(state, groupDeltas, false);
                     if (settings.recalculateNormalDeltas)
                         shape.normalDeltas = NormalDeltas(asset, shape.localDeltas, state.primaryLocalDeltas);
@@ -468,6 +493,17 @@ namespace Orbiters.ReFit
                 state.comp.projectionDebug = BuildProjectionDebugData(state, bindings, transferBindings, falloff);
 
             SetBackgroundProgress(state, 1f, "Finishing");
+        }
+
+        private static void AddClearanceStats(State state, ReFitClearanceCorrectionStats stats, string label)
+        {
+            if (state == null || stats == null || !stats.HasCorrections)
+                return;
+
+            if (state.comp.clearanceCorrectionStats == null)
+                state.comp.clearanceCorrectionStats = new ReFitClearanceCorrectionStats();
+            state.comp.clearanceCorrectionStats.Add(stats);
+            state.Report?.Info("clearance-correction", stats.Summary(label));
         }
 
         private static SurfaceBinding[] BindRefittedAssetToTarget(
@@ -548,6 +584,9 @@ namespace Orbiters.ReFit
                     targetDistance = target.distance,
                     falloff = falloff[g],
                     normalDot = target.valid ? target.normalDot : source.normalDot,
+                    weldedVertexCount = asset.groupMembers != null && g < asset.groupMembers.Length && asset.groupMembers[g] != null
+                        ? asset.groupMembers[g].Count
+                        : 1,
                     assetRegion = state.assetGroupRegions != null && g < state.assetGroupRegions.Length
                         ? state.assetGroupRegions[g]
                         : BodyRegion.Unknown,

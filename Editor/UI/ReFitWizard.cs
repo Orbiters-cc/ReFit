@@ -767,6 +767,107 @@ namespace Orbiters.ReFit.Editor
                     MarkClearanceTightnessCustom();
                     settings.clearanceSurfaceGuardEdgeSamples = value;
                 });
+
+            AddFloatFieldWithReset(parent, "Max primary total correction (m)", 0f, 0.2f,
+                settings.clearanceMaxPrimaryTotalCorrection,
+                defaultSettings.clearanceMaxPrimaryTotalCorrection,
+                value =>
+                {
+                    MarkClearanceTightnessCustom();
+                    settings.clearanceMaxPrimaryTotalCorrection = value;
+                });
+
+            AddFloatFieldWithReset(parent, "Max transferred total correction (m)", 0f, 0.2f,
+                settings.clearanceMaxTransferredTotalCorrection,
+                defaultSettings.clearanceMaxTransferredTotalCorrection,
+                value =>
+                {
+                    MarkClearanceTightnessCustom();
+                    settings.clearanceMaxTransferredTotalCorrection = value;
+                });
+
+            AddFloatFieldWithReset(parent, "Transferred inward scale", 0f, 1f,
+                settings.clearanceTransferredInwardScale,
+                defaultSettings.clearanceTransferredInwardScale,
+                value =>
+                {
+                    MarkClearanceTightnessCustom();
+                    settings.clearanceTransferredInwardScale = value;
+                });
+
+            AddFloatFieldWithReset(parent, "Open boundary correction scale", 0f, 1f,
+                settings.clearanceOpenBoundaryCorrectionScale,
+                defaultSettings.clearanceOpenBoundaryCorrectionScale,
+                value =>
+                {
+                    MarkClearanceTightnessCustom();
+                    settings.clearanceOpenBoundaryCorrectionScale = value;
+                });
+
+            AddFloatFieldWithReset(parent, "Low-confidence correction scale", 0f, 1f,
+                settings.clearanceLowConfidenceCorrectionScale,
+                defaultSettings.clearanceLowConfidenceCorrectionScale,
+                value =>
+                {
+                    MarkClearanceTightnessCustom();
+                    settings.clearanceLowConfidenceCorrectionScale = value;
+                });
+
+            AddFloatFieldWithReset(parent, "Upper-body hem follow scale", 0f, 1f,
+                settings.upperBodyGarmentHemFollowScale,
+                defaultSettings.upperBodyGarmentHemFollowScale,
+                value =>
+                {
+                    MarkClearanceTightnessCustom();
+                    settings.upperBodyGarmentHemFollowScale = value;
+                });
+
+            var islandPropagation = new Toggle("Propagate disconnected island corrections")
+            {
+                value = settings.clearancePropagateDisconnectedIslands
+            };
+            islandPropagation.RegisterValueChangedCallback(e =>
+            {
+                MarkClearanceTightnessCustom();
+                settings.clearancePropagateDisconnectedIslands = e.newValue;
+            });
+            parent.Add(islandPropagation);
+
+            AddFloatFieldWithReset(parent, "Island follow strength", 0f, 1f,
+                settings.clearanceIslandPropagationStrength,
+                defaultSettings.clearanceIslandPropagationStrength,
+                value =>
+                {
+                    MarkClearanceTightnessCustom();
+                    settings.clearanceIslandPropagationStrength = value;
+                });
+
+            AddFloatFieldWithReset(parent, "Island follow search distance (m)", 0f, 0.25f,
+                settings.clearanceIslandPropagationSearchDistance,
+                defaultSettings.clearanceIslandPropagationSearchDistance,
+                value =>
+                {
+                    MarkClearanceTightnessCustom();
+                    settings.clearanceIslandPropagationSearchDistance = value;
+                });
+
+            AddFloatFieldWithReset(parent, "Max island follow correction (m)", 0f, 0.1f,
+                settings.clearanceMaxIslandPropagationCorrection,
+                defaultSettings.clearanceMaxIslandPropagationCorrection,
+                value =>
+                {
+                    MarkClearanceTightnessCustom();
+                    settings.clearanceMaxIslandPropagationCorrection = value;
+                });
+
+            AddFloatFieldWithReset(parent, "Island follow donor threshold (m)", 0f, 0.02f,
+                settings.clearanceIslandPropagationMinDonorCorrection,
+                defaultSettings.clearanceIslandPropagationMinDonorCorrection,
+                value =>
+                {
+                    MarkClearanceTightnessCustom();
+                    settings.clearanceIslandPropagationMinDonorCorrection = value;
+                });
         }
 
         private void BuildClearanceTightnessSlider(VisualElement parent)
@@ -806,6 +907,17 @@ namespace Orbiters.ReFit.Editor
             settings.clearanceSurfaceGuardIterations = Mathf.RoundToInt(LerpPreset(clearanceTightnessPreset, 0f, 1f, 6f));
             settings.clearanceSurfaceGuardStrength = LerpPreset(clearanceTightnessPreset, 0.25f, 0.45f, 1f);
             settings.clearanceSurfaceGuardEdgeSamples = Mathf.RoundToInt(LerpPreset(clearanceTightnessPreset, 1f, 1f, 3f));
+            settings.clearanceMaxPrimaryTotalCorrection = LerpPreset(clearanceTightnessPreset, 0.025f, 0.06f, 0.06f);
+            settings.clearanceMaxTransferredTotalCorrection = LerpPreset(clearanceTightnessPreset, 0.015f, 0.035f, 0.045f);
+            settings.clearanceTransferredInwardScale = LerpPreset(clearanceTightnessPreset, 0.45f, 0.75f, 0.92f);
+            settings.clearanceOpenBoundaryCorrectionScale = LerpPreset(clearanceTightnessPreset, 0.18f, 0.1f, 0.06f);
+            settings.clearanceLowConfidenceCorrectionScale = LerpPreset(clearanceTightnessPreset, 0.55f, 0.4f, 0.28f);
+            settings.upperBodyGarmentHemFollowScale = LerpPreset(clearanceTightnessPreset, 0.45f, 0.3f, 0.18f);
+            settings.clearancePropagateDisconnectedIslands = true;
+            settings.clearanceIslandPropagationStrength = LerpPreset(clearanceTightnessPreset, 0.25f, 0.6f, 0.85f);
+            settings.clearanceIslandPropagationSearchDistance = LerpPreset(clearanceTightnessPreset, 0.05f, 0.08f, 0.12f);
+            settings.clearanceMaxIslandPropagationCorrection = LerpPreset(clearanceTightnessPreset, 0.008f, 0.025f, 0.045f);
+            settings.clearanceIslandPropagationMinDonorCorrection = 0.001f;
             settings.clearanceOutwardStrength = 1f;
         }
 
@@ -969,6 +1081,16 @@ namespace Orbiters.ReFit.Editor
             projection.RegisterValueChangedCallback(e => ReFitProjectionGizmoService.Enabled = e.newValue);
             content.Add(projection);
             Help("When debug mode is enabled, ReFit stores source/target projection lines on debug snapshots. This toggle only shows or hides them in the Scene view; details appear when hovering a line.");
+
+            AddIntFieldWithReset(
+                content,
+                "Projection display budget",
+                ReFitProjectionGizmoService.MinDisplaySampleBudget,
+                ReFitProjectionGizmoService.MaxDisplaySampleBudget,
+                ReFitProjectionGizmoService.DisplaySampleBudget,
+                ReFitProjectionGizmoService.DefaultDisplaySampleBudget,
+                ReFitProjectionGizmoService.SetDisplaySampleBudget);
+            Help("Limits Scene view drawing cost only; debug mode still captures every projection group. Increase it for small snapshots when you need denser rays.");
 
             var flush = new Button(() =>
             {

@@ -18,6 +18,19 @@ namespace Orbiters.ReFit
     /// </summary>
     public class ReFitEngine
     {
+        private const int DetachedCoherenceMinGroups = 8;
+        private const float DetachedCoherenceMinMotion = 0.006f;
+        private const float DetachedCoherenceMaxP95EdgeRatio = 1.35f;
+        private const float DetachedCoherenceMaxEdgeRatio = 2.0f;
+        private const float DetachedCoherenceMaxP95DeltaJump = 0.012f;
+        private const float DetachedCoherencePartialMotionRatio = 0.55f;
+        private const float DetachedCoherenceMovingSampleRatio = 0.55f;
+        private const float DetachedCoherenceMaxClusterDistance = 0.06f;
+        private const float DetachedCoherenceSurfaceFollowStrength = 1f;
+        private const int DetachedCoherenceSurfaceFillIterations = 48;
+        private const int DetachedCoherenceSurfaceSmoothIterations = 3;
+        private const float DetachedCoherenceSurfaceSmoothStrength = 0.35f;
+
         // ------------------------------------------------------------------
         // Public API
         // ------------------------------------------------------------------
@@ -140,6 +153,7 @@ namespace Orbiters.ReFit
             /// <summary>Mesh-local frame deltas on the target body (captured on the main thread).</summary>
             public Vector3[] frameDeltas;
             // background results
+            public Vector3[] rawLocalDeltas;
             public Vector3[] localDeltas;
             public Vector3[] normalDeltas;
         }
@@ -172,10 +186,13 @@ namespace Orbiters.ReFit
             public bool transferWeights;
 
             // background outputs
+            public Vector3[] primaryRawLocalDeltas;
             public Vector3[] primaryLocalDeltas;
             public Vector3[] primaryNormalDeltas;
             public BoneWeight[] newWeights;
             public ReFitWeightTransferDebugInfo weightDebug;
+            public float[] upperBodyHemWeights;
+            public float[] openBoundaryWeights;
 
             // background progress
             public volatile string backgroundLabel = "Computing...";
@@ -183,6 +200,34 @@ namespace Orbiters.ReFit
             public Exception backgroundError;
 
             public ReFitReport Report => comp.report;
+        }
+
+        private struct DetachedShapeArtifactMetrics
+        {
+            public int groups;
+            public int edges;
+            public float minMotion;
+            public float averageMotion;
+            public float maxMotion;
+            public float p95EdgeRatio;
+            public float maxEdgeRatio;
+            public float p95DeltaJump;
+            public float maxDeltaJump;
+        }
+
+        private struct DetachedComponentBounds
+        {
+            public Vector3 min;
+            public Vector3 max;
+            public bool valid;
+        }
+
+        private sealed class DetachedSurfaceSupport
+        {
+            public MeshSnapshot surface;
+            public SurfaceBvh bvh;
+            public int[] triangleComponents;
+            public BodyRegion[] triangleRegions;
         }
 
         // ------------------------------------------------------------------
@@ -338,6 +383,7 @@ namespace Orbiters.ReFit
             var targetBasis = state.targetBasis;
             int groupCount = asset.GroupCount;
             int vertexCount = asset.localVertices.Length;
+            state.openBoundaryWeights = BuildOpenBoundaryWeights(asset);
 
             // Spatial indices
             SetBackgroundProgress(state, 0.05f, "Building spatial indices");
@@ -381,6 +427,7 @@ namespace Orbiters.ReFit
                     ? DeltaField.Falloff(bindings[g].distance, settings.falloffStartDistance, settings.maxProjectionDistance)
                     : 0f;
             var clearanceProfile = ReFitClearanceCorrection.BuildProfile(asset, firstSnap, bindings, settings);
+            state.upperBodyHemWeights = BuildUpperBodyHemWeights(state);
 
             // ---- Mesh deformation field --------------------------------------------------
             Vector3[] primaryGroupDeltas = null;
@@ -410,6 +457,8 @@ namespace Orbiters.ReFit
                 });
                 DeltaField.Smooth(primaryGroupDeltas, asset.groupAdjacency,
                     settings.primarySmoothingIterations, settings.primarySmoothingStrength);
+                ApplyUpperBodyHemDamping(primaryGroupDeltas, state.upperBodyHemWeights, settings);
+                state.primaryRawLocalDeltas = ToLocalDeltas(state, primaryGroupDeltas, true);
 
                 var clearanceStats = ReFitClearanceCorrection.Apply(
                     asset,
@@ -420,7 +469,8 @@ namespace Orbiters.ReFit
                     primaryGroupDeltas,
                     null,
                     falloff,
-                    settings);
+                    settings,
+                    BuildClearanceContext(state, targetBasis, targetBindings, false));
                 AddClearanceStats(state, clearanceStats, "primary refit");
 
                 state.primaryLocalDeltas = ToLocalDeltas(state, primaryGroupDeltas, true);
@@ -458,6 +508,9 @@ namespace Orbiters.ReFit
                     DeltaField.Smooth(groupDeltas, asset.groupAdjacency,
                         settings.transferredBlendshapeSmoothingIterations,
                         settings.transferredBlendshapeSmoothingStrength);
+                    ApplyUpperBodyHemDamping(groupDeltas, state.upperBodyHemWeights, settings);
+                    ApplyDetachedTransferredComponentCoherence(state, primaryGroupDeltas, groupDeltas, shape.sourceName);
+                    shape.rawLocalDeltas = ToLocalDeltas(state, groupDeltas, false);
 
                     var clearanceStats = ReFitClearanceCorrection.Apply(
                         asset,
@@ -468,7 +521,8 @@ namespace Orbiters.ReFit
                         groupDeltas,
                         worldShapeDelta,
                         falloff,
-                        settings);
+                        settings,
+                        BuildClearanceContext(state, targetBasis, transferBindings, true));
                     AddClearanceStats(state, clearanceStats, $"transferred '{shape.sourceName}'");
 
                     shape.localDeltas = ToLocalDeltas(state, groupDeltas, false);
@@ -503,7 +557,1102 @@ namespace Orbiters.ReFit
             if (state.comp.clearanceCorrectionStats == null)
                 state.comp.clearanceCorrectionStats = new ReFitClearanceCorrectionStats();
             state.comp.clearanceCorrectionStats.Add(stats);
+            if (stats.islandPropagationDebug != null)
+            {
+                if (!string.IsNullOrEmpty(label) && label.StartsWith("primary", StringComparison.OrdinalIgnoreCase))
+                    state.comp.primaryIslandPropagationDebug = stats.islandPropagationDebug;
+                else
+                    state.comp.transferredIslandPropagationDebug = stats.islandPropagationDebug;
+            }
             state.Report?.Info("clearance-correction", stats.Summary(label));
+        }
+
+        private static ReFitClearanceCorrection.Context BuildClearanceContext(
+            State state,
+            MeshSnapshot targetBody,
+            SurfaceBinding[] bindings,
+            bool transferredBlendshape)
+        {
+            return new ReFitClearanceCorrection.Context
+            {
+                transferredBlendshape = transferredBlendshape,
+                assetGroupRegions = state.assetGroupRegions,
+                targetTriangleRegions = state.targetTriRegions,
+                referenceNormals = BuildBindingNormals(targetBody, bindings, state.asset.GroupCount),
+                bindingRelaxed = BuildBindingRelaxed(bindings, state.asset.GroupCount),
+                bindingNormalDots = BuildBindingNormalDots(bindings, state.asset.GroupCount),
+                openBoundaryWeights = state.openBoundaryWeights,
+                upperBodyHemWeights = state.upperBodyHemWeights
+            };
+        }
+
+        private static Vector3[] BuildBindingNormals(MeshSnapshot body, SurfaceBinding[] bindings, int groupCount)
+        {
+            if (body == null || bindings == null)
+                return null;
+
+            var normals = new Vector3[groupCount];
+            int count = Mathf.Min(groupCount, bindings.Length);
+            for (int g = 0; g < count; g++)
+            {
+                if (!bindings[g].valid)
+                    continue;
+                normals[g] = body.BaryNormal(bindings[g].triangle, bindings[g].bary);
+            }
+            return normals;
+        }
+
+        private static bool[] BuildBindingRelaxed(SurfaceBinding[] bindings, int groupCount)
+        {
+            if (bindings == null)
+                return null;
+
+            var relaxed = new bool[groupCount];
+            int count = Mathf.Min(groupCount, bindings.Length);
+            for (int g = 0; g < count; g++)
+                relaxed[g] = bindings[g].valid && bindings[g].usedRelaxedFallback;
+            return relaxed;
+        }
+
+        private static float[] BuildBindingNormalDots(SurfaceBinding[] bindings, int groupCount)
+        {
+            if (bindings == null)
+                return null;
+
+            var dots = new float[groupCount];
+            int count = Mathf.Min(groupCount, bindings.Length);
+            for (int g = 0; g < count; g++)
+                dots[g] = bindings[g].valid ? bindings[g].normalDot : 0f;
+            return dots;
+        }
+
+        private static float[] BuildOpenBoundaryWeights(MeshSnapshot asset)
+        {
+            if (asset == null || asset.triangles == null || asset.groupOfVertex == null ||
+                asset.groupAdjacency == null || asset.GroupCount == 0)
+                return null;
+
+            var edgeCounts = new Dictionary<ulong, int>();
+            for (int t = 0; t + 2 < asset.triangles.Length; t += 3)
+            {
+                AddVertexEdge(edgeCounts, asset.triangles[t], asset.triangles[t + 1]);
+                AddVertexEdge(edgeCounts, asset.triangles[t + 1], asset.triangles[t + 2]);
+                AddVertexEdge(edgeCounts, asset.triangles[t + 2], asset.triangles[t]);
+            }
+
+            var weights = new float[asset.GroupCount];
+            var exact = new bool[asset.GroupCount];
+            foreach (var entry in edgeCounts)
+            {
+                if (entry.Value != 1)
+                    continue;
+
+                int a = (int)(entry.Key >> 32);
+                int b = (int)(entry.Key & 0xffffffff);
+                MarkBoundaryVertex(asset, a, weights, exact);
+                MarkBoundaryVertex(asset, b, weights, exact);
+            }
+
+            bool any = false;
+            for (int g = 0; g < exact.Length; g++)
+            {
+                if (!exact[g])
+                    continue;
+
+                any = true;
+                var neighbors = asset.groupAdjacency[g];
+                for (int n = 0; n < neighbors.Count; n++)
+                {
+                    int neighbor = neighbors[n];
+                    if (neighbor >= 0 && neighbor < weights.Length && weights[neighbor] < 0.65f)
+                        weights[neighbor] = 0.65f;
+                }
+            }
+
+            for (int g = 0; g < exact.Length; g++)
+            {
+                if (!exact[g])
+                    continue;
+
+                var neighbors = asset.groupAdjacency[g];
+                for (int n = 0; n < neighbors.Count; n++)
+                {
+                    int neighbor = neighbors[n];
+                    if (neighbor < 0 || neighbor >= asset.groupAdjacency.Length)
+                        continue;
+
+                    var secondRing = asset.groupAdjacency[neighbor];
+                    for (int s = 0; s < secondRing.Count; s++)
+                    {
+                        int second = secondRing[s];
+                        if (second >= 0 && second < weights.Length && weights[second] < 0.25f)
+                            weights[second] = 0.25f;
+                    }
+                }
+            }
+
+            return any ? weights : null;
+        }
+
+        private static void AddVertexEdge(Dictionary<ulong, int> edgeCounts, int a, int b)
+        {
+            if (a < 0 || b < 0 || a == b)
+                return;
+            if (a > b)
+            {
+                int tmp = a;
+                a = b;
+                b = tmp;
+            }
+
+            ulong key = ((ulong)(uint)a << 32) | (uint)b;
+            edgeCounts.TryGetValue(key, out int count);
+            edgeCounts[key] = count + 1;
+        }
+
+        private static void MarkBoundaryVertex(MeshSnapshot asset, int vertex, float[] weights, bool[] exact)
+        {
+            if (vertex < 0 || vertex >= asset.groupOfVertex.Length)
+                return;
+
+            int group = asset.groupOfVertex[vertex];
+            if (group < 0 || group >= weights.Length)
+                return;
+
+            weights[group] = 1f;
+            exact[group] = true;
+        }
+
+        private static float[] BuildUpperBodyHemWeights(State state)
+        {
+            if (state == null || state.asset == null || !IsLikelyUpperBodyGarment(state.request?.assetRenderer))
+                return null;
+
+            var asset = state.asset;
+            if (asset.worldVertices == null || asset.groupRep == null || asset.GroupCount == 0)
+                return null;
+
+            float minY = float.PositiveInfinity;
+            float maxY = float.NegativeInfinity;
+            for (int g = 0; g < asset.GroupCount; g++)
+            {
+                int vertex = asset.groupRep[g];
+                float y = asset.worldVertices[vertex].y;
+                minY = Mathf.Min(minY, y);
+                maxY = Mathf.Max(maxY, y);
+            }
+
+            float height = maxY - minY;
+            if (height <= 1e-4f)
+                return null;
+
+            float full = minY + height * 0.22f;
+            float fade = minY + height * 0.52f;
+            var weights = new float[asset.GroupCount];
+            int active = 0;
+            for (int g = 0; g < asset.GroupCount; g++)
+            {
+                var region = state.assetGroupRegions != null && g < state.assetGroupRegions.Length
+                    ? state.assetGroupRegions[g]
+                    : BodyRegion.Unknown;
+                if (region == BodyRegion.LeftArm || region == BodyRegion.RightArm || region == BodyRegion.Head)
+                    continue;
+
+                int vertex = asset.groupRep[g];
+                float y = asset.worldVertices[vertex].y;
+                float weight = 1f - Smooth01(full, fade, y);
+                if (weight <= 1e-4f)
+                    continue;
+
+                weights[g] = weight;
+                active++;
+            }
+
+            return active > 0 ? weights : null;
+        }
+
+        private static void ApplyUpperBodyHemDamping(Vector3[] deltas, float[] hemWeights, ReFitSettings settings)
+        {
+            if (deltas == null || hemWeights == null || settings == null)
+                return;
+
+            float scale = Mathf.Clamp01(settings.upperBodyGarmentHemFollowScale);
+            int count = Mathf.Min(deltas.Length, hemWeights.Length);
+            for (int g = 0; g < count; g++)
+            {
+                float weight = Mathf.Clamp01(hemWeights[g]);
+                if (weight <= 0f)
+                    continue;
+                deltas[g] *= Mathf.Lerp(1f, scale, weight);
+            }
+        }
+
+        private static bool IsLikelyUpperBodyGarment(SkinnedMeshRenderer renderer)
+        {
+            if (renderer == null)
+                return false;
+
+            string name = ReFitUtility.NormalizeName(HierarchyName(renderer.transform));
+            string[] negative =
+            {
+                "pants", "shorts", "trouser", "skirt", "legging", "sock", "shoe", "boot", "glove"
+            };
+            for (int i = 0; i < negative.Length; i++)
+                if (name.Contains(negative[i]))
+                    return false;
+
+            string[] positive =
+            {
+                "hoodie", "hood", "sweatshirt", "shirt", "tshirt", "jacket", "coat",
+                "sweater", "vest", "top", "pullover", "tanktop", "crop"
+            };
+            for (int i = 0; i < positive.Length; i++)
+                if (name.Contains(positive[i]))
+                    return true;
+
+            return false;
+        }
+
+        private static string HierarchyName(Transform transform)
+        {
+            if (transform == null)
+                return string.Empty;
+
+            var names = new List<string>();
+            var t = transform;
+            while (t != null)
+            {
+                names.Add(t.name);
+                t = t.parent;
+            }
+            return string.Join("/", names.ToArray());
+        }
+
+        private static float Smooth01(float start, float end, float value)
+        {
+            if (Mathf.Abs(end - start) <= 1e-6f)
+                return value >= end ? 1f : 0f;
+            float t = Mathf.Clamp01((value - start) / (end - start));
+            return t * t * (3f - 2f * t);
+        }
+
+        private static void ApplyDetachedTransferredComponentCoherence(
+            State state,
+            Vector3[] primaryGroupDeltas,
+            Vector3[] transferredGroupDeltas,
+            string shapeName)
+        {
+            var asset = state.asset;
+            var settings = state.settings;
+            if (asset == null || settings == null || !settings.stabilizeDetachedTransferredComponents ||
+                transferredGroupDeltas == null || asset.groupAdjacency == null || asset.groupRep == null ||
+                asset.worldVertices == null || asset.GroupCount <= 0)
+                return;
+
+            int groupCount = Mathf.Min(asset.GroupCount, transferredGroupDeltas.Length);
+            var componentByGroup = BuildDetachedComponentMap(asset, groupCount, out var componentSizes, out int largestComponentSize);
+            if (componentByGroup == null || componentSizes == null || componentSizes.Length <= 1 || largestComponentSize <= 0)
+                return;
+
+            int receiverSizeLimit = Mathf.Max(64, Mathf.RoundToInt(largestComponentSize * 0.25f));
+            var componentGroups = BuildComponentGroupLists(componentByGroup, componentSizes, groupCount);
+            var reference = BuildDetachedCoherenceReferencePositions(asset, primaryGroupDeltas, groupCount);
+            var componentBounds = BuildComponentBounds(componentGroups, reference);
+            var surfaceSupport = BuildDetachedSurfaceSupport(state, reference, componentByGroup, componentSizes, groupCount);
+            var eligibleComponents = new bool[componentSizes.Length];
+            for (int component = 0; component < componentSizes.Length; component++)
+            {
+                int size = componentSizes[component];
+                eligibleComponents[component] = size >= DetachedCoherenceMinGroups &&
+                                                size < largestComponentSize &&
+                                                size <= receiverSizeLimit &&
+                                                componentBounds[component].valid;
+            }
+
+            var clusters = BuildDetachedComponentClusters(
+                eligibleComponents,
+                componentBounds,
+                Mathf.Min(DetachedCoherenceMaxClusterDistance, Mathf.Max(0.025f, settings.maxProjectionDistance * 0.2f)));
+
+            int stabilizedClusters = 0;
+            int stabilizedGroups = 0;
+            float beforeMaxEdgeRatio = 1f;
+            float afterMaxEdgeRatio = 1f;
+            float beforeMaxJump = 0f;
+            float afterMaxJump = 0f;
+
+            for (int c = 0; c < clusters.Count; c++)
+            {
+                var cluster = clusters[c];
+                var groups = CollectClusterGroups(cluster, componentGroups);
+                if (groups.Count < DetachedCoherenceMinGroups)
+                    continue;
+
+                var before = MeasureDetachedShapeArtifacts(groups, asset, reference, transferredGroupDeltas);
+                beforeMaxEdgeRatio = Mathf.Max(beforeMaxEdgeRatio, before.maxEdgeRatio);
+                beforeMaxJump = Mathf.Max(beforeMaxJump, before.maxDeltaJump);
+                if (!ShouldStabilizeDetachedCluster(before))
+                    continue;
+
+                var rigidTarget = CoherentDetachedClusterDelta(groups, transferredGroupDeltas, before.maxMotion);
+                if (rigidTarget.magnitude < DetachedCoherenceMinMotion)
+                    continue;
+
+                var targetDeltas = BuildDetachedSurfaceFollowDeltas(
+                    state,
+                    groups,
+                    cluster,
+                    componentByGroup,
+                    componentSizes,
+                    reference,
+                    transferredGroupDeltas,
+                    surfaceSupport,
+                    Mathf.Clamp(settings.maxProjectionDistance * 0.35f, 0.06f, 0.18f),
+                    rigidTarget,
+                    out int supportedGroups);
+
+                if (targetDeltas == null || supportedGroups <= 0)
+                {
+                    targetDeltas = new Vector3[groups.Count];
+                    for (int i = 0; i < targetDeltas.Length; i++)
+                        targetDeltas[i] = rigidTarget;
+                }
+
+                int changed = 0;
+                for (int i = 0; i < groups.Count; i++)
+                {
+                    int g = groups[i];
+                    var target = targetDeltas[i];
+                    if ((transferredGroupDeltas[g] - target).sqrMagnitude <= 1e-10f)
+                        continue;
+
+                    transferredGroupDeltas[g] = target;
+                    changed++;
+                }
+
+                if (changed <= 0)
+                    continue;
+
+                var after = MeasureDetachedShapeArtifacts(groups, asset, reference, transferredGroupDeltas);
+                afterMaxEdgeRatio = Mathf.Max(afterMaxEdgeRatio, after.maxEdgeRatio);
+                afterMaxJump = Mathf.Max(afterMaxJump, after.maxDeltaJump);
+                stabilizedClusters++;
+                stabilizedGroups += changed;
+            }
+
+            if (stabilizedGroups > 0)
+            {
+                state.Report.Info(
+                    "detached-component-coherence",
+                    $"Stabilized {stabilizedGroups} detached transferred groups in {stabilizedClusters} component cluster(s) for '{shapeName}' " +
+                    $"(maxEdgeRatio {beforeMaxEdgeRatio:0.###}->{afterMaxEdgeRatio:0.###}, " +
+                    $"maxDeltaJump {beforeMaxJump * 1000f:0.###}mm->{afterMaxJump * 1000f:0.###}mm).");
+            }
+        }
+
+        private static Vector3[] BuildDetachedCoherenceReferencePositions(
+            MeshSnapshot asset,
+            Vector3[] primaryGroupDeltas,
+            int groupCount)
+        {
+            var reference = new Vector3[groupCount];
+            for (int g = 0; g < groupCount; g++)
+            {
+                int rep = asset.groupRep[g];
+                var primary = primaryGroupDeltas != null && g < primaryGroupDeltas.Length
+                    ? primaryGroupDeltas[g]
+                    : Vector3.zero;
+                reference[g] = asset.worldVertices[rep] + primary;
+            }
+
+            return reference;
+        }
+
+        private static DetachedSurfaceSupport BuildDetachedSurfaceSupport(
+            State state,
+            Vector3[] reference,
+            int[] componentByGroup,
+            int[] componentSizes,
+            int groupCount)
+        {
+            var asset = state != null ? state.asset : null;
+            if (asset == null || reference == null || componentByGroup == null || componentSizes == null ||
+                asset.triangles == null || asset.groupOfVertex == null || groupCount <= 0)
+                return null;
+
+            var donorTriangles = new List<int>();
+            var donorComponents = new List<int>();
+            var donorRegions = new List<BodyRegion>();
+            for (int t = 0; t + 2 < asset.triangles.Length; t += 3)
+            {
+                int ga = GroupForAssetVertex(asset, asset.triangles[t], groupCount);
+                int gb = GroupForAssetVertex(asset, asset.triangles[t + 1], groupCount);
+                int gc = GroupForAssetVertex(asset, asset.triangles[t + 2], groupCount);
+                if (ga < 0 || gb < 0 || gc < 0 || ga == gb || gb == gc || ga == gc)
+                    continue;
+
+                int component = componentByGroup[ga];
+                if (component < 0 || component >= componentSizes.Length ||
+                    componentByGroup[gb] != component ||
+                    componentByGroup[gc] != component)
+                    continue;
+
+                donorTriangles.Add(ga);
+                donorTriangles.Add(gb);
+                donorTriangles.Add(gc);
+                donorComponents.Add(component);
+                donorRegions.Add(DetachedTriangleRegion(state, ga, gb, gc));
+            }
+
+            if (donorTriangles.Count < 3)
+                return null;
+
+            var triangles = donorTriangles.ToArray();
+            var surface = new MeshSnapshot
+            {
+                worldVertices = reference,
+                worldNormals = ComputeDetachedWorldNormals(reference, triangles),
+                triangles = triangles
+            };
+
+            return new DetachedSurfaceSupport
+            {
+                surface = surface,
+                bvh = SurfaceBvh.Build(surface),
+                triangleComponents = donorComponents.ToArray(),
+                triangleRegions = donorRegions.ToArray()
+            };
+        }
+
+        private static Vector3[] BuildDetachedSurfaceFollowDeltas(
+            State state,
+            List<int> groups,
+            List<int> clusterComponents,
+            int[] componentByGroup,
+            int[] componentSizes,
+            Vector3[] reference,
+            Vector3[] currentDeltas,
+            DetachedSurfaceSupport support,
+            float searchDistance,
+            Vector3 rigidTarget,
+            out int supportedGroups)
+        {
+            supportedGroups = 0;
+            if (state == null || groups == null || groups.Count == 0 || componentByGroup == null ||
+                componentSizes == null || reference == null || currentDeltas == null || support == null ||
+                support.surface == null || support.bvh == null || support.triangleComponents == null ||
+                searchDistance <= 1e-5f)
+                return null;
+
+            var clusterSet = new HashSet<int>(clusterComponents);
+            var localIndex = BuildLocalGroupIndex(groups, componentByGroup.Length);
+            var targets = new Vector3[groups.Count];
+            var valid = new bool[groups.Count];
+
+            for (int i = 0; i < groups.Count; i++)
+            {
+                int g = groups[i];
+                if (g < 0 || g >= componentByGroup.Length || g >= reference.Length)
+                    continue;
+
+                int receiverComponent = componentByGroup[g];
+                int receiverSize = receiverComponent >= 0 && receiverComponent < componentSizes.Length
+                    ? componentSizes[receiverComponent]
+                    : 0;
+                var receiverRegion = DetachedGroupRegion(state, g);
+                var hit = support.bvh.ClosestPoint(reference[g], searchDistance, triangle =>
+                {
+                    if (triangle < 0 || triangle >= support.triangleComponents.Length)
+                        return false;
+
+                    int donorComponent = support.triangleComponents[triangle];
+                    if (donorComponent < 0 || donorComponent >= componentSizes.Length ||
+                        clusterSet.Contains(donorComponent) ||
+                        componentSizes[donorComponent] < receiverSize)
+                        return false;
+
+                    var donorRegion = support.triangleRegions != null && triangle < support.triangleRegions.Length
+                        ? support.triangleRegions[triangle]
+                        : BodyRegion.Unknown;
+                    return HumanoidBoneMapper.RegionsCompatible(receiverRegion, donorRegion);
+                });
+
+                if (!hit.found || !IsStableDetachedSurfaceSupport(reference[g], support.surface, hit))
+                    continue;
+
+                int tri = hit.triangle * 3;
+                if (tri + 2 >= support.surface.triangles.Length)
+                    continue;
+
+                int ga = support.surface.triangles[tri];
+                int gb = support.surface.triangles[tri + 1];
+                int gc = support.surface.triangles[tri + 2];
+                if (ga < 0 || gb < 0 || gc < 0 ||
+                    ga >= currentDeltas.Length || gb >= currentDeltas.Length || gc >= currentDeltas.Length)
+                    continue;
+
+                var surfaceDelta = currentDeltas[ga] * hit.bary.x +
+                                   currentDeltas[gb] * hit.bary.y +
+                                   currentDeltas[gc] * hit.bary.z;
+                float follow = DetachedCoherenceSurfaceFollowStrength *
+                               Mathf.Lerp(1f, 0.95f, Smooth01(0f, searchDistance, hit.distance));
+                targets[i] = Vector3.Lerp(rigidTarget, surfaceDelta, Mathf.Clamp01(follow));
+                valid[i] = true;
+                supportedGroups++;
+            }
+
+            if (supportedGroups <= 0)
+                return null;
+
+            FillDetachedSurfaceFollowTargets(groups, localIndex, state.asset.groupAdjacency, targets, valid, rigidTarget);
+            SmoothDetachedSurfaceFollowTargets(groups, localIndex, state.asset.groupAdjacency, targets, valid);
+            ConstrainDetachedSurfaceFollowArtifacts(groups, state.asset, reference, currentDeltas, rigidTarget, targets, valid);
+            return targets;
+        }
+
+        private static int[] BuildLocalGroupIndex(List<int> groups, int groupCount)
+        {
+            var localIndex = new int[groupCount];
+            for (int i = 0; i < localIndex.Length; i++)
+                localIndex[i] = -1;
+
+            for (int i = 0; i < groups.Count; i++)
+            {
+                int g = groups[i];
+                if (g >= 0 && g < localIndex.Length)
+                    localIndex[g] = i;
+            }
+
+            return localIndex;
+        }
+
+        private static void FillDetachedSurfaceFollowTargets(
+            List<int> groups,
+            int[] localIndex,
+            List<int>[] adjacency,
+            Vector3[] targets,
+            bool[] valid,
+            Vector3 fallback)
+        {
+            if (groups == null || localIndex == null || adjacency == null || targets == null || valid == null)
+                return;
+
+            var fill = new Vector3[targets.Length];
+            var fillValid = new bool[targets.Length];
+            for (int iteration = 0; iteration < DetachedCoherenceSurfaceFillIterations; iteration++)
+            {
+                bool changed = false;
+                Array.Clear(fillValid, 0, fillValid.Length);
+                for (int i = 0; i < groups.Count; i++)
+                {
+                    if (valid[i])
+                        continue;
+
+                    int g = groups[i];
+                    if (g < 0 || g >= adjacency.Length || adjacency[g] == null)
+                        continue;
+
+                    Vector3 total = Vector3.zero;
+                    int count = 0;
+                    var neighbors = adjacency[g];
+                    for (int n = 0; n < neighbors.Count; n++)
+                    {
+                        int nb = neighbors[n];
+                        if (nb < 0 || nb >= localIndex.Length)
+                            continue;
+
+                        int local = localIndex[nb];
+                        if (local < 0 || !valid[local])
+                            continue;
+
+                        total += targets[local];
+                        count++;
+                    }
+
+                    if (count <= 0)
+                        continue;
+
+                    fill[i] = total / count;
+                    fillValid[i] = true;
+                    changed = true;
+                }
+
+                if (!changed)
+                    break;
+
+                for (int i = 0; i < fillValid.Length; i++)
+                {
+                    if (!fillValid[i])
+                        continue;
+
+                    targets[i] = fill[i];
+                    valid[i] = true;
+                }
+            }
+
+            for (int i = 0; i < targets.Length; i++)
+            {
+                if (!valid[i])
+                {
+                    targets[i] = fallback;
+                    valid[i] = true;
+                }
+            }
+        }
+
+        private static void SmoothDetachedSurfaceFollowTargets(
+            List<int> groups,
+            int[] localIndex,
+            List<int>[] adjacency,
+            Vector3[] targets,
+            bool[] valid)
+        {
+            if (groups == null || localIndex == null || adjacency == null || targets == null || valid == null)
+                return;
+
+            var buffer = new Vector3[targets.Length];
+            for (int iteration = 0; iteration < DetachedCoherenceSurfaceSmoothIterations; iteration++)
+            {
+                for (int i = 0; i < groups.Count; i++)
+                {
+                    if (!valid[i])
+                    {
+                        buffer[i] = targets[i];
+                        continue;
+                    }
+
+                    int g = groups[i];
+                    Vector3 total = targets[i];
+                    int count = 1;
+                    if (g >= 0 && g < adjacency.Length && adjacency[g] != null)
+                    {
+                        var neighbors = adjacency[g];
+                        for (int n = 0; n < neighbors.Count; n++)
+                        {
+                            int nb = neighbors[n];
+                            if (nb < 0 || nb >= localIndex.Length)
+                                continue;
+
+                            int local = localIndex[nb];
+                            if (local < 0 || !valid[local])
+                                continue;
+
+                            total += targets[local];
+                            count++;
+                        }
+                    }
+
+                    var average = total / count;
+                    buffer[i] = Vector3.Lerp(targets[i], average, DetachedCoherenceSurfaceSmoothStrength);
+                }
+
+                Array.Copy(buffer, targets, targets.Length);
+            }
+        }
+
+        private static void ConstrainDetachedSurfaceFollowArtifacts(
+            List<int> groups,
+            MeshSnapshot asset,
+            Vector3[] reference,
+            Vector3[] currentDeltas,
+            Vector3 rigidTarget,
+            Vector3[] targets,
+            bool[] valid)
+        {
+            if (groups == null || asset == null || reference == null || currentDeltas == null || targets == null)
+                return;
+
+            var candidate = (Vector3[])currentDeltas.Clone();
+            for (int attempt = 0; attempt < 6; attempt++)
+            {
+                for (int i = 0; i < groups.Count; i++)
+                {
+                    int g = groups[i];
+                    if (g >= 0 && g < candidate.Length && (valid == null || valid[i]))
+                        candidate[g] = targets[i];
+                }
+
+                var metrics = MeasureDetachedShapeArtifacts(groups, asset, reference, candidate);
+                if (metrics.edges == 0 ||
+                    (metrics.p95EdgeRatio <= DetachedCoherenceMaxP95EdgeRatio &&
+                     metrics.maxEdgeRatio <= DetachedCoherenceMaxEdgeRatio &&
+                     metrics.p95DeltaJump <= DetachedCoherenceMaxP95DeltaJump))
+                    return;
+
+                SmoothDetachedSurfaceFollowTargets(groups, BuildLocalGroupIndex(groups, currentDeltas.Length),
+                    asset.groupAdjacency, targets, valid);
+                if (attempt >= 2)
+                {
+                    for (int i = 0; i < targets.Length; i++)
+                        targets[i] = Vector3.Lerp(targets[i], rigidTarget, 0.12f);
+                }
+            }
+        }
+
+        private static bool IsStableDetachedSurfaceSupport(Vector3 receiverPoint, MeshSnapshot donorSurface, SurfaceBvh.Hit hit)
+        {
+            if (donorSurface == null || !hit.found)
+                return false;
+
+            var supportNormal = donorSurface.BaryNormal(hit.triangle, hit.bary);
+            if (supportNormal.sqrMagnitude <= 1e-12f)
+                return false;
+
+            float side = Vector3.Dot(receiverPoint - hit.position, supportNormal);
+            float backfaceTolerance = Mathf.Max(0.005f, hit.distance * 0.25f);
+            return side >= -backfaceTolerance;
+        }
+
+        private static int GroupForAssetVertex(MeshSnapshot asset, int vertex, int groupCount)
+        {
+            if (asset == null || asset.groupOfVertex == null || vertex < 0 || vertex >= asset.groupOfVertex.Length)
+                return -1;
+            int group = asset.groupOfVertex[vertex];
+            return group >= 0 && group < groupCount ? group : -1;
+        }
+
+        private static BodyRegion DetachedTriangleRegion(State state, int ga, int gb, int gc)
+        {
+            var region = BodyRegion.Unknown;
+            region = PickDetachedCompatibleRegion(region, DetachedGroupRegion(state, ga));
+            region = PickDetachedCompatibleRegion(region, DetachedGroupRegion(state, gb));
+            region = PickDetachedCompatibleRegion(region, DetachedGroupRegion(state, gc));
+            return region;
+        }
+
+        private static BodyRegion DetachedGroupRegion(State state, int group)
+        {
+            return state != null && state.assetGroupRegions != null &&
+                   group >= 0 && group < state.assetGroupRegions.Length
+                ? state.assetGroupRegions[group]
+                : BodyRegion.Unknown;
+        }
+
+        private static BodyRegion PickDetachedCompatibleRegion(BodyRegion current, BodyRegion candidate)
+        {
+            if (candidate == BodyRegion.Unknown)
+                return current;
+            if (current == BodyRegion.Unknown || current == candidate)
+                return candidate;
+            return BodyRegion.Unknown;
+        }
+
+        private static Vector3[] ComputeDetachedWorldNormals(Vector3[] vertices, int[] triangles)
+        {
+            var normals = new Vector3[vertices != null ? vertices.Length : 0];
+            if (vertices == null || triangles == null)
+                return normals;
+
+            for (int t = 0; t + 2 < triangles.Length; t += 3)
+            {
+                int ia = triangles[t];
+                int ib = triangles[t + 1];
+                int ic = triangles[t + 2];
+                if (ia < 0 || ib < 0 || ic < 0 ||
+                    ia >= vertices.Length || ib >= vertices.Length || ic >= vertices.Length)
+                    continue;
+
+                var normal = Vector3.Cross(vertices[ib] - vertices[ia], vertices[ic] - vertices[ia]);
+                normals[ia] += normal;
+                normals[ib] += normal;
+                normals[ic] += normal;
+            }
+
+            for (int i = 0; i < normals.Length; i++)
+                normals[i] = normals[i].sqrMagnitude > 1e-12f ? normals[i].normalized : Vector3.up;
+            return normals;
+        }
+
+        private static bool ShouldStabilizeDetachedCluster(DetachedShapeArtifactMetrics metrics)
+        {
+            if (metrics.groups < DetachedCoherenceMinGroups || metrics.maxMotion < DetachedCoherenceMinMotion)
+                return false;
+
+            if (metrics.edges > 0 &&
+                (metrics.p95EdgeRatio > DetachedCoherenceMaxP95EdgeRatio ||
+                 metrics.maxEdgeRatio > DetachedCoherenceMaxEdgeRatio ||
+                 metrics.p95DeltaJump > DetachedCoherenceMaxP95DeltaJump))
+                return true;
+
+            return metrics.minMotion < metrics.averageMotion * DetachedCoherencePartialMotionRatio &&
+                   metrics.maxMotion > metrics.averageMotion * 1.35f;
+        }
+
+        private static Vector3 CoherentDetachedClusterDelta(List<int> groups, Vector3[] deltas, float maxMotion)
+        {
+            float threshold = Mathf.Max(DetachedCoherenceMinMotion, maxMotion * DetachedCoherenceMovingSampleRatio);
+            Vector3 total = Vector3.zero;
+            float totalWeight = 0f;
+
+            for (int i = 0; i < groups.Count; i++)
+            {
+                int g = groups[i];
+                var delta = deltas[g];
+                float magnitude = delta.magnitude;
+                if (magnitude < threshold)
+                    continue;
+
+                total += delta * magnitude;
+                totalWeight += magnitude;
+            }
+
+            if (totalWeight <= 1e-6f)
+            {
+                for (int i = 0; i < groups.Count; i++)
+                {
+                    var delta = deltas[groups[i]];
+                    float magnitude = delta.magnitude;
+                    if (magnitude <= 1e-6f)
+                        continue;
+
+                    total += delta * magnitude;
+                    totalWeight += magnitude;
+                }
+            }
+
+            return totalWeight > 1e-6f ? total / totalWeight : Vector3.zero;
+        }
+
+        private static DetachedShapeArtifactMetrics MeasureDetachedShapeArtifacts(
+            List<int> groups,
+            MeshSnapshot asset,
+            Vector3[] reference,
+            Vector3[] deltas)
+        {
+            var inCluster = new HashSet<int>(groups);
+            var edgeRatios = new List<float>();
+            var deltaJumps = new List<float>();
+            var metrics = new DetachedShapeArtifactMetrics
+            {
+                minMotion = float.PositiveInfinity,
+                maxEdgeRatio = 1f
+            };
+
+            for (int i = 0; i < groups.Count; i++)
+            {
+                int g = groups[i];
+                float motion = deltas[g].magnitude;
+                metrics.groups++;
+                metrics.averageMotion += motion;
+                metrics.minMotion = Mathf.Min(metrics.minMotion, motion);
+                metrics.maxMotion = Mathf.Max(metrics.maxMotion, motion);
+
+                var neighbors = g < asset.groupAdjacency.Length ? asset.groupAdjacency[g] : null;
+                if (neighbors == null)
+                    continue;
+
+                for (int n = 0; n < neighbors.Count; n++)
+                {
+                    int nb = neighbors[n];
+                    if (nb <= g || !inCluster.Contains(nb) || nb >= reference.Length || nb >= deltas.Length)
+                        continue;
+
+                    float before = (reference[nb] - reference[g]).magnitude;
+                    if (before > 1e-6f)
+                    {
+                        float after = ((reference[nb] + deltas[nb]) - (reference[g] + deltas[g])).magnitude;
+                        float ratio = after / before;
+                        if (ratio < 1f)
+                            ratio = before / Mathf.Max(after, 1e-6f);
+                        edgeRatios.Add(ratio);
+                        metrics.maxEdgeRatio = Mathf.Max(metrics.maxEdgeRatio, ratio);
+                    }
+
+                    float jump = (deltas[nb] - deltas[g]).magnitude;
+                    deltaJumps.Add(jump);
+                    metrics.maxDeltaJump = Mathf.Max(metrics.maxDeltaJump, jump);
+                    metrics.edges++;
+                }
+            }
+
+            if (metrics.groups > 0)
+                metrics.averageMotion /= metrics.groups;
+            if (float.IsPositiveInfinity(metrics.minMotion))
+                metrics.minMotion = 0f;
+
+            metrics.p95EdgeRatio = Percentile(edgeRatios, 0.95f, 1f);
+            metrics.p95DeltaJump = Percentile(deltaJumps, 0.95f, 0f);
+            return metrics;
+        }
+
+        private static float Percentile(List<float> values, float percentile, float fallback)
+        {
+            if (values == null || values.Count == 0)
+                return fallback;
+
+            values.Sort();
+            int index = Mathf.Clamp(Mathf.CeilToInt(values.Count * Mathf.Clamp01(percentile)) - 1, 0, values.Count - 1);
+            return values[index];
+        }
+
+        private static int[] BuildDetachedComponentMap(
+            MeshSnapshot asset,
+            int groupCount,
+            out int[] componentSizes,
+            out int largestComponentSize)
+        {
+            componentSizes = null;
+            largestComponentSize = 0;
+            if (asset == null || asset.groupAdjacency == null || groupCount <= 0)
+                return null;
+
+            var components = new int[groupCount];
+            for (int i = 0; i < components.Length; i++)
+                components[i] = -1;
+
+            var sizes = new List<int>();
+            var queue = new Queue<int>();
+            for (int start = 0; start < groupCount; start++)
+            {
+                if (components[start] >= 0)
+                    continue;
+
+                int component = sizes.Count;
+                int size = 0;
+                components[start] = component;
+                queue.Enqueue(start);
+                while (queue.Count > 0)
+                {
+                    int g = queue.Dequeue();
+                    size++;
+                    var neighbors = g < asset.groupAdjacency.Length ? asset.groupAdjacency[g] : null;
+                    if (neighbors == null)
+                        continue;
+
+                    for (int i = 0; i < neighbors.Count; i++)
+                    {
+                        int n = neighbors[i];
+                        if (n < 0 || n >= groupCount || components[n] >= 0)
+                            continue;
+
+                        components[n] = component;
+                        queue.Enqueue(n);
+                    }
+                }
+
+                largestComponentSize = Mathf.Max(largestComponentSize, size);
+                sizes.Add(size);
+            }
+
+            componentSizes = sizes.ToArray();
+            return components;
+        }
+
+        private static List<int>[] BuildComponentGroupLists(int[] componentByGroup, int[] componentSizes, int groupCount)
+        {
+            var groups = new List<int>[componentSizes.Length];
+            for (int i = 0; i < groups.Length; i++)
+                groups[i] = new List<int>(Mathf.Max(1, componentSizes[i]));
+
+            for (int g = 0; g < groupCount; g++)
+            {
+                int component = componentByGroup[g];
+                if (component >= 0 && component < groups.Length)
+                    groups[component].Add(g);
+            }
+
+            return groups;
+        }
+
+        private static DetachedComponentBounds[] BuildComponentBounds(List<int>[] componentGroups, Vector3[] reference)
+        {
+            var bounds = new DetachedComponentBounds[componentGroups.Length];
+            for (int component = 0; component < componentGroups.Length; component++)
+            {
+                var groups = componentGroups[component];
+                if (groups == null || groups.Count == 0)
+                    continue;
+
+                var b = new DetachedComponentBounds
+                {
+                    min = reference[groups[0]],
+                    max = reference[groups[0]],
+                    valid = true
+                };
+
+                for (int i = 1; i < groups.Count; i++)
+                {
+                    var p = reference[groups[i]];
+                    b.min = Vector3.Min(b.min, p);
+                    b.max = Vector3.Max(b.max, p);
+                }
+
+                bounds[component] = b;
+            }
+
+            return bounds;
+        }
+
+        private static List<List<int>> BuildDetachedComponentClusters(
+            bool[] eligibleComponents,
+            DetachedComponentBounds[] componentBounds,
+            float maxDistance)
+        {
+            var clusters = new List<List<int>>();
+            var visited = new bool[eligibleComponents.Length];
+            var queue = new Queue<int>();
+
+            for (int start = 0; start < eligibleComponents.Length; start++)
+            {
+                if (!eligibleComponents[start] || visited[start])
+                    continue;
+
+                var cluster = new List<int>();
+                visited[start] = true;
+                queue.Enqueue(start);
+                while (queue.Count > 0)
+                {
+                    int component = queue.Dequeue();
+                    cluster.Add(component);
+
+                    for (int other = 0; other < eligibleComponents.Length; other++)
+                    {
+                        if (!eligibleComponents[other] || visited[other])
+                            continue;
+
+                        if (BoundsDistance(componentBounds[component], componentBounds[other]) > maxDistance)
+                            continue;
+
+                        visited[other] = true;
+                        queue.Enqueue(other);
+                    }
+                }
+
+                clusters.Add(cluster);
+            }
+
+            return clusters;
+        }
+
+        private static float BoundsDistance(DetachedComponentBounds a, DetachedComponentBounds b)
+        {
+            if (!a.valid || !b.valid)
+                return float.PositiveInfinity;
+
+            float dx = AxisGap(a.min.x, a.max.x, b.min.x, b.max.x);
+            float dy = AxisGap(a.min.y, a.max.y, b.min.y, b.max.y);
+            float dz = AxisGap(a.min.z, a.max.z, b.min.z, b.max.z);
+            return Mathf.Sqrt(dx * dx + dy * dy + dz * dz);
+        }
+
+        private static float AxisGap(float minA, float maxA, float minB, float maxB)
+        {
+            if (minA > maxB) return minA - maxB;
+            if (minB > maxA) return minB - maxA;
+            return 0f;
+        }
+
+        private static List<int> CollectClusterGroups(List<int> cluster, List<int>[] componentGroups)
+        {
+            var groups = new List<int>();
+            for (int i = 0; i < cluster.Count; i++)
+            {
+                var componentGroupsList = componentGroups[cluster[i]];
+                if (componentGroupsList != null)
+                    groups.AddRange(componentGroupsList);
+            }
+
+            return groups;
         }
 
         private static SurfaceBinding[] BindRefittedAssetToTarget(
@@ -687,12 +1836,14 @@ namespace Orbiters.ReFit
             {
                 comp.primaryShapeName = UniqueShapeName(newMesh, settings.blendshapeName);
                 newMesh.AddBlendShapeFrame(comp.primaryShapeName, 100f, state.primaryLocalDeltas, state.primaryNormalDeltas, null);
+                comp.debugPrimaryRawLocalDeltas = state.primaryRawLocalDeltas;
             }
 
             if (state.shapes.Count > 0)
             {
                 comp.secondaryShapeNames = new string[state.shapes.Count];
                 comp.secondaryMirrorWeights = new float[state.shapes.Count];
+                comp.debugSecondaryRawLocalDeltas = new Vector3[state.shapes.Count][];
                 for (int s = 0; s < state.shapes.Count; s++)
                 {
                     var shape = state.shapes[s];
@@ -703,6 +1854,7 @@ namespace Orbiters.ReFit
                     newMesh.AddBlendShapeFrame(name, 100f, shape.localDeltas, shape.normalDeltas, null);
                     comp.secondaryShapeNames[s] = name;
                     comp.secondaryMirrorWeights[s] = shape.mirrorWeight;
+                    comp.debugSecondaryRawLocalDeltas[s] = shape.rawLocalDeltas;
                 }
             }
 

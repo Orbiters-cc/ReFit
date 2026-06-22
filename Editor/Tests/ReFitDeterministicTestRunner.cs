@@ -85,6 +85,21 @@ namespace Orbiters.ReFit.Editor.Tests
                     "Clearance correction strong settings pull expanded areas closer",
                     ClearanceCorrection_StrongSettingsCanPullExpandedAreasMuchCloser);
                 RunCase(failures,
+                    "High tightness keeps upper-body garment hem deltas bounded",
+                    ClearanceCorrection_HighTightnessKeepsUpperBodyHemBounded);
+                RunCase(failures,
+                    "Transferred blendshape stabilizes partially moved detached lace clusters",
+                    TransferredBlendshape_StabilizesPartiallyMovedDetachedLaceClusters);
+                RunCase(failures,
+                    "Clearance correction propagates to disconnected garment islands",
+                    ClearanceCorrection_PropagatesToDisconnectedGarmentIslands);
+                RunCase(failures,
+                    "Clearance correction support-propagates to ineligible detached islands",
+                    ClearanceCorrection_SupportPropagatesToIneligibleDetachedIslands);
+                RunCase(failures,
+                    "Clearance correction keeps transferred cap after island propagation",
+                    ClearanceCorrection_PostPropagationGuardRespectsTransferredTotalCap);
+                RunCase(failures,
                     "Blendshape-only transfer works on target-space clothing and preserves root bone",
                     BlendshapeOnly_TargetSpaceAccessory_TransfersMuscle_PreservesRootBone);
                 RunCase(failures,
@@ -696,6 +711,660 @@ namespace Orbiters.ReFit.Editor.Tests
                     DestroyComputationMesh(strongComp);
                 }
             }
+        }
+
+        private static void ClearanceCorrection_HighTightnessKeepsUpperBodyHemBounded()
+        {
+            using (var fixture = ReFitTestFixture.Create())
+            {
+                var request = BuildMeshAndBlendshapeRequest(fixture, fixture.sourceSpaceAccessory.renderer, false);
+                ApplyHighTightnessSettings(request.settings);
+
+                var comp = new ReFitEngine().Run(request);
+                try
+                {
+                    AssertComputationSucceeded(comp);
+                    AssertTrue(comp.debugPrimaryRawLocalDeltas != null,
+                        "High-tightness run did not keep raw primary debug deltas.");
+                    AssertTrue(comp.debugSecondaryRawLocalDeltas != null && comp.debugSecondaryRawLocalDeltas.Length == 1 &&
+                               comp.debugSecondaryRawLocalDeltas[0] != null,
+                        "High-tightness run did not keep raw transferred debug deltas.");
+
+                    var primary = GetBlendShapeDeltas(comp.mesh, comp.primaryShapeName);
+                    var secondary = GetBlendShapeDeltas(comp.mesh, SingleSecondaryShape(comp));
+                    var rawSecondary = comp.debugSecondaryRawLocalDeltas[0];
+                    Func<Vector3, bool> lowerHem = v => Mathf.Abs(v.x) <= 0.55f && v.y <= 0.45f;
+                    Func<Vector3, bool> torso = v => Mathf.Abs(v.x) <= 0.45f && v.y >= 0.75f && v.y <= 1.35f;
+
+                    float primaryHemMax = MaxLocalDeltaMagnitude(comp.mesh, primary, lowerHem);
+                    float secondaryHemMax = MaxLocalDeltaMagnitude(comp.mesh, secondary, lowerHem);
+                    float boundaryCorrectionMax = MaxBoundaryCorrectionMagnitude(comp.mesh, rawSecondary, secondary);
+                    float torsoCorrectionAverage = AverageCorrectionMagnitude(comp.mesh, rawSecondary, secondary, torso);
+
+                    Debug.Log(
+                        $"[ReFit Tests] High-tightness hem: primaryMax={primaryHemMax * 1000f:0.###}mm, " +
+                        $"secondaryMax={secondaryHemMax * 1000f:0.###}mm, " +
+                        $"boundaryCorrectionMax={boundaryCorrectionMax * 1000f:0.###}mm, " +
+                        $"torsoCorrectionAvg={torsoCorrectionAverage * 1000f:0.###}mm, " +
+                        $"stats={comp.clearanceCorrectionStats?.Summary("aggregate")}");
+
+                    AssertLessOrEqual(primaryHemMax, 0.055f,
+                        "High tightness created an excessive primary refit delta on the lower hem.");
+                    AssertLessOrEqual(secondaryHemMax, 0.055f,
+                        "High tightness created an excessive transferred-shape delta on the lower hem.");
+                    AssertLessOrEqual(boundaryCorrectionMax, 0.012f,
+                        "High tightness applied a large transferred clearance correction on an open boundary vertex.");
+                    AssertGreater(torsoCorrectionAverage, 0.004f,
+                        "High tightness did not apply a measurable transferred clearance correction on the torso.");
+                }
+                finally
+                {
+                    DestroyComputationMesh(comp);
+                }
+            }
+        }
+
+        private static void TransferredBlendshape_StabilizesPartiallyMovedDetachedLaceClusters()
+        {
+            using (var fixture = ReFitTestFixture.Create())
+            {
+                AddPartialTransferLaceCluster(fixture.sourceSpaceAccessory.mesh, fixture.sourceSpaceAccessory.renderer);
+
+                var disabledRequest = BuildMeshAndBlendshapeRequest(fixture, fixture.sourceSpaceAccessory.renderer, false);
+                disabledRequest.settings.enableClearanceCorrection = false;
+                disabledRequest.settings.stabilizeDetachedTransferredComponents = false;
+
+                var enabledRequest = BuildMeshAndBlendshapeRequest(fixture, fixture.sourceSpaceAccessory.renderer, false);
+                enabledRequest.settings.enableClearanceCorrection = false;
+                enabledRequest.settings.stabilizeDetachedTransferredComponents = true;
+
+                var disabled = new ReFitEngine().Run(disabledRequest);
+                var enabled = new ReFitEngine().Run(enabledRequest);
+                try
+                {
+                    AssertComputationSucceeded(disabled);
+                    AssertComputationSucceeded(enabled);
+                    AssertTrue(disabled.debugSecondaryRawLocalDeltas != null &&
+                               disabled.debugSecondaryRawLocalDeltas.Length == 1 &&
+                               disabled.debugSecondaryRawLocalDeltas[0] != null,
+                        "Disabled detached-lace fixture did not expose raw transferred deltas.");
+                    AssertTrue(enabled.debugSecondaryRawLocalDeltas != null &&
+                               enabled.debugSecondaryRawLocalDeltas.Length == 1 &&
+                               enabled.debugSecondaryRawLocalDeltas[0] != null,
+                        "Enabled detached-lace fixture did not expose raw transferred deltas.");
+
+                    var disabledRaw = disabled.debugSecondaryRawLocalDeltas[0];
+                    var enabledRaw = enabled.debugSecondaryRawLocalDeltas[0];
+                    Func<Vector3, bool> lace = v =>
+                        Mathf.Abs(v.x) <= 0.13f && v.y >= 0.4f && v.y <= 1.32f && v.z >= 0.09f && v.z <= 0.13f;
+                    Func<Vector3, bool> lowerLace = v => lace(v) && v.y <= 0.72f;
+                    Func<Vector3, bool> laceSupport = v =>
+                        !lace(v) && Mathf.Abs(v.x) <= 0.48f && v.y >= 0.36f && v.y <= 1.34f && v.z <= 0.085f;
+
+                    var disabledArtifacts = MeasureShapeArtifacts(
+                        disabled.mesh, disabled.debugPrimaryRawLocalDeltas, disabledRaw, lace);
+                    var enabledArtifacts = MeasureShapeArtifacts(
+                        enabled.mesh, enabled.debugPrimaryRawLocalDeltas, enabledRaw, lace);
+                    var disabledSurface = MeasureSurfaceFollowRelation(
+                        disabled.mesh, disabled.debugPrimaryRawLocalDeltas, disabledRaw, lace, laceSupport);
+                    var enabledSurface = MeasureSurfaceFollowRelation(
+                        enabled.mesh, enabled.debugPrimaryRawLocalDeltas, enabledRaw, lace, laceSupport);
+                    float disabledLowerZ = AverageLocalDeltaZ(disabled.mesh, disabledRaw, lowerLace);
+                    float enabledLowerZ = AverageLocalDeltaZ(enabled.mesh, enabledRaw, lowerLace);
+
+                    Debug.Log(
+                        $"[ReFit Tests] Detached transferred lace coherence: " +
+                        $"disabledLowerZ={disabledLowerZ * 1000f:0.###}mm, " +
+                        $"enabledLowerZ={enabledLowerZ * 1000f:0.###}mm, " +
+                        $"disabledJump={disabledArtifacts.maxCorrectionJump * 1000f:0.###}mm, " +
+                        $"enabledJump={enabledArtifacts.maxCorrectionJump * 1000f:0.###}mm, " +
+                        $"disabledEdgeRatio={disabledArtifacts.maxEdgeRatio:0.###}, " +
+                        $"enabledEdgeRatio={enabledArtifacts.maxEdgeRatio:0.###}, " +
+                        $"disabledSurfaceResidual95={disabledSurface.p95SupportResidual * 1000f:0.###}mm, " +
+                        $"enabledSurfaceResidual95={enabledSurface.p95SupportResidual * 1000f:0.###}mm, " +
+                        $"disabledDistanceDrift95={disabledSurface.p95DistanceDrift * 1000f:0.###}mm, " +
+                        $"enabledDistanceDrift95={enabledSurface.p95DistanceDrift * 1000f:0.###}mm");
+
+                    AssertGreater(disabledArtifacts.maxEdgeRatio, 1.2f,
+                        "Detached lace fixture did not reproduce the raw partial-transfer edge stretch.");
+                    AssertGreater(disabledArtifacts.maxCorrectionJump, 0.02f,
+                        "Detached lace fixture did not reproduce the raw partial-transfer delta discontinuity.");
+                    AssertGreater(disabledSurface.p95SupportResidual, 0.018f,
+                        "Detached lace fixture did not reproduce a measurable lace-to-shell transfer mismatch.");
+                    AssertGreater(enabledLowerZ - disabledLowerZ, 0.018f,
+                        "Detached lace coherence did not move the lower lace section with the supported section.");
+                    AssertGreater(enabledArtifacts.minCorrection, 0.002f,
+                        "Detached lace coherence left a near-static section in the lace cluster.");
+                    AssertLessOrEqual(enabledSurface.p95SupportResidual, disabledSurface.p95SupportResidual * 0.72f,
+                        "Detached lace coherence did not make the whole lace follow the nearby hoodie surface.");
+                    AssertLessOrEqual(enabledSurface.p95DistanceDrift, 0.012f,
+                        "Detached lace coherence changed the lace-to-hoodie surface distance too much.");
+                    AssertLessOrEqual(enabledArtifacts.maxCorrectionJump, 0.012f,
+                        "Detached lace coherence left a sharp transferred-delta jump in the lace cluster.");
+                    AssertLessOrEqual(enabledArtifacts.maxEdgeRatio, 1.2f,
+                        "Detached lace coherence left visible stretch/collapse in the raw transferred lace shape.");
+                    AssertReportContains(enabled.report, "detached-component-coherence",
+                        "Detached lace coherence did not emit its stabilization diagnostic.");
+                }
+                finally
+                {
+                    DestroyComputationMesh(disabled);
+                    DestroyComputationMesh(enabled);
+                }
+            }
+        }
+
+        private static void ClearanceCorrection_PropagatesToDisconnectedGarmentIslands()
+        {
+            using (var fixture = ReFitTestFixture.Create())
+            {
+                AddDetachedChestIsland(fixture.sourceSpaceAccessory.mesh, fixture.sourceSpaceAccessory.renderer);
+
+                var disabledRequest = BuildMeshAndBlendshapeRequest(fixture, fixture.sourceSpaceAccessory.renderer, false);
+                ApplyHighTightnessSettings(disabledRequest.settings);
+                disabledRequest.settings.clearancePropagateDisconnectedIslands = false;
+                disabledRequest.settings.clearanceOpenBoundaryCorrectionScale = 0f;
+
+                var enabledRequest = BuildMeshAndBlendshapeRequest(fixture, fixture.sourceSpaceAccessory.renderer, false);
+                ApplyHighTightnessSettings(enabledRequest.settings);
+                enabledRequest.settings.clearancePropagateDisconnectedIslands = true;
+                enabledRequest.settings.clearanceOpenBoundaryCorrectionScale = 0f;
+                enabledRequest.settings.clearanceIslandPropagationStrength = 1f;
+                enabledRequest.settings.clearanceIslandPropagationSearchDistance = 0.14f;
+                enabledRequest.settings.clearanceMaxIslandPropagationCorrection = 0.08f;
+                enabledRequest.settings.clearanceIslandPropagationMinDonorCorrection = 0.0005f;
+
+                var disabled = new ReFitEngine().Run(disabledRequest);
+                var enabled = new ReFitEngine().Run(enabledRequest);
+                try
+                {
+                    AssertComputationSucceeded(disabled);
+                    AssertComputationSucceeded(enabled);
+                    AssertTrue(enabled.clearanceCorrectionStats != null &&
+                               enabled.clearanceCorrectionStats.propagatedIslandGroups > 0,
+                        "Disconnected island propagation did not report any propagated groups.");
+
+                    var disabledSecondary = GetBlendShapeDeltas(disabled.mesh, SingleSecondaryShape(disabled));
+                    var enabledSecondary = GetBlendShapeDeltas(enabled.mesh, SingleSecondaryShape(enabled));
+                    var disabledRaw = disabled.debugSecondaryRawLocalDeltas[0];
+                    var enabledRaw = enabled.debugSecondaryRawLocalDeltas[0];
+                    Func<Vector3, bool> detachedIsland = v =>
+                        Mathf.Abs(v.x) <= 0.24f && v.y >= 0.9f && v.y <= 1.3f && v.z >= 0.085f;
+                    Func<Vector3, bool> torsoShell = v =>
+                        Mathf.Abs(v.x) <= 0.45f && v.y >= 0.85f && v.y <= 1.35f && v.z < 0.06f;
+
+                    float disabledIslandCorrection = AverageCorrectionMagnitude(
+                        disabled.mesh, disabledRaw, disabledSecondary, detachedIsland);
+                    float enabledIslandCorrection = AverageCorrectionMagnitude(
+                        enabled.mesh, enabledRaw, enabledSecondary, detachedIsland);
+                    float enabledTorsoCorrection = AverageCorrectionMagnitude(
+                        enabled.mesh, enabledRaw, enabledSecondary, torsoShell);
+                    float enabledMaxCorrection = MaxCorrectionMagnitude(
+                        enabled.mesh, enabledRaw, enabledSecondary, v => true);
+                    var enabledIslandArtifacts = MeasureCorrectionArtifacts(
+                        enabled.mesh, enabledRaw, enabledSecondary, detachedIsland);
+
+                    Debug.Log(
+                        $"[ReFit Tests] Disconnected island propagation: disabledIsland={disabledIslandCorrection * 1000f:0.###}mm, " +
+                        $"enabledIsland={enabledIslandCorrection * 1000f:0.###}mm, " +
+                        $"enabledMax={enabledMaxCorrection * 1000f:0.###}mm, " +
+                        $"enabledTorso={enabledTorsoCorrection * 1000f:0.###}mm, " +
+                        $"islandMin={enabledIslandArtifacts.minCorrection * 1000f:0.###}mm, " +
+                        $"islandJump={enabledIslandArtifacts.maxCorrectionJump * 1000f:0.###}mm, " +
+                        $"islandEdgeRatio={enabledIslandArtifacts.maxEdgeRatio:0.###}, " +
+                        $"stats={enabled.clearanceCorrectionStats.Summary("aggregate")}");
+
+                    AssertGreater(enabledIslandCorrection - disabledIslandCorrection, 0.003f,
+                        "Disconnected island propagation did not materially increase correction on the detached island.");
+                    AssertGreater(enabledIslandCorrection, enabledTorsoCorrection * 0.3f,
+                        "Detached island correction is still far below nearby corrected torso surface.");
+                    AssertGreater(enabledIslandArtifacts.vertices, 20,
+                        "Detached lace fixture did not contain enough vertices to measure whole-component propagation.");
+                    AssertGreater(enabledIslandArtifacts.edges, 0,
+                        "Detached lace artifact check did not measure any lace edges.");
+                    AssertGreater(enabledIslandArtifacts.minCorrection, enabledIslandCorrection * 0.45f,
+                        "Disconnected island propagation only affected part of the detached lace component.");
+                    AssertLessOrEqual(enabledIslandArtifacts.maxCorrectionJump, 0.014f,
+                        "Disconnected island propagation introduced a sharp correction jump inside the detached lace.");
+                    AssertLessOrEqual(enabledIslandArtifacts.maxEdgeRatio, 1.35f,
+                        "Disconnected island propagation stretched or collapsed the detached lace too much.");
+                    AssertLessOrEqual(enabledMaxCorrection, enabledRequest.settings.clearanceMaxTransferredTotalCorrection + 0.006f,
+                        "Disconnected island propagation let transferred clearance correction exceed its total per-group budget.");
+                }
+                finally
+                {
+                    DestroyComputationMesh(disabled);
+                    DestroyComputationMesh(enabled);
+                }
+            }
+        }
+
+        private static void ClearanceCorrection_SupportPropagatesToIneligibleDetachedIslands()
+        {
+            const int shellColumns = 7;
+            const int shellRows = 5;
+            int shellCount = shellColumns * shellRows;
+            int laceStart = shellCount;
+            const int laceColumns = 2;
+            const int laceRows = 14;
+            const int laceCount = laceColumns * laceRows;
+            int unsupportedStart = laceStart + laceCount;
+            const int unsupportedCount = 3;
+            int groupCount = shellCount + laceCount + unsupportedCount;
+
+            var vertices = new Vector3[groupCount];
+            var triangles = new List<int>();
+            for (int y = 0; y < shellRows; y++)
+            {
+                for (int x = 0; x < shellColumns; x++)
+                {
+                    int i = y * shellColumns + x;
+                    vertices[i] = new Vector3(
+                        Mathf.Lerp(-0.32f, 0.32f, x / (float)(shellColumns - 1)),
+                        Mathf.Lerp(0f, 0.9f, y / (float)(shellRows - 1)),
+                        0.08f);
+                }
+            }
+
+            for (int y = 0; y < shellRows - 1; y++)
+            {
+                for (int x = 0; x < shellColumns - 1; x++)
+                {
+                    int a = y * shellColumns + x;
+                    int b = a + 1;
+                    int c = a + shellColumns;
+                    int d = c + 1;
+                    triangles.Add(a);
+                    triangles.Add(b);
+                    triangles.Add(c);
+                    triangles.Add(b);
+                    triangles.Add(d);
+                    triangles.Add(c);
+                }
+            }
+
+            for (int y = 0; y < laceRows; y++)
+            {
+                float fy = y / (float)(laceRows - 1);
+                for (int x = 0; x < laceColumns; x++)
+                {
+                    int i = laceStart + y * laceColumns + x;
+                    vertices[i] = new Vector3(
+                        x == 0 ? -0.035f : 0.035f,
+                        Mathf.Lerp(0.06f, 0.88f, fy),
+                        0.12f);
+                }
+            }
+
+            for (int y = 0; y < laceRows - 1; y++)
+            {
+                int a = laceStart + y * laceColumns;
+                int b = a + 1;
+                int c = a + laceColumns;
+                int d = c + 1;
+                triangles.Add(a);
+                triangles.Add(b);
+                triangles.Add(c);
+                triangles.Add(b);
+                triangles.Add(d);
+                triangles.Add(c);
+            }
+
+            vertices[unsupportedStart] = new Vector3(0.9f, 0.1f, 0.12f);
+            vertices[unsupportedStart + 1] = new Vector3(0.98f, 0.1f, 0.12f);
+            vertices[unsupportedStart + 2] = new Vector3(0.94f, 0.2f, 0.12f);
+            triangles.Add(unsupportedStart);
+            triangles.Add(unsupportedStart + 1);
+            triangles.Add(unsupportedStart + 2);
+
+            var triangleArray = triangles.ToArray();
+            var normals = new Vector3[groupCount];
+            var groupRep = new int[groupCount];
+            var groupOfVertex = new int[groupCount];
+            var regions = new BodyRegion[groupCount];
+            var referenceNormals = new Vector3[groupCount];
+            for (int i = 0; i < groupCount; i++)
+            {
+                normals[i] = Vector3.forward;
+                groupRep[i] = i;
+                groupOfVertex[i] = i;
+                regions[i] = BodyRegion.Torso;
+                referenceNormals[i] = Vector3.forward;
+            }
+
+            var asset = new MeshSnapshot
+            {
+                localVertices = vertices,
+                worldVertices = vertices,
+                worldNormals = normals,
+                triangles = triangleArray,
+                groupRep = groupRep,
+                groupOfVertex = groupOfVertex,
+                groupAdjacency = BuildIdentityGroupAdjacency(groupCount, triangleArray)
+            };
+            var body = new MeshSnapshot
+            {
+                worldVertices = new[]
+                {
+                    new Vector3(-1.2f, -0.3f, 0f),
+                    new Vector3(1.2f, -0.3f, 0f),
+                    new Vector3(0f, 0.9f, 0f)
+                },
+                worldNormals = new[] { Vector3.forward, Vector3.forward, Vector3.forward },
+                triangles = new[] { 0, 1, 2 }
+            };
+            var bindings = new SurfaceBinding[groupCount];
+            var eligible = new bool[groupCount];
+            var sourceClearance = new float[groupCount];
+            var sourceBodyPoint = new Vector3[groupCount];
+            for (int i = 0; i < groupCount; i++)
+            {
+                var bodyPoint = new Vector3(vertices[i].x, vertices[i].y, 0f);
+                bindings[i] = new SurfaceBinding
+                {
+                    valid = true,
+                    triangle = 0,
+                    bary = BarycentricOnSyntheticBodyTriangle(bodyPoint),
+                    point = bodyPoint,
+                    distance = 0f,
+                    requestedRegion = BodyRegion.Torso,
+                    hitRegion = BodyRegion.Torso,
+                    normalDot = 1f
+                };
+                eligible[i] = i < shellCount;
+                sourceClearance[i] = vertices[i].z;
+                sourceBodyPoint[i] = new Vector3(vertices[i].x, vertices[i].y, 0f);
+            }
+
+            var profile = new ReFitClearanceCorrection.Profile
+            {
+                eligible = eligible,
+                sourceClearance = sourceClearance,
+                sourceBodyPoint = sourceBodyPoint,
+                eligibleGroups = shellCount
+            };
+            var settings = new ReFitSettings
+            {
+                enableClearanceCorrection = true,
+                clearanceTightnessFactor = 0.05f,
+                clearanceMinimumSafetyDistance = 0.002f,
+                clearanceExpansionStart = 0f,
+                clearanceExpansionFull = 0.01f,
+                clearanceMaxOutwardCorrection = 0.12f,
+                clearanceMaxInwardCorrection = 0.18f,
+                clearanceOutwardStrength = 1f,
+                clearanceInwardStrength = 0f,
+                clearanceSmoothingIterations = 0,
+                clearanceSmoothingStrength = 0f,
+                clearanceSurfaceGuardIterations = 0,
+                clearanceSurfaceGuardStrength = 0f,
+                clearanceMaxPrimaryTotalCorrection = 0.06f,
+                clearanceMaxTransferredTotalCorrection = 0.09f,
+                clearanceOpenBoundaryCorrectionScale = 1f,
+                clearanceLowConfidenceCorrectionScale = 1f,
+                clearanceTransferredInwardScale = 1f,
+                upperBodyGarmentHemFollowScale = 1f,
+                clearancePropagateDisconnectedIslands = true,
+                clearanceIslandPropagationStrength = 1f,
+                clearanceIslandPropagationSearchDistance = 0.2f,
+                clearanceMaxIslandPropagationCorrection = 0.08f,
+                clearanceIslandPropagationMinDonorCorrection = 0.0005f,
+                filterByNormal = false,
+                filterByBoneRegion = false
+            };
+            var mutableGroupDeltas = new Vector3[groupCount];
+            var bodyShapeDeltas = new[]
+            {
+                Vector3.forward * 0.04f,
+                Vector3.forward * 0.04f,
+                Vector3.forward * 0.14f
+            };
+            var falloff = new float[groupCount];
+            for (int i = 0; i < falloff.Length; i++)
+                falloff[i] = i < shellCount ? 1f : 0f;
+
+            var context = new ReFitClearanceCorrection.Context
+            {
+                transferredBlendshape = true,
+                assetGroupRegions = regions,
+                targetTriangleRegions = new[] { BodyRegion.Torso },
+                referenceNormals = referenceNormals
+            };
+
+            var stats = ReFitClearanceCorrection.Apply(
+                asset,
+                body,
+                bindings,
+                profile,
+                null,
+                mutableGroupDeltas,
+                bodyShapeDeltas,
+                falloff,
+                settings,
+                context);
+
+            int appliedLace = 0;
+            for (int i = laceStart; i < laceStart + laceCount; i++)
+            {
+                if (mutableGroupDeltas[i].z > 0.006f)
+                    appliedLace++;
+            }
+            var laceArtifacts = MeasureCorrectionArtifacts(vertices, triangleArray, mutableGroupDeltas, laceStart, laceCount);
+            var laceSurface = MeasureSurfaceFollowRelation(
+                vertices,
+                triangleArray,
+                null,
+                mutableGroupDeltas,
+                i => i >= laceStart && i < laceStart + laceCount,
+                i => i >= 0 && i < shellCount);
+
+            float unsupportedMax = 0f;
+            for (int i = unsupportedStart; i < unsupportedStart + unsupportedCount; i++)
+                unsupportedMax = Mathf.Max(unsupportedMax, mutableGroupDeltas[i].magnitude);
+
+            int debugAppliedLace = 0;
+            int debugRejectedUnsupported = 0;
+            var debugGroups = stats.islandPropagationDebug != null ? stats.islandPropagationDebug.groups : null;
+            if (debugGroups != null)
+            {
+                for (int i = 0; i < debugGroups.Length; i++)
+                {
+                    var point = debugGroups[i];
+                    if (point == null)
+                        continue;
+
+                    if (point.groupIndex >= laceStart &&
+                        point.groupIndex < laceStart + laceCount &&
+                        point.status == ReFitIslandPropagationStatus.Applied)
+                    {
+                        debugAppliedLace++;
+                    }
+                    else if (point.groupIndex >= unsupportedStart &&
+                             point.groupIndex < unsupportedStart + unsupportedCount &&
+                             point.status != ReFitIslandPropagationStatus.Applied &&
+                             point.status != ReFitIslandPropagationStatus.None)
+                    {
+                        debugRejectedUnsupported++;
+                    }
+                }
+            }
+
+            Debug.Log(
+                $"[ReFit Tests] Detached support propagation: appliedLace={appliedLace}/{laceCount}, " +
+                $"debugAppliedLace={debugAppliedLace}/{laceCount}, unsupportedMax={unsupportedMax * 1000f:0.###}mm, " +
+                $"laceMin={laceArtifacts.minCorrection * 1000f:0.###}mm, " +
+                $"laceAvg={laceArtifacts.averageCorrection * 1000f:0.###}mm, " +
+                $"laceJump={laceArtifacts.maxCorrectionJump * 1000f:0.###}mm, " +
+                $"laceEdgeRatio={laceArtifacts.maxEdgeRatio:0.###}, " +
+                $"laceSurfaceResidual95={laceSurface.p95SupportResidual * 1000f:0.###}mm, " +
+                $"laceDistanceDrift95={laceSurface.p95DistanceDrift * 1000f:0.###}mm, " +
+                $"stats={stats.Summary("synthetic detached support")}");
+
+            AssertTrue(stats.propagatedIslandGroups >= laceCount,
+                "Detached support propagation did not report the lace component as propagated.");
+            AssertTrue(laceArtifacts.vertices == laceCount,
+                "Detached support artifact metrics did not cover the whole lace component.");
+            AssertGreater(laceArtifacts.edges, 0,
+                "Detached support artifact metrics did not measure any lace edges.");
+            AssertGreater(laceArtifacts.minCorrection, 0.0005f,
+                "Detached support propagation only applied to part of the lace component.");
+            AssertLessOrEqual(laceSurface.p95SupportResidual, 0.006f,
+                "Detached support propagation averaged the component instead of following the nearby shell correction field.");
+            AssertLessOrEqual(laceSurface.p95DistanceDrift, 0.006f,
+                "Detached support propagation changed the lace-to-shell surface distance too much.");
+            AssertLessOrEqual(laceArtifacts.maxCorrectionJump, 0.006f,
+                "Detached support propagation introduced a sharp correction jump inside the lace.");
+            AssertLessOrEqual(laceArtifacts.maxEdgeRatio, 1.12f,
+                "Detached support propagation stretched or collapsed the lace component.");
+            AssertTrue(debugAppliedLace == laceCount,
+                "Detached lace groups were not marked as applied in island propagation debug data.");
+            AssertTrue(debugRejectedUnsupported == unsupportedCount,
+                "Unsupported detached island was not reported as rejected in island propagation debug data.");
+            AssertLessOrEqual(unsupportedMax, 0.0005f,
+                "Disconnected island propagation affected an unsupported far-away island.");
+        }
+
+        private static void ClearanceCorrection_PostPropagationGuardRespectsTransferredTotalCap()
+        {
+            var asset = new MeshSnapshot
+            {
+                worldVertices = new[]
+                {
+                    new Vector3(-0.2f, 0f, 0.08f),
+                    new Vector3(0.2f, 0f, 0.08f),
+                    new Vector3(0f, 0.35f, 0.08f),
+                    new Vector3(-0.16f, 0.05f, 0.24f),
+                    new Vector3(0.16f, 0.05f, 0.24f),
+                    new Vector3(0f, 0.3f, 0.24f)
+                },
+                worldNormals = new[]
+                {
+                    Vector3.forward, Vector3.forward, Vector3.forward,
+                    Vector3.forward, Vector3.forward, Vector3.forward
+                },
+                triangles = new[]
+                {
+                    0, 1, 2,
+                    3, 4, 5
+                },
+                groupRep = new[] { 0, 1, 2, 3, 4, 5 },
+                groupOfVertex = new[] { 0, 1, 2, 3, 4, 5 },
+                groupAdjacency = new[]
+                {
+                    new List<int> { 1, 2 },
+                    new List<int> { 0, 2 },
+                    new List<int> { 0, 1 },
+                    new List<int> { 4, 5 },
+                    new List<int> { 3, 5 },
+                    new List<int> { 3, 4 }
+                }
+            };
+            var body = new MeshSnapshot
+            {
+                worldVertices = new[]
+                {
+                    new Vector3(-0.5f, -0.2f, 0f),
+                    new Vector3(0.5f, -0.2f, 0f),
+                    new Vector3(0f, 0.6f, 0f)
+                },
+                worldNormals = new[] { Vector3.forward, Vector3.forward, Vector3.forward },
+                triangles = new[] { 0, 1, 2 }
+            };
+            var bindings = new SurfaceBinding[6];
+            for (int i = 0; i < bindings.Length; i++)
+            {
+                bindings[i] = new SurfaceBinding
+                {
+                    valid = true,
+                    triangle = 0,
+                    bary = new Vector3(0.33f, 0.33f, 0.34f),
+                    point = Vector3.zero,
+                    distance = 0f,
+                    requestedRegion = BodyRegion.Torso,
+                    hitRegion = BodyRegion.Torso,
+                    normalDot = 1f
+                };
+            }
+
+            var profile = new ReFitClearanceCorrection.Profile
+            {
+                eligible = new[] { true, true, true, true, true, true },
+                sourceClearance = new[] { 0.02f, 0.02f, 0.02f, 0.02f, 0.02f, 0.02f },
+                sourceBodyPoint = new[] { Vector3.zero, Vector3.zero, Vector3.zero, Vector3.zero, Vector3.zero, Vector3.zero },
+                eligibleGroups = 6
+            };
+            var settings = new ReFitSettings
+            {
+                enableClearanceCorrection = true,
+                clearanceTightnessFactor = 0.05f,
+                clearanceMinimumSafetyDistance = 0.002f,
+                clearanceExpansionStart = 0f,
+                clearanceExpansionFull = 0.01f,
+                clearanceMaxOutwardCorrection = 0.12f,
+                clearanceMaxInwardCorrection = 0.18f,
+                clearanceInwardStrength = 0.82f,
+                clearanceSmoothingIterations = 0,
+                clearanceSmoothingStrength = 0f,
+                clearanceSurfaceGuardIterations = 6,
+                clearanceSurfaceGuardStrength = 1f,
+                clearanceMaxSurfaceGuardCorrection = 0.08f,
+                clearanceSurfaceGuardTriggerDistance = 0.00025f,
+                clearanceSurfaceGuardEdgeSamples = 3,
+                clearanceMaxTransferredTotalCorrection = 0.045f,
+                clearancePropagateDisconnectedIslands = true,
+                clearanceIslandPropagationStrength = 1f,
+                clearanceIslandPropagationSearchDistance = 0.3f,
+                clearanceMaxIslandPropagationCorrection = 0.045f,
+                clearanceIslandPropagationMinDonorCorrection = 0.0005f,
+                filterByNormal = false,
+                filterByBoneRegion = false
+            };
+            var mutableGroupDeltas = new Vector3[6];
+            var bodyShapeDeltas = new[] { Vector3.forward * 0.18f, Vector3.forward * 0.18f, Vector3.forward * 0.18f };
+            var falloff = new[] { 1f, 1f, 1f, 0f, 0f, 0f };
+            var context = new ReFitClearanceCorrection.Context
+            {
+                transferredBlendshape = true,
+                assetGroupRegions = new[] { BodyRegion.Torso, BodyRegion.Torso, BodyRegion.Torso, BodyRegion.Torso, BodyRegion.Torso, BodyRegion.Torso },
+                targetTriangleRegions = new[] { BodyRegion.Torso },
+                referenceNormals = new[] { Vector3.forward, Vector3.forward, Vector3.forward, Vector3.forward, Vector3.forward, Vector3.forward }
+            };
+
+            var stats = ReFitClearanceCorrection.Apply(
+                asset,
+                body,
+                bindings,
+                profile,
+                null,
+                mutableGroupDeltas,
+                bodyShapeDeltas,
+                falloff,
+                settings,
+                context);
+
+            float maxCorrection = 0f;
+            for (int i = 0; i < mutableGroupDeltas.Length; i++)
+                maxCorrection = Mathf.Max(maxCorrection, mutableGroupDeltas[i].magnitude);
+
+            float expectedFinalPenetration = 0f;
+            for (int i = 0; i < 3; i++)
+                expectedFinalPenetration = Mathf.Max(
+                    expectedFinalPenetration,
+                    0.18f - (asset.worldVertices[i].z + mutableGroupDeltas[i].z));
+
+            Debug.Log(
+                $"[ReFit Tests] Post-propagation cap: maxCorrection={maxCorrection * 1000f:0.###}mm, " +
+                $"expectedFinalPenetration={expectedFinalPenetration * 1000f:0.###}mm, " +
+                $"stats={stats.Summary("synthetic transferred")}");
+
+            AssertTrue(stats.propagatedIslandGroups > 0,
+                "Synthetic cap regression did not trigger disconnected island propagation.");
+            AssertLessOrEqual(maxCorrection, settings.clearanceMaxTransferredTotalCorrection + 0.0005f,
+                "Post-propagation safety/surface guard exceeded the transferred correction cap.");
+            AssertGreater(stats.maxPenetrationAfter, 0.04f,
+                "Final maxPenetrationAfter did not reflect the penetration left by the transferred correction cap.");
+            AssertLessOrEqual(Mathf.Abs(stats.maxPenetrationAfter - expectedFinalPenetration), 0.002f,
+                "Final maxPenetrationAfter does not match the capped output mesh.");
         }
 
         private static void BlendshapeOnly_TargetSpaceAccessory_TransfersMuscle_PreservesRootBone()
@@ -1363,6 +2032,36 @@ namespace Orbiters.ReFit.Editor.Tests
             };
         }
 
+        private static void ApplyHighTightnessSettings(ReFitSettings settings)
+        {
+            settings.enableClearanceCorrection = true;
+            settings.clearanceTightnessFactor = 0.08f;
+            settings.clearanceMinimumSafetyDistance = 0.002f;
+            settings.clearanceMaxOutwardCorrection = 0.12f;
+            settings.clearanceMaxSurfaceGuardCorrection = 0.08f;
+            settings.clearanceSurfaceGuardTriggerDistance = 0.00025f;
+            settings.clearanceMaxInwardCorrection = 0.18f;
+            settings.clearanceInwardStrength = 0.82f;
+            settings.clearanceExpansionStart = 0.002f;
+            settings.clearanceExpansionFull = 0.025f;
+            settings.clearanceSmoothingIterations = 1;
+            settings.clearanceSmoothingStrength = 0.35f;
+            settings.clearanceSurfaceGuardIterations = 6;
+            settings.clearanceSurfaceGuardStrength = 1f;
+            settings.clearanceSurfaceGuardEdgeSamples = 3;
+            settings.clearanceMaxPrimaryTotalCorrection = 0.06f;
+            settings.clearanceMaxTransferredTotalCorrection = 0.045f;
+            settings.clearanceTransferredInwardScale = 0.92f;
+            settings.clearanceOpenBoundaryCorrectionScale = 0.06f;
+            settings.clearanceLowConfidenceCorrectionScale = 0.28f;
+            settings.upperBodyGarmentHemFollowScale = 0.18f;
+            settings.clearancePropagateDisconnectedIslands = true;
+            settings.clearanceIslandPropagationStrength = 0.85f;
+            settings.clearanceIslandPropagationSearchDistance = 0.12f;
+            settings.clearanceMaxIslandPropagationCorrection = 0.045f;
+            settings.clearanceIslandPropagationMinDonorCorrection = 0.001f;
+        }
+
         private static void AssertFixtureActuallyDiffers(ReFitTestFixture fixture)
         {
             float chestBoneOffset = Vector3.Distance(fixture.source.chest.position, fixture.target.chest.position);
@@ -1510,6 +2209,210 @@ namespace Orbiters.ReFit.Editor.Tests
             mesh.AddBlendShapeFrame(shapeName, 100f, deltas, null, null);
         }
 
+        private static void AddPartialTransferLaceCluster(Mesh mesh, SkinnedMeshRenderer renderer)
+        {
+            AssertTrue(mesh != null, "Cannot add a detached lace cluster to a null mesh.");
+            AssertTrue(renderer != null, "Cannot add a detached lace cluster without its renderer.");
+            AssertTrue(mesh.blendShapeCount == 0,
+                "The detached-lace fixture should be built before blendshapes are added.");
+
+            var oldVertices = mesh.vertices;
+            var oldNormals = mesh.normals;
+            var oldUv = mesh.uv;
+            var oldWeights = mesh.boneWeights;
+            var oldTriangles = mesh.triangles;
+            int start = oldVertices.Length;
+            const int stripCount = 2;
+            const int laceColumns = 2;
+            const int laceRows = 30;
+            const int verticesPerStrip = laceColumns * laceRows;
+            const int laceVertexCount = stripCount * verticesPerStrip;
+            const int triangleIndicesPerStrip = (laceRows - 1) * 6;
+
+            var vertices = new Vector3[start + laceVertexCount];
+            var normals = new Vector3[vertices.Length];
+            var uv = new Vector2[vertices.Length];
+            var weights = new BoneWeight[vertices.Length];
+            Array.Copy(oldVertices, vertices, oldVertices.Length);
+            Array.Copy(oldWeights, weights, oldWeights.Length);
+            if (oldNormals != null && oldNormals.Length == oldVertices.Length)
+                Array.Copy(oldNormals, normals, oldNormals.Length);
+            else
+                for (int i = 0; i < start; i++)
+                    normals[i] = Vector3.forward;
+
+            if (oldUv != null && oldUv.Length == oldVertices.Length)
+                Array.Copy(oldUv, uv, oldUv.Length);
+
+            for (int strip = 0; strip < stripCount; strip++)
+            {
+                float xCenter = strip == 0 ? -0.015f : 0.015f;
+                for (int y = 0; y < laceRows; y++)
+                {
+                    float fy = y / (float)(laceRows - 1);
+                    float curvedX = xCenter + Mathf.Sin(fy * Mathf.PI) * (strip == 0 ? -0.008f : 0.008f);
+                    for (int x = 0; x < laceColumns; x++)
+                    {
+                        int local = strip * verticesPerStrip + y * laceColumns + x;
+                        int i = start + local;
+                        vertices[i] = new Vector3(
+                            curvedX + (x == 0 ? -0.004f : 0.004f),
+                            Mathf.Lerp(0.42f, 1.28f, fy),
+                            0.112f);
+                        normals[i] = Vector3.forward;
+                        uv[i] = new Vector2(x, fy);
+                        weights[i] = SourceAccessoryWeight(vertices[i]);
+                    }
+                }
+            }
+
+            var triangles = new int[oldTriangles.Length + stripCount * triangleIndicesPerStrip];
+            Array.Copy(oldTriangles, triangles, oldTriangles.Length);
+            int t = oldTriangles.Length;
+            for (int strip = 0; strip < stripCount; strip++)
+            {
+                int stripStart = start + strip * verticesPerStrip;
+                for (int y = 0; y < laceRows - 1; y++)
+                {
+                    int a = stripStart + y * laceColumns;
+                    int b = a + 1;
+                    int c = a + laceColumns;
+                    int d = c + 1;
+                    triangles[t++] = a;
+                    triangles[t++] = b;
+                    triangles[t++] = c;
+                    triangles[t++] = b;
+                    triangles[t++] = d;
+                    triangles[t++] = c;
+                }
+            }
+
+            mesh.Clear();
+            mesh.vertices = vertices;
+            mesh.normals = normals;
+            mesh.uv = uv;
+            mesh.triangles = triangles;
+            mesh.boneWeights = weights;
+            mesh.bindposes = BuildBindposes(renderer.transform, renderer.bones);
+            mesh.RecalculateBounds();
+            renderer.localBounds = mesh.bounds;
+        }
+
+        private static void AddDetachedChestIsland(Mesh mesh, SkinnedMeshRenderer renderer)
+        {
+            AssertTrue(mesh != null, "Cannot add a detached island to a null mesh.");
+            AssertTrue(renderer != null, "Cannot add a detached island without its renderer.");
+            AssertTrue(mesh.blendShapeCount == 0,
+                "The detached-island fixture should be built before blendshapes are added.");
+
+            var oldVertices = mesh.vertices;
+            var oldNormals = mesh.normals;
+            var oldUv = mesh.uv;
+            var oldWeights = mesh.boneWeights;
+            var oldTriangles = mesh.triangles;
+            int start = oldVertices.Length;
+            const int laceColumns = 2;
+            const int laceRows = 16;
+            const int laceVertexCount = laceColumns * laceRows;
+            const int laceTriangleIndexCount = (laceRows - 1) * 6;
+
+            var vertices = new Vector3[start + laceVertexCount];
+            var normals = new Vector3[vertices.Length];
+            var uv = new Vector2[vertices.Length];
+            var weights = new BoneWeight[vertices.Length];
+            Array.Copy(oldVertices, vertices, oldVertices.Length);
+            Array.Copy(oldWeights, weights, oldWeights.Length);
+            if (oldNormals != null && oldNormals.Length == oldVertices.Length)
+                Array.Copy(oldNormals, normals, oldNormals.Length);
+            else
+                for (int i = 0; i < start; i++)
+                    normals[i] = Vector3.forward;
+
+            if (oldUv != null && oldUv.Length == oldVertices.Length)
+                Array.Copy(oldUv, uv, oldUv.Length);
+
+            for (int y = 0; y < laceRows; y++)
+            {
+                float fy = y / (float)(laceRows - 1);
+                for (int x = 0; x < laceColumns; x++)
+                {
+                    int i = start + y * laceColumns + x;
+                    vertices[i] = new Vector3(
+                        x == 0 ? -0.035f : 0.035f,
+                        Mathf.Lerp(0.92f, 1.3f, fy),
+                        0.105f);
+                }
+            }
+
+            for (int i = start; i < vertices.Length; i++)
+            {
+                normals[i] = Vector3.forward;
+                int local = i - start;
+                int x = local % laceColumns;
+                int y = local / laceColumns;
+                uv[i] = new Vector2(x, y / (float)(laceRows - 1));
+                weights[i] = SourceAccessoryWeight(vertices[i]);
+            }
+
+            var triangles = new int[oldTriangles.Length + laceTriangleIndexCount];
+            Array.Copy(oldTriangles, triangles, oldTriangles.Length);
+            int t = oldTriangles.Length;
+            for (int y = 0; y < laceRows - 1; y++)
+            {
+                int a = start + y * laceColumns;
+                int b = a + 1;
+                int c = a + laceColumns;
+                int d = c + 1;
+                triangles[t++] = a;
+                triangles[t++] = b;
+                triangles[t++] = c;
+                triangles[t++] = b;
+                triangles[t++] = d;
+                triangles[t++] = c;
+            }
+
+            mesh.Clear();
+            mesh.vertices = vertices;
+            mesh.normals = normals;
+            mesh.uv = uv;
+            mesh.triangles = triangles;
+            mesh.boneWeights = weights;
+            mesh.bindposes = BuildBindposes(renderer.transform, renderer.bones);
+            mesh.RecalculateBounds();
+            renderer.localBounds = mesh.bounds;
+        }
+
+        private static List<int>[] BuildIdentityGroupAdjacency(int groupCount, int[] triangles)
+        {
+            var sets = new HashSet<int>[groupCount];
+            for (int i = 0; i < sets.Length; i++)
+                sets[i] = new HashSet<int>();
+
+            if (triangles != null)
+            {
+                for (int t = 0; t + 2 < triangles.Length; t += 3)
+                {
+                    AddGroupEdge(sets, triangles[t], triangles[t + 1]);
+                    AddGroupEdge(sets, triangles[t + 1], triangles[t + 2]);
+                    AddGroupEdge(sets, triangles[t + 2], triangles[t]);
+                }
+            }
+
+            var adjacency = new List<int>[groupCount];
+            for (int i = 0; i < adjacency.Length; i++)
+                adjacency[i] = new List<int>(sets[i]);
+            return adjacency;
+        }
+
+        private static void AddGroupEdge(HashSet<int>[] sets, int a, int b)
+        {
+            if (sets == null || a < 0 || b < 0 || a == b || a >= sets.Length || b >= sets.Length)
+                return;
+
+            sets[a].Add(b);
+            sets[b].Add(a);
+        }
+
         private static float AverageLocalDeltaZ(Mesh mesh, Vector3[] deltas, Func<Vector3, bool> contains)
         {
             var vertices = mesh.vertices;
@@ -1542,6 +2445,566 @@ namespace Orbiters.ReFit.Editor.Tests
 
             AssertTrue(count > 0, "No vertices matched the requested delta magnitude region.");
             return max;
+        }
+
+        private static float MaxBoundaryCorrectionMagnitude(Mesh mesh, Vector3[] raw, Vector3[] corrected)
+        {
+            AssertTrue(mesh != null, "Cannot measure boundary correction on a null mesh.");
+            AssertTrue(raw != null && corrected != null && raw.Length == mesh.vertexCount && corrected.Length == mesh.vertexCount,
+                "Boundary correction arrays must match the mesh vertex count.");
+
+            var boundary = BuildBoundaryVertexMask(mesh);
+            float max = 0f;
+            int count = 0;
+            for (int i = 0; i < mesh.vertexCount; i++)
+            {
+                if (!boundary[i])
+                    continue;
+                count++;
+                max = Mathf.Max(max, (corrected[i] - raw[i]).magnitude);
+            }
+
+            AssertTrue(count > 0, "No boundary vertices were found for the boundary correction check.");
+            return max;
+        }
+
+        private static float AverageCorrectionMagnitude(
+            Mesh mesh,
+            Vector3[] raw,
+            Vector3[] corrected,
+            Func<Vector3, bool> contains)
+        {
+            AssertTrue(mesh != null, "Cannot measure correction on a null mesh.");
+            AssertTrue(raw != null && corrected != null && raw.Length == mesh.vertexCount && corrected.Length == mesh.vertexCount,
+                "Correction arrays must match the mesh vertex count.");
+
+            var vertices = mesh.vertices;
+            double total = 0d;
+            int count = 0;
+            for (int i = 0; i < vertices.Length; i++)
+            {
+                if (!contains(vertices[i]))
+                    continue;
+                total += (corrected[i] - raw[i]).magnitude;
+                count++;
+            }
+
+            AssertTrue(count > 0, "No vertices matched the requested correction region.");
+            return (float)(total / count);
+        }
+
+        private static float MaxCorrectionMagnitude(
+            Mesh mesh,
+            Vector3[] raw,
+            Vector3[] corrected,
+            Func<Vector3, bool> contains)
+        {
+            AssertTrue(mesh != null, "Cannot measure correction on a null mesh.");
+            AssertTrue(raw != null && corrected != null && raw.Length == mesh.vertexCount && corrected.Length == mesh.vertexCount,
+                "Correction arrays must match the mesh vertex count.");
+
+            var vertices = mesh.vertices;
+            float max = 0f;
+            int count = 0;
+            for (int i = 0; i < vertices.Length; i++)
+            {
+                if (!contains(vertices[i]))
+                    continue;
+                count++;
+                max = Mathf.Max(max, (corrected[i] - raw[i]).magnitude);
+            }
+
+            AssertTrue(count > 0, "No vertices matched the requested max correction region.");
+            return max;
+        }
+
+        private static CorrectionArtifactMetrics MeasureCorrectionArtifacts(
+            Mesh mesh,
+            Vector3[] raw,
+            Vector3[] corrected,
+            Func<Vector3, bool> contains)
+        {
+            AssertTrue(mesh != null, "Cannot measure correction artifacts on a null mesh.");
+            AssertTrue(raw != null && corrected != null && raw.Length == mesh.vertexCount && corrected.Length == mesh.vertexCount,
+                "Correction artifact arrays must match the mesh vertex count.");
+
+            var vertices = mesh.vertices;
+            var reference = new Vector3[vertices.Length];
+            var corrections = new Vector3[vertices.Length];
+            var mask = new bool[vertices.Length];
+            for (int i = 0; i < vertices.Length; i++)
+            {
+                reference[i] = vertices[i] + raw[i];
+                corrections[i] = corrected[i] - raw[i];
+                mask[i] = contains(vertices[i]);
+            }
+
+            return MeasureCorrectionArtifacts(reference, mesh.triangles, corrections, mask);
+        }
+
+        private static CorrectionArtifactMetrics MeasureShapeArtifacts(
+            Mesh mesh,
+            Vector3[] baseDeltas,
+            Vector3[] shapeDeltas,
+            Func<Vector3, bool> contains)
+        {
+            AssertTrue(mesh != null, "Cannot measure shape artifacts on a null mesh.");
+            AssertTrue(shapeDeltas != null && shapeDeltas.Length == mesh.vertexCount,
+                "Shape artifact deltas must match the mesh vertex count.");
+            AssertTrue(baseDeltas == null || baseDeltas.Length == mesh.vertexCount,
+                "Shape artifact base deltas must match the mesh vertex count when provided.");
+
+            var vertices = mesh.vertices;
+            var reference = new Vector3[vertices.Length];
+            var mask = new bool[vertices.Length];
+            for (int i = 0; i < vertices.Length; i++)
+            {
+                reference[i] = vertices[i] + (baseDeltas != null ? baseDeltas[i] : Vector3.zero);
+                mask[i] = contains(vertices[i]);
+            }
+
+            return MeasureCorrectionArtifacts(reference, mesh.triangles, shapeDeltas, mask);
+        }
+
+        private static SurfaceRelationMetrics MeasureSurfaceFollowRelation(
+            Mesh mesh,
+            Vector3[] baseDeltas,
+            Vector3[] shapeDeltas,
+            Func<Vector3, bool> receiver,
+            Func<Vector3, bool> support)
+        {
+            AssertTrue(mesh != null, "Cannot measure surface relation on a null mesh.");
+            AssertTrue(shapeDeltas != null && shapeDeltas.Length == mesh.vertexCount,
+                "Surface relation shape deltas must match the mesh vertex count.");
+            AssertTrue(baseDeltas == null || baseDeltas.Length == mesh.vertexCount,
+                "Surface relation base deltas must match the mesh vertex count when provided.");
+            AssertTrue(receiver != null && support != null,
+                "Surface relation requires receiver and support predicates.");
+
+            var vertices = mesh.vertices;
+            var reference = new Vector3[vertices.Length];
+            for (int i = 0; i < vertices.Length; i++)
+                reference[i] = vertices[i] + (baseDeltas != null ? baseDeltas[i] : Vector3.zero);
+
+            var supportTriangles = new List<int>();
+            var triangles = mesh.triangles;
+            for (int t = 0; t + 2 < triangles.Length; t += 3)
+            {
+                int a = triangles[t];
+                int b = triangles[t + 1];
+                int c = triangles[t + 2];
+                if (a < 0 || b < 0 || c < 0 ||
+                    a >= vertices.Length || b >= vertices.Length || c >= vertices.Length)
+                    continue;
+                if (!support(vertices[a]) || !support(vertices[b]) || !support(vertices[c]))
+                    continue;
+
+                supportTriangles.Add(a);
+                supportTriangles.Add(b);
+                supportTriangles.Add(c);
+            }
+
+            AssertTrue(supportTriangles.Count >= 3,
+                "Surface relation did not find any support triangles under the receiver component.");
+
+            var distanceDrifts = new List<float>();
+            var supportResiduals = new List<float>();
+            var metrics = new SurfaceRelationMetrics
+            {
+                minBaseDistance = float.PositiveInfinity
+            };
+
+            for (int i = 0; i < vertices.Length; i++)
+            {
+                if (!receiver(vertices[i]))
+                    continue;
+
+                bool found = false;
+                float bestDistanceSq = float.PositiveInfinity;
+                Vector3 bestPoint = Vector3.zero;
+                Vector3 bestBary = Vector3.zero;
+                int bestTri = -1;
+                for (int t = 0; t + 2 < supportTriangles.Count; t += 3)
+                {
+                    int a = supportTriangles[t];
+                    int b = supportTriangles[t + 1];
+                    int c = supportTriangles[t + 2];
+                    var point = ClosestPointOnTriangle(reference[i], reference[a], reference[b], reference[c], out var bary);
+                    float distanceSq = (point - reference[i]).sqrMagnitude;
+                    if (distanceSq >= bestDistanceSq)
+                        continue;
+
+                    found = true;
+                    bestDistanceSq = distanceSq;
+                    bestPoint = point;
+                    bestBary = bary;
+                    bestTri = t;
+                }
+
+                if (!found)
+                    continue;
+
+                int ia = supportTriangles[bestTri];
+                int ib = supportTriangles[bestTri + 1];
+                int ic = supportTriangles[bestTri + 2];
+                var supportDelta = shapeDeltas[ia] * bestBary.x +
+                                   shapeDeltas[ib] * bestBary.y +
+                                   shapeDeltas[ic] * bestBary.z;
+                float baseDistance = Mathf.Sqrt(bestDistanceSq);
+                float shapedDistance = (reference[i] + shapeDeltas[i] - bestPoint - supportDelta).magnitude;
+                float drift = Mathf.Abs(shapedDistance - baseDistance);
+                float residual = (shapeDeltas[i] - supportDelta).magnitude;
+
+                metrics.samples++;
+                metrics.averageBaseDistance += baseDistance;
+                metrics.minBaseDistance = Mathf.Min(metrics.minBaseDistance, baseDistance);
+                metrics.maxBaseDistance = Mathf.Max(metrics.maxBaseDistance, baseDistance);
+                metrics.averageDistanceDrift += drift;
+                metrics.maxDistanceDrift = Mathf.Max(metrics.maxDistanceDrift, drift);
+                metrics.averageSupportResidual += residual;
+                metrics.maxSupportResidual = Mathf.Max(metrics.maxSupportResidual, residual);
+                distanceDrifts.Add(drift);
+                supportResiduals.Add(residual);
+            }
+
+            AssertTrue(metrics.samples > 0, "Surface relation did not find any receiver vertices.");
+            metrics.averageBaseDistance /= metrics.samples;
+            metrics.averageDistanceDrift /= metrics.samples;
+            metrics.averageSupportResidual /= metrics.samples;
+            if (float.IsPositiveInfinity(metrics.minBaseDistance))
+                metrics.minBaseDistance = 0f;
+            distanceDrifts.Sort();
+            supportResiduals.Sort();
+            metrics.p95DistanceDrift = Percentile(distanceDrifts, 0.95f);
+            metrics.p95SupportResidual = Percentile(supportResiduals, 0.95f);
+            return metrics;
+        }
+
+        private static SurfaceRelationMetrics MeasureSurfaceFollowRelation(
+            Vector3[] vertices,
+            int[] triangles,
+            Vector3[] baseDeltas,
+            Vector3[] shapeDeltas,
+            Func<int, bool> receiver,
+            Func<int, bool> support)
+        {
+            AssertTrue(vertices != null && triangles != null,
+                "Cannot measure surface relation without vertices and triangles.");
+            AssertTrue(shapeDeltas != null && shapeDeltas.Length == vertices.Length,
+                "Surface relation shape deltas must match the vertex count.");
+            AssertTrue(baseDeltas == null || baseDeltas.Length == vertices.Length,
+                "Surface relation base deltas must match the vertex count when provided.");
+            AssertTrue(receiver != null && support != null,
+                "Surface relation requires receiver and support predicates.");
+
+            var reference = new Vector3[vertices.Length];
+            for (int i = 0; i < vertices.Length; i++)
+                reference[i] = vertices[i] + (baseDeltas != null ? baseDeltas[i] : Vector3.zero);
+
+            var supportTriangles = new List<int>();
+            for (int t = 0; t + 2 < triangles.Length; t += 3)
+            {
+                int a = triangles[t];
+                int b = triangles[t + 1];
+                int c = triangles[t + 2];
+                if (a < 0 || b < 0 || c < 0 ||
+                    a >= vertices.Length || b >= vertices.Length || c >= vertices.Length)
+                    continue;
+                if (!support(a) || !support(b) || !support(c))
+                    continue;
+
+                supportTriangles.Add(a);
+                supportTriangles.Add(b);
+                supportTriangles.Add(c);
+            }
+
+            AssertTrue(supportTriangles.Count >= 3,
+                "Surface relation did not find any support triangles under the receiver component.");
+
+            var distanceDrifts = new List<float>();
+            var supportResiduals = new List<float>();
+            var metrics = new SurfaceRelationMetrics
+            {
+                minBaseDistance = float.PositiveInfinity
+            };
+
+            for (int i = 0; i < vertices.Length; i++)
+            {
+                if (!receiver(i))
+                    continue;
+
+                bool found = false;
+                float bestDistanceSq = float.PositiveInfinity;
+                Vector3 bestPoint = Vector3.zero;
+                Vector3 bestBary = Vector3.zero;
+                int bestTri = -1;
+                for (int t = 0; t + 2 < supportTriangles.Count; t += 3)
+                {
+                    int a = supportTriangles[t];
+                    int b = supportTriangles[t + 1];
+                    int c = supportTriangles[t + 2];
+                    var point = ClosestPointOnTriangle(reference[i], reference[a], reference[b], reference[c], out var bary);
+                    float distanceSq = (point - reference[i]).sqrMagnitude;
+                    if (distanceSq >= bestDistanceSq)
+                        continue;
+
+                    found = true;
+                    bestDistanceSq = distanceSq;
+                    bestPoint = point;
+                    bestBary = bary;
+                    bestTri = t;
+                }
+
+                if (!found)
+                    continue;
+
+                int ia = supportTriangles[bestTri];
+                int ib = supportTriangles[bestTri + 1];
+                int ic = supportTriangles[bestTri + 2];
+                var supportDelta = shapeDeltas[ia] * bestBary.x +
+                                   shapeDeltas[ib] * bestBary.y +
+                                   shapeDeltas[ic] * bestBary.z;
+                float baseDistance = Mathf.Sqrt(bestDistanceSq);
+                float shapedDistance = (reference[i] + shapeDeltas[i] - bestPoint - supportDelta).magnitude;
+                float drift = Mathf.Abs(shapedDistance - baseDistance);
+                float residual = (shapeDeltas[i] - supportDelta).magnitude;
+
+                metrics.samples++;
+                metrics.averageBaseDistance += baseDistance;
+                metrics.minBaseDistance = Mathf.Min(metrics.minBaseDistance, baseDistance);
+                metrics.maxBaseDistance = Mathf.Max(metrics.maxBaseDistance, baseDistance);
+                metrics.averageDistanceDrift += drift;
+                metrics.maxDistanceDrift = Mathf.Max(metrics.maxDistanceDrift, drift);
+                metrics.averageSupportResidual += residual;
+                metrics.maxSupportResidual = Mathf.Max(metrics.maxSupportResidual, residual);
+                distanceDrifts.Add(drift);
+                supportResiduals.Add(residual);
+            }
+
+            AssertTrue(metrics.samples > 0, "Surface relation did not find any receiver vertices.");
+            metrics.averageBaseDistance /= metrics.samples;
+            metrics.averageDistanceDrift /= metrics.samples;
+            metrics.averageSupportResidual /= metrics.samples;
+            if (float.IsPositiveInfinity(metrics.minBaseDistance))
+                metrics.minBaseDistance = 0f;
+            distanceDrifts.Sort();
+            supportResiduals.Sort();
+            metrics.p95DistanceDrift = Percentile(distanceDrifts, 0.95f);
+            metrics.p95SupportResidual = Percentile(supportResiduals, 0.95f);
+            return metrics;
+        }
+
+        private static Vector3 BarycentricOnSyntheticBodyTriangle(Vector3 point)
+        {
+            var a = new Vector3(-1.2f, -0.3f, 0f);
+            var b = new Vector3(1.2f, -0.3f, 0f);
+            var c = new Vector3(0f, 0.9f, 0f);
+            ClosestPointOnTriangle(point, a, b, c, out var bary);
+            return bary;
+        }
+
+        private static Vector3 ClosestPointOnTriangle(
+            Vector3 p,
+            Vector3 a,
+            Vector3 b,
+            Vector3 c,
+            out Vector3 bary)
+        {
+            var ab = b - a;
+            var ac = c - a;
+            var ap = p - a;
+            float d1 = Vector3.Dot(ab, ap);
+            float d2 = Vector3.Dot(ac, ap);
+            if (d1 <= 0f && d2 <= 0f)
+            {
+                bary = new Vector3(1f, 0f, 0f);
+                return a;
+            }
+
+            var bp = p - b;
+            float d3 = Vector3.Dot(ab, bp);
+            float d4 = Vector3.Dot(ac, bp);
+            if (d3 >= 0f && d4 <= d3)
+            {
+                bary = new Vector3(0f, 1f, 0f);
+                return b;
+            }
+
+            float vc = d1 * d4 - d3 * d2;
+            if (vc <= 0f && d1 >= 0f && d3 <= 0f)
+            {
+                float v = d1 / (d1 - d3);
+                bary = new Vector3(1f - v, v, 0f);
+                return a + ab * v;
+            }
+
+            var cp = p - c;
+            float d5 = Vector3.Dot(ab, cp);
+            float d6 = Vector3.Dot(ac, cp);
+            if (d6 >= 0f && d5 <= d6)
+            {
+                bary = new Vector3(0f, 0f, 1f);
+                return c;
+            }
+
+            float vb = d5 * d2 - d1 * d6;
+            if (vb <= 0f && d2 >= 0f && d6 <= 0f)
+            {
+                float w = d2 / (d2 - d6);
+                bary = new Vector3(1f - w, 0f, w);
+                return a + ac * w;
+            }
+
+            float va = d3 * d6 - d5 * d4;
+            if (va <= 0f && (d4 - d3) >= 0f && (d5 - d6) >= 0f)
+            {
+                float w = (d4 - d3) / ((d4 - d3) + (d5 - d6));
+                bary = new Vector3(0f, 1f - w, w);
+                return b + (c - b) * w;
+            }
+
+            float denom = 1f / (va + vb + vc);
+            float y = vb * denom;
+            float z = vc * denom;
+            bary = new Vector3(1f - y - z, y, z);
+            return a + ab * y + ac * z;
+        }
+
+        private static CorrectionArtifactMetrics MeasureCorrectionArtifacts(
+            Vector3[] reference,
+            int[] triangles,
+            Vector3[] corrections,
+            int start,
+            int count)
+        {
+            AssertTrue(reference != null && corrections != null && reference.Length == corrections.Length,
+                "Correction artifact arrays must have matching lengths.");
+            var mask = new bool[reference.Length];
+            int end = Mathf.Min(reference.Length, start + Mathf.Max(0, count));
+            for (int i = Mathf.Max(0, start); i < end; i++)
+                mask[i] = true;
+            return MeasureCorrectionArtifacts(reference, triangles, corrections, mask);
+        }
+
+        private static CorrectionArtifactMetrics MeasureCorrectionArtifacts(
+            Vector3[] reference,
+            int[] triangles,
+            Vector3[] corrections,
+            bool[] mask)
+        {
+            AssertTrue(reference != null && corrections != null && mask != null &&
+                       reference.Length == corrections.Length && reference.Length == mask.Length,
+                "Correction artifact inputs must have matching lengths.");
+
+            var metrics = new CorrectionArtifactMetrics
+            {
+                minCorrection = float.PositiveInfinity,
+                maxEdgeRatio = 1f
+            };
+
+            for (int i = 0; i < reference.Length; i++)
+            {
+                if (!mask[i])
+                    continue;
+
+                float magnitude = corrections[i].magnitude;
+                metrics.vertices++;
+                metrics.averageCorrection += magnitude;
+                metrics.minCorrection = Mathf.Min(metrics.minCorrection, magnitude);
+                metrics.maxCorrection = Mathf.Max(metrics.maxCorrection, magnitude);
+            }
+
+            AssertTrue(metrics.vertices > 0, "No vertices matched the requested correction artifact region.");
+            metrics.averageCorrection /= metrics.vertices;
+            if (float.IsPositiveInfinity(metrics.minCorrection))
+                metrics.minCorrection = 0f;
+
+            var edges = new HashSet<ulong>();
+            if (triangles != null)
+            {
+                for (int t = 0; t + 2 < triangles.Length; t += 3)
+                {
+                    AccumulateCorrectionEdgeArtifact(reference, corrections, mask, edges, triangles[t], triangles[t + 1], ref metrics);
+                    AccumulateCorrectionEdgeArtifact(reference, corrections, mask, edges, triangles[t + 1], triangles[t + 2], ref metrics);
+                    AccumulateCorrectionEdgeArtifact(reference, corrections, mask, edges, triangles[t + 2], triangles[t], ref metrics);
+                }
+            }
+
+            return metrics;
+        }
+
+        private static void AccumulateCorrectionEdgeArtifact(
+            Vector3[] reference,
+            Vector3[] corrections,
+            bool[] mask,
+            HashSet<ulong> edges,
+            int a,
+            int b,
+            ref CorrectionArtifactMetrics metrics)
+        {
+            if (a < 0 || b < 0 || a >= reference.Length || b >= reference.Length || !mask[a] || !mask[b])
+                return;
+
+            ulong key = EdgeKey(a, b);
+            if (!edges.Add(key))
+                return;
+
+            float before = (reference[b] - reference[a]).magnitude;
+            if (before <= 1e-6f)
+                return;
+
+            float after = (reference[b] + corrections[b] - reference[a] - corrections[a]).magnitude;
+            float ratio = Mathf.Max(after / before, before / Mathf.Max(after, 1e-6f));
+            metrics.edges++;
+            metrics.maxEdgeRatio = Mathf.Max(metrics.maxEdgeRatio, ratio);
+            metrics.maxCorrectionJump = Mathf.Max(metrics.maxCorrectionJump, (corrections[b] - corrections[a]).magnitude);
+        }
+
+        private static ulong EdgeKey(int a, int b)
+        {
+            uint lo = (uint)Mathf.Min(a, b);
+            uint hi = (uint)Mathf.Max(a, b);
+            return ((ulong)lo << 32) | hi;
+        }
+
+        private static bool[] BuildBoundaryVertexMask(Mesh mesh)
+        {
+            var triangles = mesh.triangles;
+            var counts = new Dictionary<ulong, int>();
+            for (int t = 0; t + 2 < triangles.Length; t += 3)
+            {
+                AddBoundaryEdge(counts, triangles[t], triangles[t + 1]);
+                AddBoundaryEdge(counts, triangles[t + 1], triangles[t + 2]);
+                AddBoundaryEdge(counts, triangles[t + 2], triangles[t]);
+            }
+
+            var boundary = new bool[mesh.vertexCount];
+            foreach (var entry in counts)
+            {
+                if (entry.Value != 1)
+                    continue;
+                int a = (int)(entry.Key >> 32);
+                int b = (int)(entry.Key & 0xffffffff);
+                if (a >= 0 && a < boundary.Length) boundary[a] = true;
+                if (b >= 0 && b < boundary.Length) boundary[b] = true;
+            }
+            return boundary;
+        }
+
+        private static void AddBoundaryEdge(Dictionary<ulong, int> counts, int a, int b)
+        {
+            if (a < 0 || b < 0 || a == b)
+                return;
+            if (a > b)
+            {
+                int tmp = a;
+                a = b;
+                b = tmp;
+            }
+
+            ulong key = ((ulong)(uint)a << 32) | (uint)b;
+            counts.TryGetValue(key, out int count);
+            counts[key] = count + 1;
         }
 
         private static float MaxAbsLocalDeltaComponent(
@@ -2172,6 +3635,31 @@ namespace Orbiters.ReFit.Editor.Tests
             {
                 return $"triangles={checkedTriangles} edgeGrow={maxEdgeGrowth:0.000} edgeShrink={maxEdgeShrink:0.000} areaGrow={maxAreaGrowth:0.000} areaShrink={maxAreaShrink:0.000} aspectGrow={maxAspectGrowth:0.000}";
             }
+        }
+
+        private struct CorrectionArtifactMetrics
+        {
+            public int vertices;
+            public int edges;
+            public float minCorrection;
+            public float averageCorrection;
+            public float maxCorrection;
+            public float maxCorrectionJump;
+            public float maxEdgeRatio;
+        }
+
+        private struct SurfaceRelationMetrics
+        {
+            public int samples;
+            public float minBaseDistance;
+            public float averageBaseDistance;
+            public float maxBaseDistance;
+            public float averageDistanceDrift;
+            public float p95DistanceDrift;
+            public float maxDistanceDrift;
+            public float averageSupportResidual;
+            public float p95SupportResidual;
+            public float maxSupportResidual;
         }
 
         private sealed class FbxResultFixture : IDisposable

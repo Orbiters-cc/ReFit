@@ -45,6 +45,8 @@ namespace Orbiters.ReFit
         public int transferredBlendshapeSmoothingIterations = DefaultTransferredBlendshapeSmoothingIterations;
         /// <summary>Strength of each transferred blendshape smoothing iteration (0..1).</summary>
         [Range(0f, 1f)] public float transferredBlendshapeSmoothingStrength = DefaultTransferredBlendshapeSmoothingStrength;
+        /// <summary>Preserve small detached accessory components when a transferred body blendshape only affects part of the component.</summary>
+        public bool stabilizeDetachedTransferredComponents = true;
         /// <summary>Reject body surface candidates whose normal disagrees with the asset vertex normal by more than <see cref="maxNormalAngle"/> degrees.</summary>
         public bool filterByNormal = true;
         /// <summary>Maximum angle (degrees) between asset vertex normal and body face normal for a binding to be accepted.</summary>
@@ -111,6 +113,28 @@ namespace Orbiters.ReFit
         public float clearanceSurfaceGuardTriggerDistance = 0.0015f;
         /// <summary>Number of checked samples per triangle edge for the surface guard.</summary>
         public int clearanceSurfaceGuardEdgeSamples = 1;
+        /// <summary>Maximum total clearance correction added to the primary refit field for one welded group.</summary>
+        public float clearanceMaxPrimaryTotalCorrection = 0.06f;
+        /// <summary>Maximum total clearance correction added to one transferred blendshape field for one welded group.</summary>
+        public float clearanceMaxTransferredTotalCorrection = 0.045f;
+        /// <summary>Scale applied to inward tightening when correcting transferred blendshapes.</summary>
+        [Range(0f, 1f)] public float clearanceTransferredInwardScale = 1f;
+        /// <summary>Scale applied to transferred clearance correction on open garment boundary groups.</summary>
+        [Range(0f, 1f)] public float clearanceOpenBoundaryCorrectionScale = 0.08f;
+        /// <summary>Scale applied to transferred clearance correction when the body binding used a relaxed or low-normal match.</summary>
+        [Range(0f, 1f)] public float clearanceLowConfidenceCorrectionScale = 0.35f;
+        /// <summary>Scale applied to upper-body garment hem following and inward tightening on lower-body classified groups.</summary>
+        [Range(0f, 1f)] public float upperBodyGarmentHemFollowScale = 0.25f;
+        /// <summary>Propagate clearance corrections from corrected garment polygons to nearby disconnected garment islands.</summary>
+        public bool clearancePropagateDisconnectedIslands = true;
+        /// <summary>Strength of topology-independent garment-to-garment correction propagation.</summary>
+        [Range(0f, 1f)] public float clearanceIslandPropagationStrength = 0.6f;
+        /// <summary>Maximum distance, in meters, for disconnected garment islands to inherit nearby garment corrections.</summary>
+        public float clearanceIslandPropagationSearchDistance = 0.08f;
+        /// <summary>Maximum extra correction added by disconnected island propagation, in meters.</summary>
+        public float clearanceMaxIslandPropagationCorrection = 0.025f;
+        /// <summary>Minimum donor correction magnitude, in meters, before a garment polygon can propagate its correction.</summary>
+        public float clearanceIslandPropagationMinDonorCorrection = 0.001f;
 
         /// <summary>Creates a deep copy of these settings.</summary>
         public ReFitSettings Clone() => (ReFitSettings)MemberwiseClone();
@@ -277,8 +301,26 @@ namespace Orbiters.ReFit
         public float maxSurfaceGuardCorrection;
         public float maxClearanceLossBefore;
         public float maxExpansion;
+        public int cappedGroups;
+        public float maxCappedCorrection;
+        public int islandPropagationCandidateGroups;
+        public int islandPropagationRejectedGroups;
+        public int propagatedIslandGroups;
+        public int islandPropagationCandidateComponents;
+        public int islandPropagationPropagatedComponents;
+        public int islandPropagationRejectedNoSupportGroups;
+        public int islandPropagationRejectedUnstableGroups;
+        public int islandPropagationRejectedInsufficientSupportGroups;
+        public int islandPropagationRejectedWeakDonorGroups;
+        public int islandPropagationRejectedWeightGroups;
+        public int islandPropagationRejectedBudgetGroups;
+        public float maxPropagatedIslandCorrection;
+        public float maxIslandPropagationSupportDistance;
+        public ReFitIslandPropagationDebugData islandPropagationDebug;
 
-        public bool HasCorrections => outwardGroups > 0 || inwardGroups > 0 || surfaceGuardGroups > 0;
+        public bool HasCorrections => outwardGroups > 0 || inwardGroups > 0 || surfaceGuardGroups > 0 ||
+                                      cappedGroups > 0 || propagatedIslandGroups > 0 ||
+                                      islandPropagationCandidateGroups > 0 || islandPropagationRejectedGroups > 0;
 
         public void Add(ReFitClearanceCorrectionStats other)
         {
@@ -297,6 +339,23 @@ namespace Orbiters.ReFit
             maxSurfaceGuardCorrection = Mathf.Max(maxSurfaceGuardCorrection, other.maxSurfaceGuardCorrection);
             maxClearanceLossBefore = Mathf.Max(maxClearanceLossBefore, other.maxClearanceLossBefore);
             maxExpansion = Mathf.Max(maxExpansion, other.maxExpansion);
+            cappedGroups += other.cappedGroups;
+            maxCappedCorrection = Mathf.Max(maxCappedCorrection, other.maxCappedCorrection);
+            islandPropagationCandidateGroups += other.islandPropagationCandidateGroups;
+            islandPropagationRejectedGroups += other.islandPropagationRejectedGroups;
+            propagatedIslandGroups += other.propagatedIslandGroups;
+            islandPropagationCandidateComponents += other.islandPropagationCandidateComponents;
+            islandPropagationPropagatedComponents += other.islandPropagationPropagatedComponents;
+            islandPropagationRejectedNoSupportGroups += other.islandPropagationRejectedNoSupportGroups;
+            islandPropagationRejectedUnstableGroups += other.islandPropagationRejectedUnstableGroups;
+            islandPropagationRejectedInsufficientSupportGroups += other.islandPropagationRejectedInsufficientSupportGroups;
+            islandPropagationRejectedWeakDonorGroups += other.islandPropagationRejectedWeakDonorGroups;
+            islandPropagationRejectedWeightGroups += other.islandPropagationRejectedWeightGroups;
+            islandPropagationRejectedBudgetGroups += other.islandPropagationRejectedBudgetGroups;
+            maxPropagatedIslandCorrection = Mathf.Max(maxPropagatedIslandCorrection, other.maxPropagatedIslandCorrection);
+            maxIslandPropagationSupportDistance = Mathf.Max(maxIslandPropagationSupportDistance, other.maxIslandPropagationSupportDistance);
+            if (other.islandPropagationDebug != null)
+                islandPropagationDebug = other.islandPropagationDebug;
         }
 
         public string Summary(string label)
@@ -305,9 +364,54 @@ namespace Orbiters.ReFit
                    $"maxOut={maxOutwardCorrection * 1000f:0.###}mm, maxIn={maxInwardCorrection * 1000f:0.###}mm, " +
                    $"guarded={safetyGuardGroups}, maxGuard={maxSafetyGuardCorrection * 1000f:0.###}mm, " +
                    $"surfaceSamples={surfaceGuardSamples}, surfaceGroups={surfaceGuardGroups}, maxSurfaceGuard={maxSurfaceGuardCorrection * 1000f:0.###}mm, " +
+                   $"capped={cappedGroups}, maxCapped={maxCappedCorrection * 1000f:0.###}mm, " +
+                   $"islandCandidates={islandPropagationCandidateGroups}, islandRejected={islandPropagationRejectedGroups}, " +
+                   $"islandPropagated={propagatedIslandGroups}, islandComponents={islandPropagationCandidateComponents}/{islandPropagationPropagatedComponents}, " +
+                   $"islandRejects(noSupport={islandPropagationRejectedNoSupportGroups}, unstable={islandPropagationRejectedUnstableGroups}, insufficientSupport={islandPropagationRejectedInsufficientSupportGroups}, weakDonor={islandPropagationRejectedWeakDonorGroups}, weight={islandPropagationRejectedWeightGroups}, budget={islandPropagationRejectedBudgetGroups}), " +
+                   $"maxIslandPropagated={maxPropagatedIslandCorrection * 1000f:0.###}mm, " +
+                   $"maxIslandSupportDistance={maxIslandPropagationSupportDistance * 1000f:0.###}mm, " +
                    $"maxPenetrationBefore={maxPenetrationBefore * 1000f:0.###}mm, maxPenetrationAfter={maxPenetrationAfter * 1000f:0.###}mm, " +
                    $"maxClearanceLossBefore={maxClearanceLossBefore * 1000f:0.###}mm, maxExpansion={maxExpansion * 1000f:0.###}mm.";
         }
+    }
+
+    /// <summary>Group-level state of topology-independent garment island propagation.</summary>
+    public enum ReFitIslandPropagationStatus
+    {
+        None = 0,
+        Candidate = 1,
+        Applied = 2,
+        RejectedNoSupport = 3,
+        RejectedUnstableSupport = 4,
+        RejectedWeakDonor = 5,
+        RejectedInsufficientComponentSupport = 6,
+        RejectedWeight = 7,
+        RejectedBudget = 8
+    }
+
+    /// <summary>Per-group diagnostics for disconnected garment island propagation.</summary>
+    [Serializable]
+    public class ReFitIslandPropagationDebugData
+    {
+        public ReFitIslandPropagationDebugPoint[] groups;
+    }
+
+    /// <summary>One propagation decision, stored by welded group index.</summary>
+    [Serializable]
+    public class ReFitIslandPropagationDebugPoint
+    {
+        public int groupIndex;
+        public int componentIndex = -1;
+        public int componentSize;
+        public int supportComponentIndex = -1;
+        public int supportGroupIndex = -1;
+        public ReFitIslandPropagationStatus status;
+        public string reason;
+        public float supportDistance;
+        public float receiverWeight;
+        public float currentCorrectionMagnitude;
+        public float targetCorrectionMagnitude;
+        public float appliedCorrectionMagnitude;
     }
 
     /// <summary>Per-group projection and weight-transfer diagnostics for debug scene gizmos.</summary>
@@ -364,6 +468,17 @@ namespace Orbiters.ReFit
         public int representativeVertexIndex;
         public int vertexCount;
         public Vector3 localPoint;
+        public int islandPropagationComponentIndex = -1;
+        public int islandPropagationComponentSize;
+        public int islandPropagationSupportComponentIndex = -1;
+        public int islandPropagationSupportGroupIndex = -1;
+        public ReFitIslandPropagationStatus islandPropagationStatus;
+        public string islandPropagationReason;
+        public float islandPropagationSupportDistance;
+        public float islandPropagationReceiverWeight;
+        public float islandPropagationCurrentCorrectionMagnitude;
+        public float islandPropagationTargetCorrectionMagnitude;
+        public float islandPropagationAppliedCorrectionMagnitude;
     }
 
     /// <summary>
@@ -396,6 +511,14 @@ namespace Orbiters.ReFit
         public ReFitProjectionDebugData projectionDebug;
         /// <summary>Aggregate stats for the clearance correction pass, when enabled.</summary>
         public ReFitClearanceCorrectionStats clearanceCorrectionStats;
+        /// <summary>Debug-only island propagation decisions from the primary clearance correction pass.</summary>
+        public ReFitIslandPropagationDebugData primaryIslandPropagationDebug;
+        /// <summary>Debug-only island propagation decisions from the latest transferred-shape clearance correction pass.</summary>
+        public ReFitIslandPropagationDebugData transferredIslandPropagationDebug;
+        /// <summary>Debug-only primary field before clearance correction.</summary>
+        public Vector3[] debugPrimaryRawLocalDeltas;
+        /// <summary>Debug-only transferred fields before clearance correction, aligned with <see cref="secondaryShapeNames"/>.</summary>
+        public Vector3[][] debugSecondaryRawLocalDeltas;
         /// <summary>Index into <see cref="bones"/> to use as the renderer root bone, -1 if unavailable.</summary>
         public int rootBoneIndex = -1;
         /// <summary>Child-index path of the asset renderer inside the asset root hierarchy.</summary>

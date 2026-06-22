@@ -95,18 +95,20 @@ namespace Orbiters.ReFit.Editor
             get { return root; }
         }
 
-        public void Capture(string label, SkinnedMeshRenderer renderer, ReFitProjectionDebugData projectionDebug = null)
+        public void Capture(string label, SkinnedMeshRenderer renderer, ReFitProjectionDebugData projectionDebug = null,
+            ReFitIslandPropagationDebugData islandPropagationDebug = null)
         {
-            CaptureSnapshot(label, renderer, projectionDebug);
+            CaptureSnapshot(label, renderer, projectionDebug, islandPropagationDebug);
         }
 
         public void CaptureScenePoseAsDefault(string label, SkinnedMeshRenderer renderer)
         {
-            CaptureSnapshot(label, renderer, null);
+            CaptureSnapshot(label, renderer, null, null);
         }
 
         private void CaptureSnapshot(string label, SkinnedMeshRenderer renderer,
-            ReFitProjectionDebugData projectionDebug)
+            ReFitProjectionDebugData projectionDebug,
+            ReFitIslandPropagationDebugData islandPropagationDebug)
         {
             if (renderer == null) return;
             try
@@ -137,7 +139,7 @@ namespace Orbiters.ReFit.Editor
                 var meshName = BuildSnapshotMeshName(renderer, snapshotCount, label);
                 ConfigureClone(clone, renderer, cloneRenderer, meshName);
                 AttachProjectionDebug(cloneRenderer, projectionDebug);
-                AttachWeldedGroupDebug(cloneRenderer);
+                AttachWeldedGroupDebug(cloneRenderer, islandPropagationDebug);
                 clone.transform.SetParent(root.transform, true);
                 PositionClone(clone, cloneRenderer != null ? (Renderer)cloneRenderer : clone.GetComponentInChildren<Renderer>(true));
                 LogSnapshot(label, renderer, clone, cloneRenderer);
@@ -162,9 +164,10 @@ namespace Orbiters.ReFit.Editor
             component.visible = true;
         }
 
-        private static void AttachWeldedGroupDebug(SkinnedMeshRenderer cloneRenderer)
+        private static void AttachWeldedGroupDebug(SkinnedMeshRenderer cloneRenderer,
+            ReFitIslandPropagationDebugData islandPropagationDebug)
         {
-            var data = BuildWeldedGroupDebugData(cloneRenderer);
+            var data = BuildWeldedGroupDebugData(cloneRenderer, islandPropagationDebug);
             if (data == null || data.groups == null || data.groups.Length == 0)
                 return;
 
@@ -174,7 +177,8 @@ namespace Orbiters.ReFit.Editor
             component.visible = true;
         }
 
-        private static ReFitWeldedGroupDebugData BuildWeldedGroupDebugData(SkinnedMeshRenderer renderer)
+        private static ReFitWeldedGroupDebugData BuildWeldedGroupDebugData(SkinnedMeshRenderer renderer,
+            ReFitIslandPropagationDebugData islandPropagationDebug)
         {
             if (renderer == null || renderer.sharedMesh == null)
                 return null;
@@ -192,11 +196,12 @@ namespace Orbiters.ReFit.Editor
             if (snapshot == null || snapshot.groupRep == null || snapshot.groupRep.Length == 0)
                 return null;
 
+            var propagationByGroup = BuildIslandPropagationLookup(islandPropagationDebug);
             var groups = new ReFitWeldedGroupDebugPoint[snapshot.groupRep.Length];
             for (int g = 0; g < groups.Length; g++)
             {
                 int vertex = snapshot.groupRep[g];
-                groups[g] = new ReFitWeldedGroupDebugPoint
+                var group = new ReFitWeldedGroupDebugPoint
                 {
                     groupIndex = g,
                     representativeVertexIndex = vertex,
@@ -207,9 +212,54 @@ namespace Orbiters.ReFit.Editor
                         ? snapshot.localVertices[vertex]
                         : Vector3.zero
                 };
+                if (propagationByGroup != null &&
+                    g < propagationByGroup.Length &&
+                    propagationByGroup[g] != null)
+                {
+                    var propagation = propagationByGroup[g];
+                    group.islandPropagationComponentIndex = propagation.componentIndex;
+                    group.islandPropagationComponentSize = propagation.componentSize;
+                    group.islandPropagationSupportComponentIndex = propagation.supportComponentIndex;
+                    group.islandPropagationSupportGroupIndex = propagation.supportGroupIndex;
+                    group.islandPropagationStatus = propagation.status;
+                    group.islandPropagationReason = propagation.reason;
+                    group.islandPropagationSupportDistance = propagation.supportDistance;
+                    group.islandPropagationReceiverWeight = propagation.receiverWeight;
+                    group.islandPropagationCurrentCorrectionMagnitude = propagation.currentCorrectionMagnitude;
+                    group.islandPropagationTargetCorrectionMagnitude = propagation.targetCorrectionMagnitude;
+                    group.islandPropagationAppliedCorrectionMagnitude = propagation.appliedCorrectionMagnitude;
+                }
+                groups[g] = group;
             }
 
             return new ReFitWeldedGroupDebugData { groups = groups };
+        }
+
+        private static ReFitIslandPropagationDebugPoint[] BuildIslandPropagationLookup(
+            ReFitIslandPropagationDebugData data)
+        {
+            if (data == null || data.groups == null || data.groups.Length == 0)
+                return null;
+
+            int max = -1;
+            for (int i = 0; i < data.groups.Length; i++)
+            {
+                var point = data.groups[i];
+                if (point != null)
+                    max = Mathf.Max(max, point.groupIndex);
+            }
+            if (max < 0)
+                return null;
+
+            var lookup = new ReFitIslandPropagationDebugPoint[max + 1];
+            for (int i = 0; i < data.groups.Length; i++)
+            {
+                var point = data.groups[i];
+                if (point == null || point.groupIndex < 0 || point.groupIndex >= lookup.Length)
+                    continue;
+                lookup[point.groupIndex] = point;
+            }
+            return lookup;
         }
 
         public void Finish()
@@ -361,6 +411,16 @@ namespace Orbiters.ReFit.Editor
                 $"maxSurfaceGuard={FloatSetting(settings, s => s.clearanceMaxSurfaceGuardCorrection)}, " +
                 $"surfaceGuardTrigger={FloatSetting(settings, s => s.clearanceSurfaceGuardTriggerDistance)}, " +
                 $"surfaceGuardEdgeSamples={IntSetting(settings, s => s.clearanceSurfaceGuardEdgeSamples)}, " +
+                $"maxPrimaryTotal={FloatSetting(settings, s => s.clearanceMaxPrimaryTotalCorrection)}, " +
+                $"maxTransferredTotal={FloatSetting(settings, s => s.clearanceMaxTransferredTotalCorrection)}, " +
+                $"transferredInwardScale={FloatSetting(settings, s => s.clearanceTransferredInwardScale)}, " +
+                $"openBoundaryScale={FloatSetting(settings, s => s.clearanceOpenBoundaryCorrectionScale)}, " +
+                $"lowConfidenceScale={FloatSetting(settings, s => s.clearanceLowConfidenceCorrectionScale)}, " +
+                $"upperBodyHemFollowScale={FloatSetting(settings, s => s.upperBodyGarmentHemFollowScale)}, " +
+                $"islandPropagation={BoolSetting(settings, s => s.clearancePropagateDisconnectedIslands)}x{FloatSetting(settings, s => s.clearanceIslandPropagationStrength)}, " +
+                $"islandPropagationSearch={FloatSetting(settings, s => s.clearanceIslandPropagationSearchDistance)}, " +
+                $"maxIslandPropagation={FloatSetting(settings, s => s.clearanceMaxIslandPropagationCorrection)}, " +
+                $"islandPropagationDonorThreshold={FloatSetting(settings, s => s.clearanceIslandPropagationMinDonorCorrection)}, " +
                 $"maxProjectionDistance={FloatSetting(settings, s => s.maxProjectionDistance)}, falloffStartDistance={FloatSetting(settings, s => s.falloffStartDistance)}.");
         }
 

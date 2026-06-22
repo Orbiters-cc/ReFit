@@ -122,14 +122,22 @@ namespace Orbiters.ReFit.Editor
                 (comp.armatureReplaced ? "03_armature_replace_failed" : "03_armature_kept"), renderer);
 
             // --- enable the generated shapes -------------------------------------------------
+            SetGeneratedBlendShapeWeights(renderer, comp, 0f, false);
             if (!string.IsNullOrEmpty(comp.primaryShapeName))
             {
+                CaptureGeneratedDeltaOverride(debug, renderer, comp, "04_primary_raw_blendshape_enabled",
+                    comp.debugPrimaryRawLocalDeltas, null, true, false);
+
                 int idx = comp.mesh.GetBlendShapeIndex(comp.primaryShapeName);
                 if (idx >= 0) renderer.SetBlendShapeWeight(idx, 100f);
-                debug?.Capture(idx >= 0 ? "04_primary_blendshape_enabled" : "04_primary_blendshape_missing", renderer);
+                debug?.Capture(idx >= 0 ? "05_primary_clearance_corrected" : "05_primary_blendshape_missing",
+                    renderer, null, comp.primaryIslandPropagationDebug);
             }
             if (comp.secondaryShapeNames != null)
             {
+                CaptureGeneratedDeltaOverride(debug, renderer, comp, "06_transferred_raw_blendshapes_enabled",
+                    null, comp.debugSecondaryRawLocalDeltas, true, true);
+
                 bool hadSecondaryShape = false;
                 for (int s = 0; s < comp.secondaryShapeNames.Length; s++)
                 {
@@ -142,15 +150,142 @@ namespace Orbiters.ReFit.Editor
                     renderer.SetBlendShapeWeight(idx, weight);
                 }
                 if (hadSecondaryShape)
-                    debug?.Capture("05_transferred_blendshapes_enabled", renderer);
+                    debug?.Capture("07_transferred_clearance_corrected", renderer, null,
+                        comp.transferredIslandPropagationDebug);
             }
-            if (comp.clearanceCorrectionStats != null && comp.clearanceCorrectionStats.HasCorrections)
-                debug?.Capture("05_clearance_correction_applied", renderer, comp.projectionDebug);
-            debug?.Capture("06_final_result", renderer, comp.projectionDebug);
+            debug?.Capture("08_final_result", renderer, comp.projectionDebug,
+                comp.transferredIslandPropagationDebug ?? comp.primaryIslandPropagationDebug);
 
             Selection.activeGameObject = renderer.gameObject;
             EditorGUIUtility.PingObject(renderer.gameObject);
             return renderer;
+        }
+
+        private static void CaptureGeneratedDeltaOverride(
+            ReFitDebugSession debug,
+            SkinnedMeshRenderer renderer,
+            ReFitComputation comp,
+            string label,
+            Vector3[] primaryOverride,
+            Vector3[][] secondaryOverrides,
+            bool primaryEnabled,
+            bool secondariesEnabled)
+        {
+            if (debug == null || renderer == null || comp == null || comp.mesh == null)
+                return;
+            if (primaryOverride == null && (secondaryOverrides == null || secondaryOverrides.Length == 0))
+                return;
+
+            var originalMesh = renderer.sharedMesh;
+            var previewMesh = BuildGeneratedDeltaOverrideMesh(comp, primaryOverride, secondaryOverrides);
+            if (previewMesh == null)
+                return;
+
+            try
+            {
+                renderer.sharedMesh = previewMesh;
+                SetGeneratedBlendShapeWeights(renderer, comp, primaryEnabled ? 100f : 0f, secondariesEnabled);
+                debug.Capture(label, renderer, comp.projectionDebug);
+            }
+            finally
+            {
+                renderer.sharedMesh = originalMesh;
+                SetGeneratedBlendShapeWeights(renderer, comp, originalMesh == comp.mesh && primaryEnabled ? 100f : 0f, false);
+                Object.DestroyImmediate(previewMesh);
+            }
+        }
+
+        private static Mesh BuildGeneratedDeltaOverrideMesh(
+            ReFitComputation comp,
+            Vector3[] primaryOverride,
+            Vector3[][] secondaryOverrides)
+        {
+            var source = comp != null ? comp.mesh : null;
+            if (source == null)
+                return null;
+
+            var mesh = Object.Instantiate(source);
+            mesh.name = source.name.Replace("(Clone)", "") + "_DebugDeltaOverride";
+            mesh.hideFlags = HideFlags.HideAndDontSave;
+            mesh.ClearBlendShapes();
+
+            int vertexCount = source.vertexCount;
+            var deltaVertices = new Vector3[vertexCount];
+            var deltaNormals = new Vector3[vertexCount];
+            var deltaTangents = new Vector3[vertexCount];
+
+            for (int s = 0; s < source.blendShapeCount; s++)
+            {
+                string shapeName = source.GetBlendShapeName(s);
+                var overrideDeltas = OverrideForShape(comp, shapeName, primaryOverride, secondaryOverrides);
+                if (overrideDeltas != null && overrideDeltas.Length == vertexCount)
+                {
+                    mesh.AddBlendShapeFrame(shapeName, 100f, overrideDeltas, null, null);
+                    continue;
+                }
+
+                int frames = source.GetBlendShapeFrameCount(s);
+                for (int f = 0; f < frames; f++)
+                {
+                    source.GetBlendShapeFrameVertices(s, f, deltaVertices, deltaNormals, deltaTangents);
+                    mesh.AddBlendShapeFrame(shapeName, source.GetBlendShapeFrameWeight(s, f),
+                        deltaVertices, deltaNormals, deltaTangents);
+                }
+            }
+
+            return mesh;
+        }
+
+        private static Vector3[] OverrideForShape(
+            ReFitComputation comp,
+            string shapeName,
+            Vector3[] primaryOverride,
+            Vector3[][] secondaryOverrides)
+        {
+            if (!string.IsNullOrEmpty(comp.primaryShapeName) && shapeName == comp.primaryShapeName)
+                return primaryOverride;
+
+            if (comp.secondaryShapeNames == null || secondaryOverrides == null)
+                return null;
+
+            int count = Mathf.Min(comp.secondaryShapeNames.Length, secondaryOverrides.Length);
+            for (int i = 0; i < count; i++)
+                if (shapeName == comp.secondaryShapeNames[i])
+                    return secondaryOverrides[i];
+
+            return null;
+        }
+
+        private static void SetGeneratedBlendShapeWeights(
+            SkinnedMeshRenderer renderer,
+            ReFitComputation comp,
+            float primaryWeight,
+            bool secondariesEnabled)
+        {
+            if (renderer == null || renderer.sharedMesh == null || comp == null)
+                return;
+
+            SetBlendShapeWeight(renderer, comp.primaryShapeName, primaryWeight);
+            if (comp.secondaryShapeNames == null)
+                return;
+
+            for (int s = 0; s < comp.secondaryShapeNames.Length; s++)
+            {
+                float weight = secondariesEnabled && comp.secondaryMirrorWeights != null && s < comp.secondaryMirrorWeights.Length
+                    ? comp.secondaryMirrorWeights[s]
+                    : 0f;
+                SetBlendShapeWeight(renderer, comp.secondaryShapeNames[s], weight);
+            }
+        }
+
+        private static void SetBlendShapeWeight(SkinnedMeshRenderer renderer, string shapeName, float weight)
+        {
+            if (renderer == null || renderer.sharedMesh == null || string.IsNullOrEmpty(shapeName))
+                return;
+
+            int index = renderer.sharedMesh.GetBlendShapeIndex(shapeName);
+            if (index >= 0)
+                renderer.SetBlendShapeWeight(index, weight);
         }
 
         private static void CaptureGeneratedMeshPreviewWithOriginalSkinning(ReFitDebugSession debug,

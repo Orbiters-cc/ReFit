@@ -489,7 +489,7 @@ namespace Orbiters.ReFit.Editor
             RefreshMeshBindposes(renderer, bones, report);
             ValidateMaterializedArmature(sourceBones, bones, renderer, report);
             RebindArmatureComponentReferences(request, targetInstance, assetInstanceRoot,
-                oldBones, oldRootBone, bones, newArmatureRoot, comp, report);
+                renderer, oldBones, oldRootBone, bones, newArmatureRoot, comp, report);
             RemoveTransientDebugObjects(assetInstanceRoot, report);
             RemoveReplacedAssetArmature(request, targetInstance, assetInstanceRoot, renderer, oldBones, oldRootBone, bones, newArmatureRoot, report);
             RemoveUnusedArmatureContainers(assetInstanceRoot, newArmatureRoot, renderer, bones, report);
@@ -607,6 +607,7 @@ namespace Orbiters.ReFit.Editor
                 if (!sourceToNew.ContainsKey(source)) sourceToNew[source] = proxy;
             }
 
+            BuildMaterializedSemanticLookup(sourceToNew, out var materializedByName, out var materializedByHumanBone);
             var placementParents = BuildPlacementParentMap(comp, sourceBones, sourceToNew, targetInstance, report);
             for (int i = 0; i < bones.Length; i++)
             {
@@ -617,6 +618,8 @@ namespace Orbiters.ReFit.Editor
                 var parent = FindMaterializedParent(source, sourceToNew);
                 if (parent == null && placementParents.TryGetValue(i, out var placedParent))
                     parent = placedParent;
+                if (parent == null)
+                    parent = FindEquivalentMaterializedParent(source, materializedByName, materializedByHumanBone);
                 if (parent == null)
                     parent = newArmatureRoot;
 
@@ -638,6 +641,38 @@ namespace Orbiters.ReFit.Editor
             }
 
             return bones;
+        }
+
+        private static void BuildMaterializedSemanticLookup(Dictionary<Transform, Transform> sourceToNew,
+            out Dictionary<string, Transform> materializedByName,
+            out Dictionary<HumanBodyBones, Transform> materializedByHumanBone)
+        {
+            materializedByName = new Dictionary<string, Transform>();
+            materializedByHumanBone = new Dictionary<HumanBodyBones, Transform>();
+            if (sourceToNew == null) return;
+
+            foreach (var kv in sourceToNew)
+            {
+                var source = kv.Key;
+                var proxy = kv.Value;
+                if (source == null || proxy == null) continue;
+
+                AddUnique(materializedByName, ReFitUtility.NormalizeName(source.name), proxy);
+                if (HumanoidBoneMapper.TryInferHumanoidBone(source, out var humanBone))
+                    AddUnique(materializedByHumanBone, humanBone, proxy);
+            }
+        }
+
+        private static void AddUnique<TKey>(Dictionary<TKey, Transform> map, TKey key, Transform value)
+        {
+            if (map == null || value == null) return;
+            if (map.TryGetValue(key, out var existing))
+            {
+                if (existing != value)
+                    map[key] = null;
+                return;
+            }
+            map[key] = value;
         }
 
         private static Dictionary<int, Transform> BuildPlacementParentMap(ReFitComputation comp, Transform[] sourceBones,
@@ -671,6 +706,29 @@ namespace Orbiters.ReFit.Editor
             }
             proxy = null;
             return false;
+        }
+
+        private static Transform FindEquivalentMaterializedParent(Transform source,
+            Dictionary<string, Transform> materializedByName,
+            Dictionary<HumanBodyBones, Transform> materializedByHumanBone)
+        {
+            var parent = source != null ? source.parent : null;
+            while (parent != null)
+            {
+                if (HumanoidBoneMapper.TryInferHumanoidBone(parent, out var humanBone) &&
+                    materializedByHumanBone != null &&
+                    materializedByHumanBone.TryGetValue(humanBone, out var humanParent) &&
+                    humanParent != null)
+                    return humanParent;
+
+                if (materializedByName != null &&
+                    materializedByName.TryGetValue(ReFitUtility.NormalizeName(parent.name), out var namedParent) &&
+                    namedParent != null)
+                    return namedParent;
+
+                parent = parent.parent;
+            }
+            return null;
         }
 
         private static Transform FindMaterializedParent(Transform source, Dictionary<Transform, Transform> sourceToNew)
@@ -833,7 +891,7 @@ namespace Orbiters.ReFit.Editor
         }
 
         private static void RebindArmatureComponentReferences(ReFitRequest request, GameObject targetInstance,
-            Transform assetInstanceRoot, Transform[] oldBones, Transform oldRootBone, Transform[] newBones,
+            Transform assetInstanceRoot, SkinnedMeshRenderer renderer, Transform[] oldBones, Transform oldRootBone, Transform[] newBones,
             Transform newArmatureRoot, ReFitComputation comp, ReFitReport report)
         {
             if (assetInstanceRoot == null || comp == null || !comp.armatureReplaced || newBones == null)
@@ -860,14 +918,22 @@ namespace Orbiters.ReFit.Editor
                 {
                     if (component == null || component is Transform || !scanned.Add(component)) continue;
                     if (IsInsideAnyRoot(component.transform, staleArmatureRoots)) continue;
+                    if (IsVrcfuryArmatureLinkComponent(component)) continue;
                     RebindComponentReferences(component, transformMap, newArmatureRoot, report, ref stats, unresolved);
                 }
             }
+
+            var repairedVrcfuryLinks = RepairVrcfuryArmatureLinks(roots, assetInstanceRoot, renderer,
+                transformMap, newArmatureRoot, report);
 
             if (stats.propertiesRebound > 0 || stats.helperTransformsCreated > 0)
                 report.Info("component-bone-references-rebound",
                     $"Rebound {stats.propertiesRebound} serialized bone reference(s) across {stats.componentsChanged}/{stats.componentsScanned} component(s)" +
                     (stats.helperTransformsCreated > 0 ? $", creating {stats.helperTransformsCreated} helper transform(s)." : "."));
+
+            if (repairedVrcfuryLinks > 0)
+                report.Info("vrcfury-armature-link-repaired",
+                    $"Repaired {repairedVrcfuryLinks} VRCFury Armature Link component(s) to use the rebuilt clothing armature.");
 
             if (unresolved.Count > 0)
             {
@@ -900,6 +966,184 @@ namespace Orbiters.ReFit.Editor
                 map[oldRootBone] = newBones[comp.rootBoneIndex];
 
             return map;
+        }
+
+        private static int RepairVrcfuryArmatureLinks(List<Transform> roots, Transform assetInstanceRoot,
+            SkinnedMeshRenderer renderer, Dictionary<Transform, Transform> transformMap,
+            Transform newArmatureRoot, ReFitReport report)
+        {
+            if (roots == null || assetInstanceRoot == null || newArmatureRoot == null)
+                return 0;
+
+            int repaired = 0;
+            var scanned = new HashSet<Component>();
+            foreach (var root in roots)
+            {
+                if (root == null) continue;
+                var components = root.GetComponentsInChildren<Component>(true);
+                foreach (var component in components)
+                {
+                    if (component == null || !scanned.Add(component)) continue;
+                    if (!TryGetVrcfuryArmatureLinkContent(component, out var serialized, out var content))
+                        continue;
+
+                    var propBone = content.FindPropertyRelative("propBone");
+                    if (propBone == null || propBone.propertyType != SerializedPropertyType.ObjectReference)
+                        continue;
+
+                    var currentObject = propBone.objectReferenceValue as GameObject;
+                    var current = currentObject != null ? currentObject.transform : null;
+                    if (!ShouldRepairVrcfuryArmatureLink(component, current, assetInstanceRoot, newArmatureRoot, transformMap))
+                        continue;
+
+                    var replacement = ResolveVrcfuryLinkFrom(current, renderer, transformMap, newArmatureRoot);
+                    if (replacement == null)
+                    {
+                        report?.Warn("vrcfury-armature-link-unresolved",
+                            $"Could not find a rebuilt Link From bone for VRCFury Armature Link at '{HierarchyPath(component.transform)}'.");
+                        continue;
+                    }
+
+                    Undo.RecordObject(component, "ReFit repair VRCFury Armature Link");
+                    bool changed = false;
+                    if (currentObject != replacement.gameObject)
+                    {
+                        propBone.objectReferenceValue = replacement.gameObject;
+                        changed = true;
+                    }
+
+                    changed |= SetBool(content, "recursive", true);
+                    changed |= SetBool(content, "alignPosition", true);
+                    changed |= SetBool(content, "alignRotation", true);
+                    changed |= SetBool(content, "alignScale", true);
+                    changed |= SetBool(content, "autoScaleFactor", true);
+                    changed |= SetBool(content, "scalingFactorPowersOf10Only", false);
+                    changed |= SetFloat(content, "skinRewriteScalingFactor", 1f);
+                    changed |= SetInt(content, "version", 7);
+
+                    if (!changed) continue;
+
+                    serialized.ApplyModifiedProperties();
+                    EditorUtility.SetDirty(component);
+                    PrefabUtility.RecordPrefabInstancePropertyModifications(component);
+                    repaired++;
+                }
+            }
+            return repaired;
+        }
+
+        private static bool IsVrcfuryArmatureLinkComponent(Component component)
+        {
+            if (component == null || component.GetType().FullName != "VF.Model.VRCFury")
+                return false;
+
+            try
+            {
+                var serialized = new SerializedObject(component);
+                var content = serialized.FindProperty("content");
+                return IsArmatureLinkContent(content);
+            }
+            catch
+            {
+                return false;
+            }
+        }
+
+        private static bool TryGetVrcfuryArmatureLinkContent(Component component,
+            out SerializedObject serialized, out SerializedProperty content)
+        {
+            serialized = null;
+            content = null;
+            if (component == null || component.GetType().FullName != "VF.Model.VRCFury")
+                return false;
+
+            try
+            {
+                serialized = new SerializedObject(component);
+                content = serialized.FindProperty("content");
+                return IsArmatureLinkContent(content);
+            }
+            catch (System.Exception ex)
+            {
+                Debug.LogWarning($"[ReFit] Could not inspect VRCFury component at '{HierarchyPath(component.transform)}': {ex.Message}");
+                return false;
+            }
+        }
+
+        private static bool IsArmatureLinkContent(SerializedProperty content)
+        {
+            return content != null &&
+                   content.propertyType == SerializedPropertyType.ManagedReference &&
+                   !string.IsNullOrEmpty(content.managedReferenceFullTypename) &&
+                   content.managedReferenceFullTypename.Contains("VF.Model.Feature.ArmatureLink");
+        }
+
+        private static bool ShouldRepairVrcfuryArmatureLink(Component component, Transform current,
+            Transform assetInstanceRoot, Transform newArmatureRoot, Dictionary<Transform, Transform> transformMap)
+        {
+            if (component == null || assetInstanceRoot == null || newArmatureRoot == null)
+                return false;
+
+            if (component.transform == assetInstanceRoot)
+                return true;
+            if (current == null)
+                return component.transform.IsChildOf(assetInstanceRoot);
+            if (current.IsChildOf(newArmatureRoot))
+                return true;
+            if (transformMap != null && IsInsideMappedOldArmature(current, transformMap))
+                return true;
+            return current.IsChildOf(assetInstanceRoot);
+        }
+
+        private static Transform ResolveVrcfuryLinkFrom(Transform current, SkinnedMeshRenderer renderer,
+            Dictionary<Transform, Transform> transformMap, Transform newArmatureRoot)
+        {
+            if (current != null)
+            {
+                if (newArmatureRoot != null && current.IsChildOf(newArmatureRoot))
+                    return current;
+                if (transformMap != null && transformMap.TryGetValue(current, out var mapped) && mapped != null)
+                    return mapped;
+            }
+
+            if (renderer != null && renderer.rootBone != null &&
+                (newArmatureRoot == null || renderer.rootBone.IsChildOf(newArmatureRoot)))
+                return renderer.rootBone;
+
+            if (newArmatureRoot == null)
+                return null;
+
+            var hips = newArmatureRoot.Find("Hips");
+            if (hips != null) return hips;
+            return newArmatureRoot.childCount > 0 ? newArmatureRoot.GetChild(0) : newArmatureRoot;
+        }
+
+        private static bool SetBool(SerializedProperty parent, string name, bool value)
+        {
+            var prop = parent?.FindPropertyRelative(name);
+            if (prop == null || prop.propertyType != SerializedPropertyType.Boolean || prop.boolValue == value)
+                return false;
+            prop.boolValue = value;
+            return true;
+        }
+
+        private static bool SetFloat(SerializedProperty parent, string name, float value)
+        {
+            var prop = parent?.FindPropertyRelative(name);
+            if (prop == null || prop.propertyType != SerializedPropertyType.Float ||
+                Mathf.Approximately(prop.floatValue, value))
+                return false;
+            prop.floatValue = value;
+            return true;
+        }
+
+        private static bool SetInt(SerializedProperty parent, string name, int value)
+        {
+            var prop = parent?.FindPropertyRelative(name);
+            if (prop == null || prop.propertyType != SerializedPropertyType.Integer || prop.intValue == value)
+                return false;
+            prop.intValue = value;
+            return true;
         }
 
         private static void RebindComponentReferences(Component component, Dictionary<Transform, Transform> transformMap,

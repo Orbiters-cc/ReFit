@@ -125,6 +125,12 @@ namespace Orbiters.ReFit.Editor.Tests
                     "Armature replacement rebinds serialized component bone references",
                     ArmatureReplacement_RebindsSerializedComponentBoneReferences);
                 RunCase(failures,
+                    "Armature replacement repairs VRCFury Armature Link",
+                    ArmatureReplacement_RepairsVrcfuryArmatureLink);
+                RunCase(failures,
+                    "Armature replacement keeps extra ChestUp as a clothing side branch",
+                    ArmatureReplacement_ChestUpSideBranchDoesNotTrapHumanChain);
+                RunCase(failures,
                     "Armature replacement adds target-derived non-deforming leaf helpers",
                     ArmatureReplacement_TargetChildCreatesLeafTailHelper);
                 RunCase(failures,
@@ -1850,6 +1856,91 @@ namespace Orbiters.ReFit.Editor.Tests
             }
         }
 
+        private static void ArmatureReplacement_RepairsVrcfuryArmatureLink()
+        {
+            using (var fixture = ReFitTestFixture.Create())
+            {
+                var accessory = fixture.sourceSpaceAccessory;
+                var oldHips = accessory.hips;
+                var validLink = CreateVrcfuryArmatureLink(accessory.root, oldHips.gameObject);
+                var nullLink = CreateVrcfuryArmatureLink(accessory.root, null);
+                if (validLink == null || nullLink == null)
+                {
+                    Debug.LogWarning("[ReFit Tests] Skipping VRCFury Armature Link repair check because VRCFury is not installed.");
+                    return;
+                }
+
+                var request = BuildMeshAndBlendshapeRequest(fixture, accessory.renderer, true);
+                var comp = new ReFitEngine().Run(request);
+                try
+                {
+                    AssertComputationSucceeded(comp);
+                    var applied = ReFitAssetPipeline.ApplyToScene(request, comp, comp.report);
+                    AssertTrue(applied != null, "ApplyToScene returned no renderer.");
+                    AssertTrue(applied.rootBone != null, "The rebuilt renderer has no root bone.");
+
+                    AssertVrcfuryArmatureLink(validLink, applied.rootBone,
+                        "The VRCFury Armature Link with an old Link From was not rebound to the rebuilt root bone.");
+                    AssertVrcfuryArmatureLink(nullLink, applied.rootBone,
+                        "The VRCFury Armature Link with a null Link From was not repaired to the rebuilt root bone.");
+                    AssertReportContains(comp.report, "vrcfury-armature-link-repaired",
+                        "The VRCFury Armature Link repair pass did not report repairing any component.");
+                    AssertTrue(oldHips == null,
+                        "The stale source-space accessory hips bone was left in the scene after armature replacement.");
+                }
+                finally
+                {
+                    DestroyComputationMesh(comp);
+                }
+            }
+        }
+
+        private static void ArmatureReplacement_ChestUpSideBranchDoesNotTrapHumanChain()
+        {
+            using (var fixture = ReFitTestFixture.Create())
+            {
+                var accessory = fixture.sourceSpaceAccessory;
+                var chestUp = CreateBone("ChestUp", accessory.chest,
+                    accessory.chest.position + new Vector3(0f, 0.06f, -0.02f));
+                AppendRendererBone(accessory, chestUp);
+
+                var request = BuildMeshAndBlendshapeRequest(fixture, accessory.renderer, true);
+                var comp = new ReFitEngine().Run(request);
+                try
+                {
+                    AssertComputationSucceeded(comp);
+                    var applied = ReFitAssetPipeline.ApplyToScene(request, comp, comp.report);
+                    AssertTrue(applied != null, "ApplyToScene returned no renderer.");
+
+                    var rebuiltChest = FindRendererBone(applied, "Chest");
+                    var rebuiltChestUp = FindRendererBone(applied, "ChestUp");
+                    var rebuiltHead = FindRendererBone(applied, "Head");
+                    var rebuiltLeftArm = FindRendererBone(applied, "LeftUpperArm");
+                    var rebuiltRightArm = FindRendererBone(applied, "RightUpperArm");
+                    AssertTrue(rebuiltChest != null && rebuiltChestUp != null && rebuiltHead != null &&
+                               rebuiltLeftArm != null && rebuiltRightArm != null,
+                        "The rebuilt armature is missing one of the expected torso/head/arm bones.");
+
+                    AssertSame(rebuiltChestUp.parent, rebuiltChest,
+                        "The unmatched ChestUp bone should be preserved as a direct clothing side branch under Chest.");
+                    AssertSame(rebuiltHead.parent, rebuiltChest,
+                        "The head bone should remain a direct Chest child instead of being routed through ChestUp.");
+                    AssertSame(rebuiltLeftArm.parent, rebuiltChest,
+                        "The left arm bone should remain a direct Chest child instead of being routed through ChestUp.");
+                    AssertSame(rebuiltRightArm.parent, rebuiltChest,
+                        "The right arm bone should remain a direct Chest child instead of being routed through ChestUp.");
+                    AssertTrue(!rebuiltHead.IsChildOf(rebuiltChestUp) &&
+                               !rebuiltLeftArm.IsChildOf(rebuiltChestUp) &&
+                               !rebuiltRightArm.IsChildOf(rebuiltChestUp),
+                        "A humanoid chain bone was incorrectly placed under the extra ChestUp branch.");
+                }
+                finally
+                {
+                    DestroyComputationMesh(comp);
+                }
+            }
+        }
+
         private static void ArmatureReplacement_TargetChildCreatesLeafTailHelper()
         {
             using (var fixture = ReFitTestFixture.Create())
@@ -2341,6 +2432,12 @@ namespace Orbiters.ReFit.Editor.Tests
                         "The applied renderer still binds directly to the target avatar hips instead of a rebuilt bone.");
                     AssertTrue(RendererHasBone(applied, "Hood string"),
                         "The cleanup deleted or unbound an accessory-only preserved bone.");
+                    var rebuiltChest = FindRendererBone(applied, "Chest");
+                    var rebuiltHoodString = FindRendererBone(applied, "Hood string");
+                    AssertSame(rebuiltHoodString.parent, rebuiltChest,
+                        "The preserved accessory-only bone should stay under the rebuilt target-equivalent chest branch, not become a second armature root.");
+                    AssertReportDoesNotContain(comp.report, "armature-multiple-root-branches",
+                        "The rebuilt armature should not report multiple skinned root branches after preserving an accessory-only bone.");
                     AssertTrue(localExtraBone == null || Array.IndexOf(applied.bones, localExtraBone) < 0,
                         "The renderer should bind to the rebuilt copy of the accessory-only bone, not the original stale transform.");
                 }
@@ -4258,6 +4355,119 @@ namespace Orbiters.ReFit.Editor.Tests
             return null;
         }
 
+        private static Component CreateVrcfuryArmatureLink(GameObject owner, GameObject propBone)
+        {
+            var vrcfuryType = FindLoadedType("VF.Model.VRCFury");
+            var armatureLinkType = FindLoadedType("VF.Model.Feature.ArmatureLink");
+            if (owner == null || vrcfuryType == null || armatureLinkType == null)
+                return null;
+
+            var component = owner.AddComponent(vrcfuryType);
+            var model = Activator.CreateInstance(armatureLinkType, true);
+            var serialized = new SerializedObject(component);
+            var content = serialized.FindProperty("content");
+            if (content == null)
+                return component;
+
+            content.managedReferenceValue = model;
+            serialized.ApplyModifiedPropertiesWithoutUndo();
+            serialized.Update();
+
+            content = serialized.FindProperty("content");
+            SetObjectReference(content, "propBone", propBone);
+            SetSerializedBool(content, "recursive", false);
+            SetSerializedBool(content, "alignPosition", false);
+            SetSerializedBool(content, "alignRotation", false);
+            SetSerializedBool(content, "alignScale", false);
+            SetSerializedBool(content, "autoScaleFactor", true);
+            SetSerializedBool(content, "scalingFactorPowersOf10Only", false);
+            SetSerializedFloat(content, "skinRewriteScalingFactor", 0f);
+            SetSerializedInt(content, "version", 6);
+            serialized.ApplyModifiedPropertiesWithoutUndo();
+            return component;
+        }
+
+        private static void AssertVrcfuryArmatureLink(Component component, Transform expectedLinkFrom, string message)
+        {
+            AssertTrue(component != null, message + " Component is null.");
+            var serialized = new SerializedObject(component);
+            var content = serialized.FindProperty("content");
+            AssertTrue(content != null &&
+                       !string.IsNullOrEmpty(content.managedReferenceFullTypename) &&
+                       content.managedReferenceFullTypename.Contains("VF.Model.Feature.ArmatureLink"),
+                message + " Component is not a VRCFury Armature Link.");
+
+            var propBone = content.FindPropertyRelative("propBone");
+            var linkedObject = propBone != null ? propBone.objectReferenceValue as GameObject : null;
+            AssertSame(linkedObject, expectedLinkFrom != null ? expectedLinkFrom.gameObject : null, message);
+            AssertSerializedBool(content, "recursive", true,
+                "VRCFury Armature Link was not made recursive for clothing armature merging.");
+            AssertSerializedBool(content, "alignPosition", true,
+                "VRCFury Armature Link did not enable position alignment.");
+            AssertSerializedBool(content, "alignRotation", true,
+                "VRCFury Armature Link did not enable rotation alignment.");
+            AssertSerializedBool(content, "alignScale", true,
+                "VRCFury Armature Link did not enable scale alignment.");
+            AssertSerializedBool(content, "autoScaleFactor", true,
+                "VRCFury Armature Link did not enable automatic scale factor.");
+            AssertSerializedFloat(content, "skinRewriteScalingFactor", 1f, 0.0001f,
+                "VRCFury Armature Link did not get a valid skin rewrite scale factor.");
+        }
+
+        private static Type FindLoadedType(string fullName)
+        {
+            foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
+            {
+                Type type = null;
+                try { type = assembly.GetType(fullName, false); }
+                catch { }
+                if (type != null) return type;
+            }
+            return null;
+        }
+
+        private static void SetObjectReference(SerializedProperty parent, string name, Object value)
+        {
+            var prop = parent?.FindPropertyRelative(name);
+            if (prop != null && prop.propertyType == SerializedPropertyType.ObjectReference)
+                prop.objectReferenceValue = value;
+        }
+
+        private static void SetSerializedBool(SerializedProperty parent, string name, bool value)
+        {
+            var prop = parent?.FindPropertyRelative(name);
+            if (prop != null && prop.propertyType == SerializedPropertyType.Boolean)
+                prop.boolValue = value;
+        }
+
+        private static void SetSerializedFloat(SerializedProperty parent, string name, float value)
+        {
+            var prop = parent?.FindPropertyRelative(name);
+            if (prop != null && prop.propertyType == SerializedPropertyType.Float)
+                prop.floatValue = value;
+        }
+
+        private static void SetSerializedInt(SerializedProperty parent, string name, int value)
+        {
+            var prop = parent?.FindPropertyRelative(name);
+            if (prop != null && prop.propertyType == SerializedPropertyType.Integer)
+                prop.intValue = value;
+        }
+
+        private static void AssertSerializedBool(SerializedProperty parent, string name, bool expected, string message)
+        {
+            var prop = parent?.FindPropertyRelative(name);
+            AssertTrue(prop != null && prop.propertyType == SerializedPropertyType.Boolean, $"Missing bool property '{name}'.");
+            AssertTrue(prop.boolValue == expected, message);
+        }
+
+        private static void AssertSerializedFloat(SerializedProperty parent, string name, float expected, float tolerance, string message)
+        {
+            var prop = parent?.FindPropertyRelative(name);
+            AssertTrue(prop != null && prop.propertyType == SerializedPropertyType.Float, $"Missing float property '{name}'.");
+            AssertLessOrEqual(Mathf.Abs(prop.floatValue - expected), tolerance, message);
+        }
+
         private static Transform FindDirectChildStartingWith(Transform parent, string prefix)
         {
             if (parent == null) return null;
@@ -4386,6 +4596,16 @@ namespace Orbiters.ReFit.Editor.Tests
             }
 
             throw new Exception(message + "\n" + FormatReport(report));
+        }
+
+        private static void AssertReportDoesNotContain(ReFitReport report, string code, string message)
+        {
+            if (report != null)
+            {
+                foreach (var entry in report.messages)
+                    if (entry != null && entry.code == code)
+                        throw new Exception(message + "\n" + FormatReport(report));
+            }
         }
 
         private static void SetPrivateField(object target, string fieldName, object value)

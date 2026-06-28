@@ -23,6 +23,10 @@ namespace Orbiters.ReFit.Editor.Tests
         private const string FbxFixtureV1Path = "Packages/orbiters.refit/ReFit unit test v1.fbx";
         private const string FbxFixtureV2DifferentArmaturePath = "Packages/orbiters.refit/ReFit unit test v2 clothing with different armature.fbx";
         private const string FbxShapeName = "custom blendshape";
+        private const string RealHoodiePath = "Assets/Hoodie/Model/Hoodie.fbx";
+        private const string RealSourceAvatarPath = "Assets/my custom winterpaw orbit/default_MasculineCanine.v1.5.fbx";
+        private const string RealTargetAvatarPath = "Assets/my custom winterpaw orbit/ulti paw v2.8.fbx";
+        private const string RealTargetShapeName = "orbit muscles";
 
         [MenuItem("Tools/Orbiters/ReFit/Run Deterministic Tests")]
         public static void RunFromMenu()
@@ -103,11 +107,23 @@ namespace Orbiters.ReFit.Editor.Tests
                     "Blendshape-only transfer works on target-space clothing and preserves root bone",
                     BlendshapeOnly_TargetSpaceAccessory_TransfersMuscle_PreservesRootBone);
                 RunCase(failures,
+                    "Blendshape-only target-nested clothing matches equivalent-source tightness",
+                    BlendshapeOnly_TargetNestedAccessory_MatchesEquivalentSourceTightness);
+                RunCase(failures,
+                    "Real hoodie no-source staging preserves target authored pose",
+                    RealHoodie_NoSourceStaging_PreservesTargetAuthoredPose);
+                RunCase(failures,
+                    "Real hoodie no-source blendshape matches source-FBX whole hoodie",
+                    RealHoodie_NoSourceBlendshape_MatchesSourceFbxWholeHoodie);
+                RunCase(failures,
                     "Mesh refit with armature replacement disabled preserves clothing root bone",
                     MeshAndBlendshape_ArmatureReplacementDisabled_PreservesRootBone);
                 RunCase(failures,
                     "Armature replacement removes stale accessory skeleton",
                     MeshAndBlendshape_ArmatureReplacement_RemovesStaleAccessorySkeleton);
+                RunCase(failures,
+                    "Armature replacement rebinds serialized component bone references",
+                    ArmatureReplacement_RebindsSerializedComponentBoneReferences);
                 RunCase(failures,
                     "Armature replacement adds target-derived non-deforming leaf helpers",
                     ArmatureReplacement_TargetChildCreatesLeafTailHelper);
@@ -1394,6 +1410,266 @@ namespace Orbiters.ReFit.Editor.Tests
             }
         }
 
+        private static void BlendshapeOnly_TargetNestedAccessory_MatchesEquivalentSourceTightness()
+        {
+            using (var fixture = ReFitTestFixture.Create())
+            using (var equivalentSource = SkinnedSample.CreateAvatar(
+                       "__ReFitTest_SourceEquivalent",
+                       "Body",
+                       17,
+                       13,
+                       0f,
+                       RigPose.Target(),
+                       TargetBodyWeight,
+                       false))
+            {
+                fixture.targetSpaceAccessory.root.transform.SetParent(fixture.target.root.transform, true);
+
+                var noSourceRequest = BuildBlendshapeOnlyRequest(fixture, fixture.targetSpaceAccessory.renderer);
+                ApplyHighTightnessSettings(noSourceRequest.settings);
+
+                var equivalentSourceRequest = new ReFitRequest
+                {
+                    mode = ReFitMode.MeshAndBlendshape,
+                    assetRenderer = fixture.targetSpaceAccessory.renderer,
+                    sourceAvatar = equivalentSource.root,
+                    targetAvatar = fixture.target.root,
+                    sourceBodyRenderer = equivalentSource.renderer,
+                    targetBodyRenderer = fixture.target.renderer,
+                    targetBlendshape = BodyShapeName,
+                    settings = CreateDeterministicSettings(false)
+                };
+                ApplyHighTightnessSettings(equivalentSourceRequest.settings);
+
+                var noSource = new ReFitEngine().Run(noSourceRequest);
+                var withEquivalentSource = new ReFitEngine().Run(equivalentSourceRequest);
+                try
+                {
+                    AssertComputationSucceeded(noSource);
+                    AssertComputationSucceeded(withEquivalentSource);
+                    AssertTrue(string.IsNullOrEmpty(noSource.primaryShapeName),
+                        "Blendshape-only mode should not produce a primary refit blendshape.");
+                    AssertReportContains(noSource.report, "asset-target-space",
+                        "No-source target-nested clothing was not staged as target-space clothing.");
+                    AssertReportContains(withEquivalentSource.report, "asset-target-space",
+                        "Equivalent-source target-nested clothing was not staged as target-space clothing.");
+                    AssertTrue(noSource.debugSecondaryRawLocalDeltas != null &&
+                               noSource.debugSecondaryRawLocalDeltas.Length == 1 &&
+                               noSource.debugSecondaryRawLocalDeltas[0] != null,
+                        "No-source target-nested computation did not expose raw transferred deltas.");
+                    AssertTrue(withEquivalentSource.debugSecondaryRawLocalDeltas != null &&
+                               withEquivalentSource.debugSecondaryRawLocalDeltas.Length == 1 &&
+                               withEquivalentSource.debugSecondaryRawLocalDeltas[0] != null,
+                        "Equivalent-source computation did not expose raw transferred deltas.");
+
+                    var noSourceSecondary = GetBlendShapeDeltas(noSource.mesh, SingleSecondaryShape(noSource));
+                    var sourceSecondary = GetBlendShapeDeltas(withEquivalentSource.mesh, SingleSecondaryShape(withEquivalentSource));
+                    var sourceFinal = string.IsNullOrEmpty(withEquivalentSource.primaryShapeName)
+                        ? sourceSecondary
+                        : SumDeltas(sourceSecondary, GetBlendShapeDeltas(withEquivalentSource.mesh, withEquivalentSource.primaryShapeName));
+
+                    var finalDifference = MeasureDeltaDifference(noSource.mesh, noSourceSecondary, sourceFinal, v => true);
+                    float noSourceTorsoCorrection = AverageCorrectionMagnitude(
+                        noSource.mesh,
+                        noSource.debugSecondaryRawLocalDeltas[0],
+                        noSourceSecondary,
+                        v => Mathf.Abs(v.x) <= 0.55f && v.y >= 0.55f && v.y <= 1.35f);
+                    float sourceTorsoCorrection = AverageCorrectionMagnitude(
+                        withEquivalentSource.mesh,
+                        withEquivalentSource.debugSecondaryRawLocalDeltas[0],
+                        sourceSecondary,
+                        v => Mathf.Abs(v.x) <= 0.55f && v.y >= 0.55f && v.y <= 1.35f);
+                    float sourcePrimaryDrift = string.IsNullOrEmpty(withEquivalentSource.primaryShapeName)
+                        ? 0f
+                        : MaxBlendShapeMagnitude(withEquivalentSource.mesh, withEquivalentSource.primaryShapeName);
+
+                    Debug.Log(
+                        $"[ReFit Tests] No-source target-nested tightness parity: " +
+                        $"diff={finalDifference}, " +
+                        $"noSourceCorrection={noSourceTorsoCorrection * 1000f:0.###}mm, " +
+                        $"sourceCorrection={sourceTorsoCorrection * 1000f:0.###}mm, " +
+                        $"sourcePrimary={sourcePrimaryDrift * 1000f:0.###}mm");
+
+                    AssertGreater(noSourceTorsoCorrection, 0.001f,
+                        "No-source target-nested blendshape did not keep a measurable tightness correction.");
+                    AssertLessOrEqual(finalDifference.p95, 0.004f,
+                        "No-source target-nested final shape drifted from the equivalent-source final shape.");
+                    AssertLessOrEqual(finalDifference.max, 0.012f,
+                        "No-source target-nested final shape has a localized mismatch from the equivalent-source final shape.");
+                }
+                finally
+                {
+                    DestroyComputationMesh(noSource);
+                    DestroyComputationMesh(withEquivalentSource);
+                }
+            }
+        }
+
+        private static void RealHoodie_NoSourceBlendshape_MatchesSourceFbxWholeHoodie()
+        {
+            if (!RealHoodieArtifactFixture.CanLoadRequiredAssets(out var missingAsset))
+            {
+                Debug.LogWarning(
+                    $"[ReFit Tests] Skipping real hoodie source/no-source artifact regression; missing '{missingAsset}'.");
+                return;
+            }
+
+            using (var fixture = RealHoodieArtifactFixture.Create())
+            {
+                var sourceRequest = BuildRealHoodieSourceRequest(fixture);
+                ApplyHighTightnessSettings(sourceRequest.settings);
+
+                ReFitComputation source = null;
+                ReFitComputation noSource = null;
+                SkinnedMeshRenderer fittedRenderer = null;
+                try
+                {
+                    source = new ReFitEngine().Run(sourceRequest);
+                    AssertComputationSucceeded(source);
+                    AssertTrue(!string.IsNullOrEmpty(source.primaryShapeName),
+                        "The source-FBX workflow did not produce a primary refit shape.");
+                    AssertTrue(source.secondaryShapeNames != null && source.secondaryShapeNames.Length == 1,
+                        "The source-FBX workflow did not produce exactly one transferred body shape.");
+
+                    fittedRenderer = ReFitAssetPipeline.ApplyToScene(sourceRequest, source, source.report);
+                    AssertTrue(fittedRenderer != null, "Could not materialize the source-FBX hoodie result for the no-source workflow.");
+                    SetBlendShapeWeight(fittedRenderer, source.primaryShapeName, 100f);
+                    SetSecondaryBlendShapeWeights(fittedRenderer, source.secondaryShapeNames, 0f);
+
+                    var noSourceRequest = BuildRealHoodieNoSourceRequest(fixture, fittedRenderer);
+                    ApplyHighTightnessSettings(noSourceRequest.settings);
+                    noSource = new ReFitEngine().Run(noSourceRequest);
+                    AssertComputationSucceeded(noSource);
+                    AssertTrue(noSource.secondaryShapeNames != null && noSource.secondaryShapeNames.Length == 1,
+                        "The no-source workflow did not produce exactly one transferred body shape.");
+
+                    var sourcePrimary = GetBlendShapeDeltas(source.mesh, source.primaryShapeName);
+                    var sourceSecondary = GetBlendShapeDeltas(source.mesh, SingleSecondaryShape(source));
+                    var noSourceSecondary = GetBlendShapeDeltas(noSource.mesh, SingleSecondaryShape(noSource));
+                    var sourceRaw = source.debugSecondaryRawLocalDeltas[0];
+                    var noSourceRaw = noSource.debugSecondaryRawLocalDeltas[0];
+                    var noSourceBase = OptionalBlendShapeDeltas(noSource.mesh, source.primaryShapeName);
+                    var allMask = BuildAllVertexMask(noSource.mesh);
+                    var mainShellMask = BuildLargestComponentMask(noSource.mesh, out var components);
+
+                    var primaryPositionDifference = MeasureShapePositionDifference(
+                        source.mesh,
+                        sourcePrimary,
+                        noSource.mesh,
+                        noSourceBase,
+                        allMask);
+                    var projectionDifference = MeasureProjectionDebugDifference(source.projectionDebug, noSource.projectionDebug);
+                    var wholeRawDifference = MeasureDeltaDifference(noSource.mesh, noSourceRaw, sourceRaw, allMask);
+                    var wholeRawPositionDifference = MeasureShapePositionDifference(
+                        source.mesh,
+                        SumDeltas(sourcePrimary, sourceRaw),
+                        noSource.mesh,
+                        SumDeltas(noSourceBase, noSourceRaw),
+                        allMask);
+                    var wholeSourceArtifacts = MeasureShapeArtifacts(source.mesh, sourcePrimary, sourceSecondary, allMask);
+                    var wholeNoSourceArtifacts = MeasureShapeArtifacts(noSource.mesh, noSourceBase, noSourceSecondary, allMask);
+                    var wholeDifference = MeasureDeltaDifference(noSource.mesh, noSourceSecondary, sourceSecondary, allMask);
+                    var wholePositionDifference = MeasureShapePositionDifference(
+                        source.mesh,
+                        SumDeltas(sourcePrimary, sourceSecondary),
+                        noSource.mesh,
+                        SumDeltas(noSourceBase, noSourceSecondary),
+                        allMask);
+                    var mainShellRawDifference = MeasureDeltaDifference(noSource.mesh, noSourceRaw, sourceRaw, mainShellMask);
+                    var mainShellRawPositionDifference = MeasureShapePositionDifference(
+                        source.mesh,
+                        SumDeltas(sourcePrimary, sourceRaw),
+                        noSource.mesh,
+                        SumDeltas(noSourceBase, noSourceRaw),
+                        mainShellMask);
+                    var mainShellSourceArtifacts = MeasureShapeArtifacts(source.mesh, sourcePrimary, sourceSecondary, mainShellMask);
+                    var mainShellNoSourceArtifacts = MeasureShapeArtifacts(noSource.mesh, noSourceBase, noSourceSecondary, mainShellMask);
+                    var mainShellDifference = MeasureDeltaDifference(noSource.mesh, noSourceSecondary, sourceSecondary, mainShellMask);
+                    var mainShellPositionDifference = MeasureShapePositionDifference(
+                        source.mesh,
+                        SumDeltas(sourcePrimary, sourceSecondary),
+                        noSource.mesh,
+                        SumDeltas(noSourceBase, noSourceSecondary),
+                        mainShellMask);
+
+                    string summary =
+                        $"components={components}, " +
+                        $"primaryPositionNoSourceVsSource={primaryPositionDifference}, " +
+                        $"projectionNoSourceVsSource={projectionDifference}, " +
+                        $"wholeRawNoSourceVsSource={wholeRawDifference}, " +
+                        $"wholeRawPositionNoSourceVsSource={wholeRawPositionDifference}, " +
+                        $"wholeSourceArtifacts={wholeSourceArtifacts}, wholeNoSourceArtifacts={wholeNoSourceArtifacts}, " +
+                        $"wholeNoSourceVsSource={wholeDifference}, wholePositionNoSourceVsSource={wholePositionDifference}, " +
+                        $"mainShellRawNoSourceVsSource={mainShellRawDifference}, " +
+                        $"mainShellRawPositionNoSourceVsSource={mainShellRawPositionDifference}, " +
+                        $"mainShellSourceArtifacts={mainShellSourceArtifacts}, mainShellNoSourceArtifacts={mainShellNoSourceArtifacts}, " +
+                        $"mainShellNoSourceVsSource={mainShellDifference}, mainShellPositionNoSourceVsSource={mainShellPositionDifference}";
+                    Debug.Log($"[ReFit Tests] Real hoodie source/no-source whole-hoodie artifact metrics: {summary}");
+
+                    AssertLessOrEqual(wholePositionDifference.p95, 0.003f,
+                        "The no-source hoodie final surface drifted from the source-FBX workflow across the whole hoodie.\n" + summary);
+                    AssertLessOrEqual(wholePositionDifference.p99, 0.006f,
+                        "The no-source hoodie final surface has localized whole-hoodie drift compared with the source-FBX workflow.\n" + summary);
+                    AssertLessOrEqual(mainShellPositionDifference.p95, 0.003f,
+                        "The no-source hoodie final surface drifted from the source-FBX workflow on the main hoodie shell.\n" + summary);
+                    AssertLessOrEqual(mainShellPositionDifference.p99, 0.006f,
+                        "The no-source hoodie final surface has localized main-shell drift compared with the source-FBX workflow.\n" + summary);
+                    AssertLessOrEqual(wholeNoSourceArtifacts.maxCorrectionJump,
+                        Mathf.Max(0.025f, wholeSourceArtifacts.maxCorrectionJump * 1.6f),
+                        "The no-source hoodie blendshape introduces a larger whole-hoodie edge jump than the source-FBX workflow.\n" + summary);
+                    AssertLessOrEqual(mainShellNoSourceArtifacts.maxCorrectionJump,
+                        Mathf.Max(0.025f, mainShellSourceArtifacts.maxCorrectionJump * 1.6f),
+                        "The no-source hoodie blendshape introduces a larger main-shell edge jump than the source-FBX workflow.\n" + summary);
+                }
+                finally
+                {
+                    // The fitted renderer is owned by fixture roots after ApplyToScene; disposing the fixture cleans it up.
+                    DestroyComputationMesh(noSource);
+                    DestroyComputationMesh(source);
+                }
+            }
+        }
+
+        private static void RealHoodie_NoSourceStaging_PreservesTargetAuthoredPose()
+        {
+            if (!RealHoodieArtifactFixture.CanLoadRequiredAssets(out var missingAsset))
+            {
+                Debug.LogWarning(
+                    $"[ReFit Tests] Skipping real hoodie no-source staging pose regression; missing '{missingAsset}'.");
+                return;
+            }
+
+            using (var fixture = RealHoodieArtifactFixture.Create())
+            {
+                var request = BuildRealHoodieNoSourceRequest(fixture, fixture.hoodie);
+                ApplyHighTightnessSettings(request.settings);
+
+                var report = new ReFitReport();
+                var beforePose = CaptureBonePose(fixture.targetBody);
+
+                using (var stage = PoseNormalizer.CreateStage(request, report))
+                {
+                    AssertTrue(stage != null, "Could not create a no-source stage for the real hoodie.\n" + FormatReport(report));
+                    AssertTrue(stage.sourceIsTarget,
+                        "No-source blendshape mode should stage the target as both source and target.");
+                    AssertTrue(!stage.sourceNeutralPoseApplied && !stage.targetNeutralPoseApplied,
+                        "No-source staging should preserve the authored pose instead of applying a humanoid neutral pose.");
+
+                    var poseDifference = MeasureBonePoseDifference(beforePose, stage.targetBody);
+
+                    Debug.Log(
+                        $"[ReFit Tests] Real hoodie no-source staging pose parity: " +
+                        $"bones={poseDifference.bones}, maxPosition={poseDifference.maxPosition * 1000f:0.###}mm, " +
+                        $"maxRotation={poseDifference.maxRotation:0.###}deg, report={FormatReport(report)}");
+
+                    AssertLessOrEqual(poseDifference.maxPosition, 0.00001f,
+                        "No-source staging changed the target body authored bone positions.\n" + FormatReport(report));
+                    AssertLessOrEqual(poseDifference.maxRotation, 0.001f,
+                        "No-source staging changed the target body authored bone rotations.\n" + FormatReport(report));
+                }
+            }
+        }
+
         private static void MeshAndBlendshape_ArmatureReplacementDisabled_PreservesRootBone()
         {
             using (var fixture = ReFitTestFixture.Create())
@@ -1455,6 +1731,120 @@ namespace Orbiters.ReFit.Editor.Tests
                 }
                 finally
                 {
+                    DestroyComputationMesh(comp);
+                }
+            }
+        }
+
+        private static void ArmatureReplacement_RebindsSerializedComponentBoneReferences()
+        {
+            using (var fixture = ReFitTestFixture.Create())
+            {
+                var accessory = fixture.sourceSpaceAccessory;
+                var oldHips = accessory.hips;
+                var oldChest = accessory.chest;
+                var oldLeftArm = accessory.bones[(int)RigBone.LeftUpperArm];
+                oldChest.gameObject.AddComponent<UnityEngine.Animations.RotationConstraint>();
+                var stringRoot = NewChild(oldChest, "String L Root");
+                stringRoot.localPosition = new Vector3(0.03f, -0.18f, 0.04f);
+                stringRoot.localRotation = Quaternion.Euler(4f, 8f, 2f);
+                stringRoot.localScale = new Vector3(1f, 0.92f, 1.08f);
+                var stringTip = NewChild(stringRoot, "String L Tip");
+                stringTip.localPosition = new Vector3(0.01f, -0.22f, 0.02f);
+                stringTip.localRotation = Quaternion.Euler(-3f, 2f, 0f);
+                stringTip.localScale = Vector3.one * 0.85f;
+
+                var unrelated = NewChild(fixture.target.root.transform, "Unrelated Reference");
+                var probe = NewChild(accessory.root.transform, "Serialized Bone References")
+                    .gameObject.AddComponent<SerializedBoneReferenceProbe>();
+                probe.rootTransform = oldChest;
+                probe.boneGameObject = oldLeftArm.gameObject;
+                probe.boneArray = new[] { oldHips, stringTip };
+                probe.boneList = new List<Transform> { oldChest, stringRoot };
+                probe.nested = new SerializedBoneReferenceProbe.NestedReferences
+                {
+                    transform = stringTip,
+                    gameObject = oldHips.gameObject
+                };
+                probe.unrelatedTransform = unrelated;
+
+                var stringRootLocalPosition = stringRoot.localPosition;
+                var stringRootLocalRotation = stringRoot.localRotation;
+                var stringRootLocalScale = stringRoot.localScale;
+                var stringTipLocalPosition = stringTip.localPosition;
+                var stringTipLocalRotation = stringTip.localRotation;
+                var stringTipLocalScale = stringTip.localScale;
+
+                var request = BuildMeshAndBlendshapeRequest(fixture, accessory.renderer, true);
+                var comp = new ReFitEngine().Run(request);
+                bool touchedUnityComponentIdentity = false;
+                Application.LogCallback logHandler = (condition, stackTrace, type) =>
+                {
+                    if (!string.IsNullOrEmpty(condition) &&
+                        condition.IndexOf("does not reference component", StringComparison.OrdinalIgnoreCase) >= 0)
+                        touchedUnityComponentIdentity = true;
+                };
+                Application.logMessageReceived += logHandler;
+                try
+                {
+                    AssertComputationSucceeded(comp);
+                    AssertTrue(comp.assetBoneToNewBoneIndices != null && comp.assetBoneToNewBoneIndices.Length == accessory.bones.Length,
+                        "The computation did not preserve the original asset-bone remap for editor component rebinding.");
+
+                    var applied = ReFitAssetPipeline.ApplyToScene(request, comp, comp.report);
+                    AssertTrue(applied != null, "ApplyToScene returned no renderer.");
+
+                    var rebuiltHips = FindRendererBone(applied, "Hips");
+                    var rebuiltChest = FindRendererBone(applied, "Chest");
+                    var rebuiltLeftArm = FindRendererBone(applied, "LeftUpperArm");
+                    AssertTrue(rebuiltHips != null && rebuiltChest != null && rebuiltLeftArm != null,
+                        "The rebuilt armature is missing expected mapped bones.");
+
+                    AssertSame(probe.rootTransform, rebuiltChest,
+                        "A direct Transform field still points to the old chest bone instead of the rebuilt chest.");
+                    AssertSame(probe.boneGameObject, rebuiltLeftArm.gameObject,
+                        "A GameObject field still points to the old arm bone object instead of the rebuilt arm bone object.");
+                    AssertSame(probe.boneArray[0], rebuiltHips,
+                        "A Transform array element still points to the old hips bone.");
+                    AssertSame(probe.boneList[0], rebuiltChest,
+                        "A Transform list element still points to the old chest bone.");
+                    AssertSame(probe.nested.gameObject, rebuiltHips.gameObject,
+                        "A nested serialized GameObject field still points to the old hips object.");
+                    AssertSame(probe.unrelatedTransform, unrelated,
+                        "The component reference rebinder changed an unrelated scene transform reference.");
+
+                    AssertTrue(probe.boneList[1] != null && probe.boneList[1].name == "String L Root",
+                        "A non-skinned helper root reference was not rebound to a rebuilt helper transform.");
+                    AssertTrue(probe.boneArray[1] != null && probe.boneArray[1].name == "String L Tip",
+                        "A nested non-skinned helper reference was not rebound to a rebuilt helper transform.");
+                    AssertSame(probe.nested.transform, probe.boneArray[1],
+                        "Nested and array references to the same old helper were rebound to different rebuilt helpers.");
+                    AssertSame(probe.boneList[1].parent, rebuiltChest,
+                        "The rebuilt helper root was not parented under the mapped rebuilt chest bone.");
+                    AssertSame(probe.boneArray[1].parent, probe.boneList[1],
+                        "The rebuilt helper tip did not preserve its helper hierarchy.");
+                    AssertLessOrEqual(Vector3.Distance(probe.boneList[1].localPosition, stringRootLocalPosition), 0.0001f,
+                        "The rebuilt helper root did not preserve its local position.");
+                    AssertLessOrEqual(Quaternion.Angle(probe.boneList[1].localRotation, stringRootLocalRotation), 0.01f,
+                        "The rebuilt helper root did not preserve its local rotation.");
+                    AssertLessOrEqual(Vector3.Distance(probe.boneList[1].localScale, stringRootLocalScale), 0.0001f,
+                        "The rebuilt helper root did not preserve its local scale.");
+                    AssertLessOrEqual(Vector3.Distance(probe.boneArray[1].localPosition, stringTipLocalPosition), 0.0001f,
+                        "The rebuilt helper tip did not preserve its local position.");
+                    AssertLessOrEqual(Quaternion.Angle(probe.boneArray[1].localRotation, stringTipLocalRotation), 0.01f,
+                        "The rebuilt helper tip did not preserve its local rotation.");
+                    AssertLessOrEqual(Vector3.Distance(probe.boneArray[1].localScale, stringTipLocalScale), 0.0001f,
+                        "The rebuilt helper tip did not preserve its local scale.");
+                    AssertReportContains(comp.report, "component-bone-references-rebound",
+                        "The armature replacement did not report rebinding serialized component bone references.");
+                    AssertTrue(!touchedUnityComponentIdentity,
+                        "The component reference rebinder modified Unity internal component identity fields on stale armature components.");
+                    AssertTrue(oldHips == null && oldChest == null && oldLeftArm == null,
+                        "The stale source-space accessory skeleton was left in the scene after armature replacement.");
+                }
+                finally
+                {
+                    Application.logMessageReceived -= logHandler;
                     DestroyComputationMesh(comp);
                 }
             }
@@ -2008,6 +2398,43 @@ namespace Orbiters.ReFit.Editor.Tests
             };
         }
 
+        private static ReFitRequest BuildRealHoodieSourceRequest(RealHoodieArtifactFixture fixture)
+        {
+            var request = new ReFitRequest
+            {
+                mode = ReFitMode.MeshAndBlendshape,
+                assetRenderer = fixture.hoodie,
+                sourceAvatar = fixture.sourceAvatar,
+                targetAvatar = fixture.targetAvatar,
+                sourceBodyRenderer = fixture.sourceBody,
+                targetBodyRenderer = fixture.targetBody,
+                targetBlendshape = RealTargetShapeName,
+                settings = CreateDeterministicSettings(true)
+            };
+            request.settings.captureProjectionDebug = true;
+            request.settings.maxProjectionDebugGroups = 0;
+            return request;
+        }
+
+        private static ReFitRequest BuildRealHoodieNoSourceRequest(
+            RealHoodieArtifactFixture fixture,
+            SkinnedMeshRenderer fittedRenderer)
+        {
+            var request = new ReFitRequest
+            {
+                mode = ReFitMode.Blendshape,
+                assetRenderer = fittedRenderer,
+                targetAvatar = fixture.targetAvatar,
+                sourceBodyRenderer = fixture.targetBody,
+                targetBodyRenderer = fixture.targetBody,
+                targetBlendshape = RealTargetShapeName,
+                settings = CreateDeterministicSettings(false)
+            };
+            request.settings.captureProjectionDebug = true;
+            request.settings.maxProjectionDebugGroups = 0;
+            return request;
+        }
+
         private static ReFitSettings CreateDeterministicSettings(bool replaceArmature)
         {
             return new ReFitSettings
@@ -2145,6 +2572,247 @@ namespace Orbiters.ReFit.Editor.Tests
             return max;
         }
 
+        private static Vector3[] SumDeltas(Vector3[] a, Vector3[] b)
+        {
+            AssertTrue(a != null && b != null && a.Length == b.Length,
+                "Cannot sum delta arrays with different lengths.");
+
+            var sum = new Vector3[a.Length];
+            for (int i = 0; i < sum.Length; i++)
+                sum[i] = a[i] + b[i];
+            return sum;
+        }
+
+        private static DeltaDifferenceMetrics MeasureDeltaDifference(
+            Mesh mesh,
+            Vector3[] a,
+            Vector3[] b,
+            Func<Vector3, bool> contains)
+        {
+            AssertTrue(mesh != null, "Cannot measure delta difference on a null mesh.");
+            AssertTrue(a != null && b != null && a.Length == mesh.vertexCount && b.Length == mesh.vertexCount,
+                "Delta difference arrays must match the mesh vertex count.");
+            AssertTrue(contains != null, "Delta difference measurement requires a vertex predicate.");
+
+            var vertices = mesh.vertices;
+            var distances = new List<float>();
+            var metrics = new DeltaDifferenceMetrics();
+            double total = 0d;
+            for (int i = 0; i < vertices.Length; i++)
+            {
+                if (!contains(vertices[i]))
+                    continue;
+
+                float distance = (a[i] - b[i]).magnitude;
+                metrics.vertices++;
+                total += distance;
+                metrics.max = Mathf.Max(metrics.max, distance);
+                distances.Add(distance);
+            }
+
+            AssertTrue(metrics.vertices > 0, "No vertices matched the requested delta difference region.");
+            distances.Sort();
+            metrics.average = (float)(total / metrics.vertices);
+            metrics.p95 = Percentile(distances, 0.95f);
+            metrics.p99 = Percentile(distances, 0.99f);
+            return metrics;
+        }
+
+        private static DeltaDifferenceMetrics MeasureDeltaDifference(
+            Mesh mesh,
+            Vector3[] a,
+            Vector3[] b,
+            bool[] mask)
+        {
+            AssertTrue(mesh != null, "Cannot measure masked delta difference on a null mesh.");
+            AssertTrue(a != null && b != null && mask != null &&
+                       a.Length == mesh.vertexCount && b.Length == mesh.vertexCount && mask.Length == mesh.vertexCount,
+                "Masked delta difference arrays must match the mesh vertex count.");
+
+            var distances = new List<float>();
+            var metrics = new DeltaDifferenceMetrics();
+            double total = 0d;
+            for (int i = 0; i < mask.Length; i++)
+            {
+                if (!mask[i])
+                    continue;
+
+                float distance = (a[i] - b[i]).magnitude;
+                metrics.vertices++;
+                total += distance;
+                metrics.max = Mathf.Max(metrics.max, distance);
+                distances.Add(distance);
+            }
+
+            AssertTrue(metrics.vertices > 0, "No vertices matched the requested masked delta difference region.");
+            distances.Sort();
+            metrics.average = (float)(total / metrics.vertices);
+            metrics.p95 = Percentile(distances, 0.95f);
+            metrics.p99 = Percentile(distances, 0.99f);
+            return metrics;
+        }
+
+        private static DeltaDifferenceMetrics MeasureShapePositionDifference(
+            Mesh aMesh,
+            Vector3[] aDeltas,
+            Mesh bMesh,
+            Vector3[] bDeltas,
+            bool[] mask)
+        {
+            AssertTrue(aMesh != null && bMesh != null, "Cannot measure shaped position difference on a null mesh.");
+            AssertTrue(aMesh.vertexCount == bMesh.vertexCount,
+                $"Cannot compare shaped positions with different vertex counts: {aMesh.vertexCount} vs {bMesh.vertexCount}.");
+            AssertTrue(aDeltas != null && bDeltas != null && mask != null &&
+                       aDeltas.Length == aMesh.vertexCount &&
+                       bDeltas.Length == bMesh.vertexCount &&
+                       mask.Length == aMesh.vertexCount,
+                "Shaped position difference arrays must match the mesh vertex count.");
+
+            var aVertices = aMesh.vertices;
+            var bVertices = bMesh.vertices;
+            var distances = new List<float>();
+            var metrics = new DeltaDifferenceMetrics();
+            double total = 0d;
+            for (int i = 0; i < mask.Length; i++)
+            {
+                if (!mask[i])
+                    continue;
+
+                float distance = (aVertices[i] + aDeltas[i] - bVertices[i] - bDeltas[i]).magnitude;
+                metrics.vertices++;
+                total += distance;
+                metrics.max = Mathf.Max(metrics.max, distance);
+                distances.Add(distance);
+            }
+
+            AssertTrue(metrics.vertices > 0, "No vertices matched the requested shaped position difference region.");
+            distances.Sort();
+            metrics.average = (float)(total / metrics.vertices);
+            metrics.p95 = Percentile(distances, 0.95f);
+            metrics.p99 = Percentile(distances, 0.99f);
+            return metrics;
+        }
+
+        private static DeltaDifferenceMetrics MeasureWorldPointDifference(Vector3[] a, Vector3[] b)
+        {
+            AssertTrue(a != null && b != null && a.Length == b.Length,
+                "World point arrays must be non-null and have matching lengths.");
+
+            var distances = new List<float>();
+            var metrics = new DeltaDifferenceMetrics();
+            double total = 0d;
+            for (int i = 0; i < a.Length; i++)
+            {
+                float distance = (a[i] - b[i]).magnitude;
+                metrics.vertices++;
+                total += distance;
+                metrics.max = Mathf.Max(metrics.max, distance);
+                distances.Add(distance);
+            }
+
+            AssertTrue(metrics.vertices > 0, "Cannot measure an empty world point difference.");
+            distances.Sort();
+            metrics.average = (float)(total / metrics.vertices);
+            metrics.p95 = Percentile(distances, 0.95f);
+            metrics.p99 = Percentile(distances, 0.99f);
+            return metrics;
+        }
+
+        private static BonePoseSnapshot CaptureBonePose(SkinnedMeshRenderer renderer)
+        {
+            AssertTrue(renderer != null, "Cannot capture a bone pose from a null renderer.");
+            AssertTrue(renderer.bones != null && renderer.bones.Length > 0,
+                $"Renderer '{renderer.name}' has no bones to compare.");
+
+            var snapshot = new BonePoseSnapshot
+            {
+                positions = new Vector3[renderer.bones.Length],
+                rotations = new Quaternion[renderer.bones.Length]
+            };
+
+            for (int i = 0; i < renderer.bones.Length; i++)
+            {
+                var bone = renderer.bones[i];
+                snapshot.positions[i] = bone != null ? bone.position : Vector3.zero;
+                snapshot.rotations[i] = bone != null ? bone.rotation : Quaternion.identity;
+            }
+
+            return snapshot;
+        }
+
+        private static BonePoseDifferenceMetrics MeasureBonePoseDifference(
+            BonePoseSnapshot before,
+            SkinnedMeshRenderer afterRenderer)
+        {
+            AssertTrue(before.positions != null && before.rotations != null,
+                "Cannot compare an empty bone pose snapshot.");
+            AssertTrue(afterRenderer != null && afterRenderer.bones != null,
+                "Cannot compare staged bone pose against a missing renderer.");
+            AssertTrue(before.positions.Length == afterRenderer.bones.Length,
+                $"Bone count changed during staging: {before.positions.Length} vs {afterRenderer.bones.Length}.");
+
+            var metrics = new BonePoseDifferenceMetrics();
+            for (int i = 0; i < afterRenderer.bones.Length; i++)
+            {
+                var bone = afterRenderer.bones[i];
+                if (bone == null)
+                    continue;
+
+                metrics.bones++;
+                metrics.maxPosition = Mathf.Max(metrics.maxPosition, Vector3.Distance(before.positions[i], bone.position));
+                metrics.maxRotation = Mathf.Max(metrics.maxRotation, Quaternion.Angle(before.rotations[i], bone.rotation));
+            }
+
+            AssertTrue(metrics.bones > 0, "No staged bones were available for pose comparison.");
+            return metrics;
+        }
+
+        private static ProjectionDebugDifferenceMetrics MeasureProjectionDebugDifference(
+            ReFitProjectionDebugData source,
+            ReFitProjectionDebugData noSource)
+        {
+            AssertTrue(source != null && source.points != null, "Source workflow did not capture projection debug data.");
+            AssertTrue(noSource != null && noSource.points != null, "No-source workflow did not capture projection debug data.");
+            AssertTrue(source.points.Length == noSource.points.Length,
+                $"Projection debug point count differs: {source.points.Length} vs {noSource.points.Length}.");
+
+            var hitDistances = new List<float>(source.points.Length);
+            var falloffDistances = new List<float>(source.points.Length);
+            var metrics = new ProjectionDebugDifferenceMetrics();
+            double hitTotal = 0d;
+            double falloffTotal = 0d;
+            for (int i = 0; i < source.points.Length; i++)
+            {
+                var a = source.points[i];
+                var b = noSource.points[i];
+                AssertTrue(a.groupIndex == b.groupIndex,
+                    $"Projection debug group index differs at {i}: {a.groupIndex} vs {b.groupIndex}.");
+
+                float hit = (a.targetHitLocalPoint - b.targetHitLocalPoint).magnitude;
+                float falloff = Mathf.Abs(a.falloff - b.falloff);
+                float bary = (a.targetBarycentric - b.targetBarycentric).magnitude;
+                metrics.groups++;
+                hitTotal += hit;
+                falloffTotal += falloff;
+                metrics.maxTargetHitDistance = Mathf.Max(metrics.maxTargetHitDistance, hit);
+                metrics.maxFalloffDifference = Mathf.Max(metrics.maxFalloffDifference, falloff);
+                metrics.maxTargetBarycentricDifference = Mathf.Max(metrics.maxTargetBarycentricDifference, bary);
+                if (a.targetTriangle != b.targetTriangle)
+                    metrics.targetTriangleMismatches++;
+                hitDistances.Add(hit);
+                falloffDistances.Add(falloff);
+            }
+
+            AssertTrue(metrics.groups > 0, "Projection debug comparison did not include any groups.");
+            hitDistances.Sort();
+            falloffDistances.Sort();
+            metrics.averageTargetHitDistance = (float)(hitTotal / metrics.groups);
+            metrics.p95TargetHitDistance = Percentile(hitDistances, 0.95f);
+            metrics.averageFalloffDifference = (float)(falloffTotal / metrics.groups);
+            metrics.p95FalloffDifference = Percentile(falloffDistances, 0.95f);
+            return metrics;
+        }
+
         private static float MaxMagnitudeInRegion(Mesh mesh, string shapeName, Func<Vector3, bool> contains)
         {
             var vertices = mesh.vertices;
@@ -2191,6 +2859,25 @@ namespace Orbiters.ReFit.Editor.Tests
             AssertTrue(shapeIndex >= 0, $"Mesh '{mesh.name}' does not contain blendshape '{shapeName}'.");
             int frame = mesh.GetBlendShapeFrameCount(shapeIndex) - 1;
             AssertTrue(frame >= 0, $"Blendshape '{shapeName}' has no frames.");
+            var deltas = new Vector3[mesh.vertexCount];
+            mesh.GetBlendShapeFrameVertices(shapeIndex, frame, deltas, null, null);
+            return deltas;
+        }
+
+        private static Vector3[] OptionalBlendShapeDeltas(Mesh mesh, string shapeName)
+        {
+            AssertTrue(mesh != null, "Cannot read optional blendshape deltas from a null mesh.");
+            if (string.IsNullOrEmpty(shapeName))
+                return null;
+
+            int shapeIndex = mesh.GetBlendShapeIndex(shapeName);
+            if (shapeIndex < 0)
+                return null;
+
+            int frame = mesh.GetBlendShapeFrameCount(shapeIndex) - 1;
+            if (frame < 0)
+                return null;
+
             var deltas = new Vector3[mesh.vertexCount];
             mesh.GetBlendShapeFrameVertices(shapeIndex, frame, deltas, null, null);
             return deltas;
@@ -2564,6 +3251,140 @@ namespace Orbiters.ReFit.Editor.Tests
             }
 
             return MeasureCorrectionArtifacts(reference, mesh.triangles, shapeDeltas, mask);
+        }
+
+        private static CorrectionArtifactMetrics MeasureShapeArtifacts(
+            Mesh mesh,
+            Vector3[] baseDeltas,
+            Vector3[] shapeDeltas,
+            bool[] mask)
+        {
+            AssertTrue(mesh != null, "Cannot measure masked shape artifacts on a null mesh.");
+            AssertTrue(shapeDeltas != null && shapeDeltas.Length == mesh.vertexCount,
+                "Masked shape artifact deltas must match the mesh vertex count.");
+            AssertTrue(baseDeltas == null || baseDeltas.Length == mesh.vertexCount,
+                "Masked shape artifact base deltas must match the mesh vertex count when provided.");
+            AssertTrue(mask != null && mask.Length == mesh.vertexCount,
+                "Masked shape artifact mask must match the mesh vertex count.");
+
+            var vertices = mesh.vertices;
+            var reference = new Vector3[vertices.Length];
+            for (int i = 0; i < vertices.Length; i++)
+                reference[i] = vertices[i] + (baseDeltas != null ? baseDeltas[i] : Vector3.zero);
+
+            return MeasureCorrectionArtifacts(reference, mesh.triangles, shapeDeltas, mask);
+        }
+
+        private static bool[] BuildAllVertexMask(Mesh mesh)
+        {
+            AssertTrue(mesh != null, "Cannot build an all-vertex mask for a null mesh.");
+            var mask = new bool[mesh.vertexCount];
+            for (int i = 0; i < mask.Length; i++)
+                mask[i] = true;
+            return mask;
+        }
+
+        private static bool[] BuildLargestComponentMask(
+            Mesh mesh,
+            out ComponentSelectionMetrics metrics)
+        {
+            AssertTrue(mesh != null, "Cannot build a largest-component mask for a null mesh.");
+            int vertexCount = mesh.vertexCount;
+            var parent = new int[vertexCount];
+            var size = new int[vertexCount];
+            for (int i = 0; i < vertexCount; i++)
+            {
+                parent[i] = i;
+                size[i] = 1;
+            }
+
+            var triangles = mesh.triangles;
+            for (int t = 0; t + 2 < triangles.Length; t += 3)
+            {
+                int a = triangles[t];
+                int b = triangles[t + 1];
+                int c = triangles[t + 2];
+                if (a < 0 || b < 0 || c < 0 || a >= vertexCount || b >= vertexCount || c >= vertexCount)
+                    continue;
+
+                UnionComponent(parent, size, a, b);
+                UnionComponent(parent, size, b, c);
+                UnionComponent(parent, size, c, a);
+            }
+
+            var componentSizes = new Dictionary<int, int>();
+            for (int i = 0; i < vertexCount; i++)
+            {
+                int root = FindComponentRoot(parent, i);
+                int current;
+                componentSizes.TryGetValue(root, out current);
+                componentSizes[root] = current + 1;
+            }
+
+            metrics = new ComponentSelectionMetrics
+            {
+                minComponentSize = int.MaxValue,
+                maxComponentSize = 0
+            };
+            int largestRoot = -1;
+            int largestSize = 0;
+            foreach (var pair in componentSizes)
+            {
+                int componentSize = pair.Value;
+                metrics.totalComponents++;
+                metrics.minComponentSize = Mathf.Min(metrics.minComponentSize, componentSize);
+                metrics.maxComponentSize = Mathf.Max(metrics.maxComponentSize, componentSize);
+
+                if (componentSize > largestSize)
+                {
+                    largestSize = componentSize;
+                    largestRoot = pair.Key;
+                }
+            }
+
+            if (metrics.totalComponents == 0)
+                metrics.minComponentSize = 0;
+
+            AssertTrue(largestRoot >= 0, "Could not find a connected component in the hoodie mesh.");
+            metrics.componentCount = 1;
+            metrics.vertices = largestSize;
+            var mask = new bool[vertexCount];
+            for (int i = 0; i < vertexCount; i++)
+            {
+                int root = FindComponentRoot(parent, i);
+                mask[i] = root == largestRoot;
+            }
+
+            return mask;
+        }
+
+        private static int FindComponentRoot(int[] parent, int index)
+        {
+            while (parent[index] != index)
+            {
+                parent[index] = parent[parent[index]];
+                index = parent[index];
+            }
+
+            return index;
+        }
+
+        private static void UnionComponent(int[] parent, int[] size, int a, int b)
+        {
+            int rootA = FindComponentRoot(parent, a);
+            int rootB = FindComponentRoot(parent, b);
+            if (rootA == rootB)
+                return;
+
+            if (size[rootA] < size[rootB])
+            {
+                int tmp = rootA;
+                rootA = rootB;
+                rootB = tmp;
+            }
+
+            parent[rootB] = rootA;
+            size[rootA] += size[rootB];
         }
 
         private static SurfaceRelationMetrics MeasureSurfaceFollowRelation(
@@ -3396,6 +4217,27 @@ namespace Orbiters.ReFit.Editor.Tests
             renderer.SetBlendShapeWeight(shapeIndex, weight);
         }
 
+        private static void SetSecondaryBlendShapeWeights(
+            SkinnedMeshRenderer renderer,
+            string[] shapeNames,
+            float weight)
+        {
+            AssertTrue(renderer != null && renderer.sharedMesh != null,
+                "Cannot set secondary blendshape weights on a missing renderer.");
+            if (shapeNames == null)
+                return;
+
+            for (int i = 0; i < shapeNames.Length; i++)
+            {
+                if (string.IsNullOrEmpty(shapeNames[i]))
+                    continue;
+
+                int shapeIndex = renderer.sharedMesh.GetBlendShapeIndex(shapeNames[i]);
+                AssertTrue(shapeIndex >= 0, $"Mesh '{renderer.sharedMesh.name}' does not contain blendshape '{shapeNames[i]}'.");
+                renderer.SetBlendShapeWeight(shapeIndex, weight);
+            }
+        }
+
         private static bool RendererHasBone(SkinnedMeshRenderer renderer, string boneName)
         {
             var bones = renderer.bones;
@@ -3622,6 +4464,51 @@ namespace Orbiters.ReFit.Editor.Tests
             }
         }
 
+        private struct DeltaDifferenceMetrics
+        {
+            public int vertices;
+            public float average;
+            public float p95;
+            public float p99;
+            public float max;
+
+            public override string ToString()
+            {
+                return $"vertices={vertices} avg={average * 1000f:0.###}mm p95={p95 * 1000f:0.###}mm p99={p99 * 1000f:0.###}mm max={max * 1000f:0.###}mm";
+            }
+        }
+
+        private struct BonePoseSnapshot
+        {
+            public Vector3[] positions;
+            public Quaternion[] rotations;
+        }
+
+        private struct BonePoseDifferenceMetrics
+        {
+            public int bones;
+            public float maxPosition;
+            public float maxRotation;
+        }
+
+        private struct ProjectionDebugDifferenceMetrics
+        {
+            public int groups;
+            public float averageTargetHitDistance;
+            public float p95TargetHitDistance;
+            public float maxTargetHitDistance;
+            public float averageFalloffDifference;
+            public float p95FalloffDifference;
+            public float maxFalloffDifference;
+            public int targetTriangleMismatches;
+            public float maxTargetBarycentricDifference;
+
+            public override string ToString()
+            {
+                return $"groups={groups} hitAvg={averageTargetHitDistance * 1000f:0.###}mm hitP95={p95TargetHitDistance * 1000f:0.###}mm hitMax={maxTargetHitDistance * 1000f:0.###}mm falloffAvg={averageFalloffDifference:0.###} falloffP95={p95FalloffDifference:0.###} falloffMax={maxFalloffDifference:0.###} targetTriangleMismatches={targetTriangleMismatches} baryMax={maxTargetBarycentricDifference:0.######}";
+            }
+        }
+
         private struct TriangleQualityMetrics
         {
             public int checkedTriangles;
@@ -3646,6 +4533,11 @@ namespace Orbiters.ReFit.Editor.Tests
             public float maxCorrection;
             public float maxCorrectionJump;
             public float maxEdgeRatio;
+
+            public override string ToString()
+            {
+                return $"vertices={vertices} edges={edges} min={minCorrection * 1000f:0.###}mm avg={averageCorrection * 1000f:0.###}mm max={maxCorrection * 1000f:0.###}mm jump={maxCorrectionJump * 1000f:0.###}mm edgeRatio={maxEdgeRatio:0.###}";
+            }
         }
 
         private struct SurfaceRelationMetrics
@@ -3660,6 +4552,170 @@ namespace Orbiters.ReFit.Editor.Tests
             public float averageSupportResidual;
             public float p95SupportResidual;
             public float maxSupportResidual;
+
+            public override string ToString()
+            {
+                return $"samples={samples} baseAvg={averageBaseDistance * 1000f:0.###}mm driftAvg={averageDistanceDrift * 1000f:0.###}mm driftP95={p95DistanceDrift * 1000f:0.###}mm residualAvg={averageSupportResidual * 1000f:0.###}mm residualP95={p95SupportResidual * 1000f:0.###}mm residualMax={maxSupportResidual * 1000f:0.###}mm";
+            }
+        }
+
+        private struct ComponentSelectionMetrics
+        {
+            public int totalComponents;
+            public int componentCount;
+            public int vertices;
+            public int minComponentSize;
+            public int maxComponentSize;
+
+            public override string ToString()
+            {
+                return $"selected={componentCount}/{totalComponents} vertices={vertices} componentSizeRange={minComponentSize}..{maxComponentSize}";
+            }
+        }
+
+        private sealed class RealHoodieArtifactFixture : IDisposable
+        {
+            public GameObject sourceAvatar;
+            public GameObject targetAvatar;
+            public GameObject hoodieRoot;
+            public SkinnedMeshRenderer sourceBody;
+            public SkinnedMeshRenderer targetBody;
+            public SkinnedMeshRenderer hoodie;
+
+            public static bool CanLoadRequiredAssets(out string missingAsset)
+            {
+                if (AssetDatabase.LoadAssetAtPath<GameObject>(RealHoodiePath) == null)
+                {
+                    missingAsset = RealHoodiePath;
+                    return false;
+                }
+                if (AssetDatabase.LoadAssetAtPath<GameObject>(RealSourceAvatarPath) == null)
+                {
+                    missingAsset = RealSourceAvatarPath;
+                    return false;
+                }
+                if (AssetDatabase.LoadAssetAtPath<GameObject>(RealTargetAvatarPath) == null)
+                {
+                    missingAsset = RealTargetAvatarPath;
+                    return false;
+                }
+
+                missingAsset = null;
+                return true;
+            }
+
+            public static RealHoodieArtifactFixture Create()
+            {
+                var fixture = new RealHoodieArtifactFixture
+                {
+                    sourceAvatar = InstantiateAssetRoot(RealSourceAvatarPath, "__ReFitReal_SourceDefaultMasculineCanine"),
+                    targetAvatar = InstantiateAssetRoot(RealTargetAvatarPath, "__ReFitReal_TargetMasculineCanine"),
+                    hoodieRoot = InstantiateAssetRoot(RealHoodiePath, "__ReFitReal_Hoodie")
+                };
+
+                fixture.sourceBody = RequireRenderer(fixture.sourceAvatar, "Body", null);
+                fixture.targetBody = RequireRenderer(fixture.targetAvatar, "Body", RealTargetShapeName);
+                fixture.hoodie = RequireRenderer(fixture.hoodieRoot, "Hoodie", null);
+
+                ResetBlendShapeWeights(fixture.sourceBody);
+                ResetBlendShapeWeights(fixture.targetBody);
+                ResetBlendShapeWeights(fixture.hoodie);
+                return fixture;
+            }
+
+            private static GameObject InstantiateAssetRoot(string assetPath, string name)
+            {
+                var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(assetPath);
+                AssertTrue(prefab != null, $"Missing asset at '{assetPath}'.");
+                var root = Object.Instantiate(prefab);
+                root.name = name;
+                MarkHideAndDontSave(root);
+                return root;
+            }
+
+            private static void MarkHideAndDontSave(GameObject root)
+            {
+                var transforms = root.GetComponentsInChildren<Transform>(true);
+                for (int i = 0; i < transforms.Length; i++)
+                    transforms[i].gameObject.hideFlags = HideFlags.HideAndDontSave;
+            }
+
+            private static SkinnedMeshRenderer RequireRenderer(GameObject root, string rendererName, string requiredShape)
+            {
+                var renderers = root.GetComponentsInChildren<SkinnedMeshRenderer>(true);
+                SkinnedMeshRenderer fallback = null;
+                for (int i = 0; i < renderers.Length; i++)
+                {
+                    var renderer = renderers[i];
+                    if (renderer == null || renderer.sharedMesh == null)
+                        continue;
+
+                    bool shapeMatches = string.IsNullOrEmpty(requiredShape) ||
+                                        renderer.sharedMesh.GetBlendShapeIndex(requiredShape) >= 0;
+                    if (shapeMatches && fallback == null)
+                        fallback = renderer;
+
+                    if (renderer.name == rendererName && shapeMatches)
+                        return renderer;
+                }
+
+                if (fallback != null)
+                    return fallback;
+
+                throw new Exception(
+                    $"Could not find renderer '{rendererName}' under '{root.name}'" +
+                    (string.IsNullOrEmpty(requiredShape) ? "." : $" with blendshape '{requiredShape}'. Available renderers: {RendererSummary(renderers)}"));
+            }
+
+            private static string RendererSummary(SkinnedMeshRenderer[] renderers)
+            {
+                if (renderers == null || renderers.Length == 0)
+                    return "<none>";
+
+                var names = new List<string>();
+                for (int i = 0; i < renderers.Length; i++)
+                {
+                    var renderer = renderers[i];
+                    if (renderer == null || renderer.sharedMesh == null)
+                        continue;
+                    names.Add($"{renderer.name} [{BlendShapeNames(renderer.sharedMesh)}]");
+                }
+
+                return names.Count > 0 ? string.Join(", ", names.ToArray()) : "<none>";
+            }
+
+            private static string BlendShapeNames(Mesh mesh)
+            {
+                if (mesh == null || mesh.blendShapeCount == 0)
+                    return "no blendshapes";
+
+                var names = new List<string>();
+                for (int i = 0; i < mesh.blendShapeCount; i++)
+                    names.Add(mesh.GetBlendShapeName(i));
+                return string.Join("|", names.ToArray());
+            }
+
+            private static void ResetBlendShapeWeights(SkinnedMeshRenderer renderer)
+            {
+                if (renderer == null || renderer.sharedMesh == null)
+                    return;
+
+                for (int i = 0; i < renderer.sharedMesh.blendShapeCount; i++)
+                    renderer.SetBlendShapeWeight(i, 0f);
+            }
+
+            public void Dispose()
+            {
+                if (hoodieRoot != null) Object.DestroyImmediate(hoodieRoot);
+                if (sourceAvatar != null) Object.DestroyImmediate(sourceAvatar);
+                if (targetAvatar != null) Object.DestroyImmediate(targetAvatar);
+                hoodieRoot = null;
+                sourceAvatar = null;
+                targetAvatar = null;
+                sourceBody = null;
+                targetBody = null;
+                hoodie = null;
+            }
         }
 
         private sealed class FbxResultFixture : IDisposable
@@ -3782,6 +4838,23 @@ namespace Orbiters.ReFit.Editor.Tests
                 targetSpaceAccessory?.Dispose();
                 source?.Dispose();
                 target?.Dispose();
+            }
+        }
+
+        private sealed class SerializedBoneReferenceProbe : MonoBehaviour
+        {
+            public Transform rootTransform;
+            public GameObject boneGameObject;
+            public Transform[] boneArray;
+            public List<Transform> boneList;
+            public NestedReferences nested;
+            public Transform unrelatedTransform;
+
+            [Serializable]
+            public sealed class NestedReferences
+            {
+                public Transform transform;
+                public GameObject gameObject;
             }
         }
 

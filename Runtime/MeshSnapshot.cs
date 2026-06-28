@@ -28,6 +28,8 @@ namespace Orbiters.ReFit
         public int[] triangles;
         public BoneWeight[] boneWeights;
         public Transform[] bones;
+        public Matrix4x4[] boneMatrices;
+        public bool[] boneMatrixValid;
         public Matrix4x4 rendererLocalToWorld;
         public Matrix4x4 rendererWorldToLocal;
         /// <summary>True when the mesh had no usable skinning data and was treated as rigid.</summary>
@@ -97,6 +99,8 @@ namespace Orbiters.ReFit
                     boneOk[k] = true;
                 }
             }
+            snap.boneMatrices = boneMatrices;
+            snap.boneMatrixValid = boneOk;
 
             snap.skinMatrices = new Matrix4x4[vertexCount];
             snap.worldVertices = new Vector3[vertexCount];

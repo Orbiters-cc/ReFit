@@ -72,6 +72,7 @@ namespace Orbiters.ReFit.Editor
             ReFitDebugSession debug = null)
         {
             Undo.IncrementCurrentGroup();
+            int undoGroup = Undo.GetCurrentGroup();
             Undo.SetCurrentGroupName("ReFit");
 
             // --- real target instance ------------------------------------------------------
@@ -118,6 +119,7 @@ namespace Orbiters.ReFit.Editor
                         Undo.SetTransformParent(container, targetInstance.transform, "ReFit parent asset");
                 }
             }
+            ApplyGeneratedMetadata(renderer, comp.generatedMetadata);
             debug?.Capture(armatureApplied ? "03_armature_replaced" :
                 (comp.armatureReplaced ? "03_armature_replace_failed" : "03_armature_kept"), renderer);
 
@@ -156,9 +158,30 @@ namespace Orbiters.ReFit.Editor
             debug?.Capture("08_final_result", renderer, comp.projectionDebug,
                 comp.transferredIslandPropagationDebug ?? comp.primaryIslandPropagationDebug);
 
+            Undo.FlushUndoRecordObjects();
+            Undo.CollapseUndoOperations(undoGroup);
             Selection.activeGameObject = renderer.gameObject;
             EditorGUIUtility.PingObject(renderer.gameObject);
             return renderer;
+        }
+
+        private static void ApplyGeneratedMetadata(SkinnedMeshRenderer renderer, ReFitGeneratedAssetMetadataData data)
+        {
+            if (renderer == null || data == null)
+                return;
+
+            var metadata = renderer.GetComponent<ReFitGeneratedAssetMetadata>();
+            if (metadata == null)
+            {
+                metadata = Undo.AddComponent<ReFitGeneratedAssetMetadata>(renderer.gameObject);
+            }
+            else
+            {
+                Undo.RecordObject(metadata, "ReFit metadata");
+            }
+
+            metadata.data = data.Clone();
+            EditorUtility.SetDirty(metadata);
         }
 
         private static void CaptureGeneratedDeltaOverride(
@@ -465,6 +488,8 @@ namespace Orbiters.ReFit.Editor
             CreateLeafTailHelpers(comp, bones, report);
             RefreshMeshBindposes(renderer, bones, report);
             ValidateMaterializedArmature(sourceBones, bones, renderer, report);
+            RebindArmatureComponentReferences(request, targetInstance, assetInstanceRoot,
+                oldBones, oldRootBone, bones, newArmatureRoot, comp, report);
             RemoveTransientDebugObjects(assetInstanceRoot, report);
             RemoveReplacedAssetArmature(request, targetInstance, assetInstanceRoot, renderer, oldBones, oldRootBone, bones, newArmatureRoot, report);
             RemoveUnusedArmatureContainers(assetInstanceRoot, newArmatureRoot, renderer, bones, report);
@@ -660,15 +685,6 @@ namespace Orbiters.ReFit.Editor
             return null;
         }
 
-        private static void SetParentPreservingWorld(Transform t, Transform parent, Vector3 position,
-            Quaternion rotation, Vector3 lossyScale)
-        {
-            t.SetParent(parent, true);
-            t.position = position;
-            t.rotation = rotation;
-            t.localScale = DivideScale(lossyScale, t.parent != null ? t.parent.lossyScale : Vector3.one);
-        }
-
         private static void SetWorldTransform(Transform t, Transform parent, Vector3 position,
             Quaternion rotation, Vector3 lossyScale)
         {
@@ -814,6 +830,325 @@ namespace Orbiters.ReFit.Editor
             if (maxLengthRatio > 4f && maxLength > 0.1f)
                 report.Warn("armature-length-suspicious",
                     $"A rebuilt bone span is much longer than its blueprint. Worst ratio: {maxLengthRatio:0.###} at {BoneLabel(bones, worstLength)}.");
+        }
+
+        private static void RebindArmatureComponentReferences(ReFitRequest request, GameObject targetInstance,
+            Transform assetInstanceRoot, Transform[] oldBones, Transform oldRootBone, Transform[] newBones,
+            Transform newArmatureRoot, ReFitComputation comp, ReFitReport report)
+        {
+            if (assetInstanceRoot == null || comp == null || !comp.armatureReplaced || newBones == null)
+                return;
+
+            var transformMap = BuildOldToNewBoneMap(oldBones, oldRootBone, newBones, comp);
+            if (transformMap.Count == 0)
+                return;
+
+            var roots = new List<Transform>();
+            AddUniqueRoot(roots, assetInstanceRoot);
+            if (targetInstance != null)
+                AddUniqueRoot(roots, targetInstance.transform);
+
+            var staleArmatureRoots = CollectMappedOldArmatureRoots(transformMap, assetInstanceRoot);
+            var scanned = new HashSet<Component>();
+            var stats = new ComponentReferenceRebindStats();
+            var unresolved = new List<string>();
+            foreach (var root in roots)
+            {
+                if (root == null) continue;
+                var components = root.GetComponentsInChildren<Component>(true);
+                foreach (var component in components)
+                {
+                    if (component == null || component is Transform || !scanned.Add(component)) continue;
+                    if (IsInsideAnyRoot(component.transform, staleArmatureRoots)) continue;
+                    RebindComponentReferences(component, transformMap, newArmatureRoot, report, ref stats, unresolved);
+                }
+            }
+
+            if (stats.propertiesRebound > 0 || stats.helperTransformsCreated > 0)
+                report.Info("component-bone-references-rebound",
+                    $"Rebound {stats.propertiesRebound} serialized bone reference(s) across {stats.componentsChanged}/{stats.componentsScanned} component(s)" +
+                    (stats.helperTransformsCreated > 0 ? $", creating {stats.helperTransformsCreated} helper transform(s)." : "."));
+
+            if (unresolved.Count > 0)
+            {
+                var suffix = stats.unresolvedReferences > unresolved.Count ? $" (+{stats.unresolvedReferences - unresolved.Count} more)" : string.Empty;
+                report.Warn("component-bone-references-unresolved",
+                    "Some serialized old-armature references could not be rebound: " + string.Join("; ", unresolved.ToArray()) + suffix + ".");
+            }
+        }
+
+        private static Dictionary<Transform, Transform> BuildOldToNewBoneMap(Transform[] oldBones,
+            Transform oldRootBone, Transform[] newBones, ReFitComputation comp)
+        {
+            var map = new Dictionary<Transform, Transform>();
+            var remap = comp.assetBoneToNewBoneIndices;
+            if (oldBones != null && remap != null)
+            {
+                int count = Mathf.Min(oldBones.Length, remap.Length);
+                for (int i = 0; i < count; i++)
+                {
+                    var oldBone = oldBones[i];
+                    int newIndex = remap[i];
+                    if (oldBone == null || newIndex < 0 || newIndex >= newBones.Length || newBones[newIndex] == null)
+                        continue;
+                    map[oldBone] = newBones[newIndex];
+                }
+            }
+
+            if (oldRootBone != null && !map.ContainsKey(oldRootBone) &&
+                comp.rootBoneIndex >= 0 && comp.rootBoneIndex < newBones.Length && newBones[comp.rootBoneIndex] != null)
+                map[oldRootBone] = newBones[comp.rootBoneIndex];
+
+            return map;
+        }
+
+        private static void RebindComponentReferences(Component component, Dictionary<Transform, Transform> transformMap,
+            Transform newArmatureRoot, ReFitReport report, ref ComponentReferenceRebindStats stats, List<string> unresolved)
+        {
+            stats.componentsScanned++;
+            SerializedObject serialized;
+            try
+            {
+                serialized = new SerializedObject(component);
+            }
+            catch (System.Exception ex)
+            {
+                report?.Warn("component-reference-scan-failed",
+                    $"Could not inspect serialized references on '{component.GetType().Name}' at '{HierarchyPath(component.transform)}': {ex.Message}");
+                return;
+            }
+
+            bool changed = false;
+            bool undoRecorded = false;
+            var iterator = serialized.GetIterator();
+            bool enterChildren = true;
+            while (iterator.Next(enterChildren))
+            {
+                enterChildren = true;
+                if (iterator.propertyType != SerializedPropertyType.ObjectReference)
+                    continue;
+                if (ShouldSkipObjectReferenceProperty(iterator.propertyPath))
+                    continue;
+
+                var value = iterator.objectReferenceValue;
+                if (!TryGetReferencedTransform(value, out var oldTransform, out var referenceWasGameObject))
+                    continue;
+
+                if (!TryResolveReplacementTransform(oldTransform, transformMap, newArmatureRoot,
+                        ref stats, out var replacement))
+                {
+                    if (IsInsideMappedOldArmature(oldTransform, transformMap))
+                    {
+                        stats.unresolvedReferences++;
+                        if (unresolved.Count < 12)
+                            unresolved.Add($"{component.GetType().Name}.{iterator.propertyPath} -> {HierarchyPath(oldTransform)}");
+                    }
+                    continue;
+                }
+
+                var replacementObject = referenceWasGameObject
+                    ? (Object)replacement.gameObject
+                    : replacement;
+                if (replacementObject == null || iterator.objectReferenceValue == replacementObject)
+                    continue;
+
+                if (!undoRecorded)
+                {
+                    Undo.RecordObject(component, "ReFit rebind component bone references");
+                    undoRecorded = true;
+                }
+                iterator.objectReferenceValue = replacementObject;
+                stats.propertiesRebound++;
+                changed = true;
+            }
+
+            if (!changed) return;
+
+            serialized.ApplyModifiedProperties();
+            EditorUtility.SetDirty(component);
+            PrefabUtility.RecordPrefabInstancePropertyModifications(component);
+            stats.componentsChanged++;
+        }
+
+        private static bool TryGetReferencedTransform(Object value, out Transform transform, out bool isGameObject)
+        {
+            if (value is Transform t)
+            {
+                transform = t;
+                isGameObject = false;
+                return true;
+            }
+            if (value is GameObject go)
+            {
+                transform = go.transform;
+                isGameObject = true;
+                return transform != null;
+            }
+
+            transform = null;
+            isGameObject = false;
+            return false;
+        }
+
+        private static bool TryResolveReplacementTransform(Transform oldTransform,
+            Dictionary<Transform, Transform> transformMap, Transform newArmatureRoot,
+            ref ComponentReferenceRebindStats stats, out Transform replacement)
+        {
+            replacement = null;
+            if (oldTransform == null || transformMap == null)
+                return false;
+
+            if (transformMap.TryGetValue(oldTransform, out replacement) && replacement != null)
+                return true;
+
+            var chain = new List<Transform>();
+            var current = oldTransform;
+            while (current != null)
+            {
+                if (transformMap.TryGetValue(current, out var mappedAncestor) && mappedAncestor != null)
+                {
+                    replacement = mappedAncestor;
+                    for (int i = chain.Count - 1; i >= 0; i--)
+                        replacement = MaterializeReferencedHelper(chain[i], replacement, transformMap, newArmatureRoot, ref stats);
+                    return replacement != null;
+                }
+
+                chain.Add(current);
+                current = current.parent;
+            }
+
+            return false;
+        }
+
+        private static Transform MaterializeReferencedHelper(Transform oldTransform, Transform parent,
+            Dictionary<Transform, Transform> transformMap, Transform newArmatureRoot,
+            ref ComponentReferenceRebindStats stats)
+        {
+            if (oldTransform == null || parent == null)
+                return null;
+            if (transformMap.TryGetValue(oldTransform, out var existingMapped) && existingMapped != null)
+                return existingMapped;
+
+            var existing = FindExistingEquivalentChild(parent, oldTransform);
+            if (existing != null)
+            {
+                transformMap[oldTransform] = existing;
+                return existing;
+            }
+
+            var helper = new GameObject(UniqueChildName(parent, oldTransform.name, null)).transform;
+            Undo.RegisterCreatedObjectUndo(helper.gameObject, "ReFit component bone reference helper");
+            helper.SetParent(parent, false);
+            helper.localPosition = oldTransform.localPosition;
+            helper.localRotation = oldTransform.localRotation;
+            helper.localScale = oldTransform.localScale;
+            if (newArmatureRoot != null)
+                helper.gameObject.hideFlags = newArmatureRoot.gameObject.hideFlags;
+            transformMap[oldTransform] = helper;
+            stats.helperTransformsCreated++;
+            return helper;
+        }
+
+        private static List<Transform> CollectMappedOldArmatureRoots(Dictionary<Transform, Transform> transformMap,
+            Transform assetInstanceRoot)
+        {
+            var roots = new List<Transform>();
+            if (transformMap == null || assetInstanceRoot == null) return roots;
+
+            foreach (var oldTransform in transformMap.Keys)
+            {
+                if (oldTransform == null || !oldTransform.IsChildOf(assetInstanceRoot))
+                    continue;
+
+                var root = oldTransform;
+                while (root.parent != null && root.parent != assetInstanceRoot &&
+                       root.parent.IsChildOf(assetInstanceRoot) &&
+                       (HasOnlyTransform(root.parent) || IsArmatureContainerTransform(root.parent)))
+                    root = root.parent;
+
+                bool hasAncestor = false;
+                for (int i = roots.Count - 1; i >= 0; i--)
+                {
+                    if (root.IsChildOf(roots[i])) { hasAncestor = true; break; }
+                    if (roots[i].IsChildOf(root)) roots.RemoveAt(i);
+                }
+                if (!hasAncestor) roots.Add(root);
+            }
+
+            return roots;
+        }
+
+        private static bool IsInsideAnyRoot(Transform transform, List<Transform> roots)
+        {
+            if (transform == null || roots == null) return false;
+            for (int i = 0; i < roots.Count; i++)
+            {
+                var root = roots[i];
+                if (root != null && transform.IsChildOf(root))
+                    return true;
+            }
+            return false;
+        }
+
+        private static bool ShouldSkipObjectReferenceProperty(string propertyPath)
+        {
+            if (string.IsNullOrEmpty(propertyPath)) return false;
+            return propertyPath == "m_GameObject" ||
+                   propertyPath == "m_Script" ||
+                   propertyPath == "m_CorrespondingSourceObject" ||
+                   propertyPath == "m_PrefabInstance" ||
+                   propertyPath == "m_PrefabAsset" ||
+                   propertyPath == "m_PrefabParentObject" ||
+                   propertyPath == "m_PrefabInternal" ||
+                   propertyPath.EndsWith(".m_GameObject", System.StringComparison.Ordinal) ||
+                   propertyPath.EndsWith(".m_Script", System.StringComparison.Ordinal) ||
+                   propertyPath.EndsWith(".m_CorrespondingSourceObject", System.StringComparison.Ordinal) ||
+                   propertyPath.EndsWith(".m_PrefabInstance", System.StringComparison.Ordinal) ||
+                   propertyPath.EndsWith(".m_PrefabAsset", System.StringComparison.Ordinal) ||
+                   propertyPath.EndsWith(".m_PrefabParentObject", System.StringComparison.Ordinal) ||
+                   propertyPath.EndsWith(".m_PrefabInternal", System.StringComparison.Ordinal);
+        }
+
+        private static Transform FindExistingEquivalentChild(Transform parent, Transform oldTransform)
+        {
+            if (parent == null || oldTransform == null) return null;
+            for (int i = 0; i < parent.childCount; i++)
+            {
+                var child = parent.GetChild(i);
+                if (child.name != oldTransform.name) continue;
+                if (Vector3.Distance(child.localPosition, oldTransform.localPosition) > 0.0001f) continue;
+                if (Quaternion.Angle(child.localRotation, oldTransform.localRotation) > 0.01f) continue;
+                if (Vector3.Distance(child.localScale, oldTransform.localScale) > 0.0001f) continue;
+                return child;
+            }
+            return null;
+        }
+
+        private static bool IsInsideMappedOldArmature(Transform transform, Dictionary<Transform, Transform> transformMap)
+        {
+            var current = transform;
+            while (current != null)
+            {
+                if (transformMap.ContainsKey(current))
+                    return true;
+                current = current.parent;
+            }
+            return false;
+        }
+
+        private static void AddUniqueRoot(List<Transform> roots, Transform root)
+        {
+            if (root == null || roots.Contains(root)) return;
+            roots.Add(root);
+        }
+
+        private struct ComponentReferenceRebindStats
+        {
+            public int componentsScanned;
+            public int componentsChanged;
+            public int propertiesRebound;
+            public int helperTransformsCreated;
+            public int unresolvedReferences;
         }
 
         private static float MatrixMaxAbsDelta(Matrix4x4 a, Matrix4x4 b)
@@ -1296,13 +1631,6 @@ namespace Orbiters.ReFit.Editor
         {
             if (protectedTransforms == null || transform == null) return;
             protectedTransforms.Add(transform);
-        }
-
-        private static void ProtectTransformAndDescendants(HashSet<Transform> protectedTransforms, Transform transform)
-        {
-            if (protectedTransforms == null || transform == null) return;
-            foreach (var child in transform.GetComponentsInChildren<Transform>(true))
-                protectedTransforms.Add(child);
         }
 
         private static bool IsProtectedOrContainsProtected(Transform root, HashSet<Transform> protectedTransforms)

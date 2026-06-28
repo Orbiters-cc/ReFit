@@ -5,8 +5,8 @@ using UnityEngine;
 namespace Orbiters.ReFit
 {
     /// <summary>
-    /// A temporary, hidden copy of the source avatar, target avatar and asset, all driven into the same
-    /// neutral humanoid pose, scale-matched and hip-aligned so their surfaces can be compared in world space.
+    /// A temporary, hidden copy of the source avatar, target avatar and asset in their authored/imported pose,
+    /// scale-matched and root-aligned so their surfaces can be compared in world space.
     /// Dispose to destroy the staged clones.
     /// </summary>
     public class NormalizedStage : IDisposable
@@ -40,9 +40,9 @@ namespace Orbiters.ReFit
         public Dictionary<Transform, Transform> assetBoneToSource = new Dictionary<Transform, Transform>();
         /// <summary>Uniform scale applied to the source side so it matches the target size.</summary>
         public float appliedScale = 1f;
-        /// <summary>True when the source clone was actually driven through a humanoid neutral pose.</summary>
+        /// <summary>Always false: ReFit preserves authored pose during staging. Kept for diagnostics compatibility.</summary>
         public bool sourceNeutralPoseApplied;
-        /// <summary>True when the target clone was actually driven through a humanoid neutral pose.</summary>
+        /// <summary>Always false: ReFit preserves authored pose during staging. Kept for diagnostics compatibility.</summary>
         public bool targetNeutralPoseApplied;
         /// <summary>The real object the asset paths are relative to (asset hierarchy root, or the avatar carrying it).</summary>
         public GameObject realAssetObject;
@@ -56,7 +56,7 @@ namespace Orbiters.ReFit
         }
     }
 
-    /// <summary>Builds <see cref="NormalizedStage"/> instances: cloning, neutral posing, scale matching and asset armature posing.</summary>
+    /// <summary>Builds <see cref="NormalizedStage"/> instances: cloning, scale matching and asset armature posing.</summary>
     public static class PoseNormalizer
     {
         /// <summary>
@@ -88,8 +88,6 @@ namespace Orbiters.ReFit
                     ? stage.sourceHumanMap
                     : HumanoidBoneMapper.GetHumanoidMap(stage.targetRoot, report, stage.targetExcludedAssetRoot);
 
-                ApplyNeutralPosePair(stage, report);
-
                 if (!stage.sourceIsTarget) ScaleAndAlign(stage, report);
 
                 PoseAsset(stage, report);
@@ -113,8 +111,10 @@ namespace Orbiters.ReFit
             stage.sourceIsTarget = request.sourceAvatar == null || request.sourceAvatar == request.targetAvatar;
             stage.sourceRoot = stage.sourceIsTarget ? stage.targetRoot : Clone(request.sourceAvatar, stage.stagingRoot.transform);
 
+            bool targetSpaceBlendshapeAsset = ShouldStageBlendshapeAssetAsTargetSpace(request, stage);
+
             // Asset: either part of the source avatar hierarchy, or a standalone hierarchy.
-            var carrier = stage.sourceIsTarget ? request.targetAvatar : request.sourceAvatar;
+            var carrier = targetSpaceBlendshapeAsset ? null : (stage.sourceIsTarget ? request.targetAvatar : request.sourceAvatar);
             if (carrier != null && request.assetRenderer.transform.IsChildOf(carrier.transform))
             {
                 stage.assetOnSourceAvatar = true;
@@ -129,7 +129,7 @@ namespace Orbiters.ReFit
             {
                 // The asset already lives in the target avatar's space when it is parented under the target and
                 // the source is a distinct reference (e.g. "fit a blendshape on my avatar", or the MCB module).
-                stage.assetInTargetSpace = !stage.sourceIsTarget && request.targetAvatar != null &&
+                stage.assetInTargetSpace = (targetSpaceBlendshapeAsset || !stage.sourceIsTarget) && request.targetAvatar != null &&
                                            request.assetRenderer.transform.IsChildOf(request.targetAvatar.transform);
 
                 var realAssetRoot = FindAssetObjectRoot(request.assetRenderer, request.sourceAvatar, request.targetAvatar);
@@ -149,13 +149,28 @@ namespace Orbiters.ReFit
                 }
             }
 
+            var sourceExcludedRoot = stage.sourceIsTarget ? stage.targetExcludedAssetRoot : null;
             stage.sourceBody = ResolveBodyRenderer(stage.sourceRoot, request.sourceBodyRenderer,
-                stage.sourceIsTarget ? request.targetAvatar : request.sourceAvatar, stage.assetRenderer, report, "source", null);
+                stage.sourceIsTarget ? request.targetAvatar : request.sourceAvatar, stage.assetRenderer, report, "source", sourceExcludedRoot);
             stage.targetBody = stage.sourceIsTarget && request.targetBodyRenderer == null && request.sourceBodyRenderer == null
                 ? stage.sourceBody
                 : ResolveBodyRenderer(stage.targetRoot, request.targetBodyRenderer, request.targetAvatar, stage.assetRenderer, report, "target", stage.targetExcludedAssetRoot);
             if (stage.sourceIsTarget && stage.sourceBody == null) stage.sourceBody = stage.targetBody;
             if (stage.sourceIsTarget && stage.targetBody == null) stage.targetBody = stage.sourceBody;
+        }
+
+        private static bool ShouldStageBlendshapeAssetAsTargetSpace(ReFitRequest request, NormalizedStage stage)
+        {
+            if (request == null || stage == null || request.assetRenderer == null || request.targetAvatar == null)
+                return false;
+            if (request.mode != ReFitMode.Blendshape || !stage.sourceIsTarget)
+                return false;
+            if (!request.assetRenderer.transform.IsChildOf(request.targetAvatar.transform))
+                return false;
+            if (request.assetRenderer == request.sourceBodyRenderer || request.assetRenderer == request.targetBodyRenderer)
+                return false;
+
+            return true;
         }
 
         private static GameObject Clone(GameObject original, Transform parent)
@@ -166,10 +181,10 @@ namespace Orbiters.ReFit
             clone.transform.SetParent(parent, true);
             clone.SetActive(true);
 
-            // Make the clone inert: nothing should animate or react while we pose it.
+            // Make the clone inert: nothing should animate or react while it is staged.
             foreach (var behaviour in clone.GetComponentsInChildren<Behaviour>(true))
             {
-                try { if (!(behaviour is Transform)) behaviour.enabled = false; }
+                try { behaviour.enabled = false; }
                 catch { /* some behaviours refuse; harmless */ }
             }
             return clone;
@@ -504,77 +519,6 @@ namespace Orbiters.ReFit
         }
 
         // ------------------------------------------------------------------
-        // Posing
-        // ------------------------------------------------------------------
-
-        private static void ApplyNeutralPosePair(NormalizedStage stage, ReFitReport report)
-        {
-            if (stage == null || stage.sourceRoot == null) return;
-
-            var sourceAnimator = HumanoidBoneMapper.FindHumanoidAnimator(stage.sourceRoot);
-            var targetAnimator = !stage.sourceIsTarget && stage.targetRoot != null
-                ? HumanoidBoneMapper.FindHumanoidAnimator(stage.targetRoot)
-                : sourceAnimator;
-
-            if (stage.sourceIsTarget)
-            {
-                stage.sourceNeutralPoseApplied = ApplyNeutralPose(stage.sourceRoot, sourceAnimator, report);
-                stage.targetNeutralPoseApplied = stage.sourceNeutralPoseApplied;
-                return;
-            }
-
-            if (sourceAnimator != null && targetAnimator != null)
-            {
-                stage.sourceNeutralPoseApplied = ApplyNeutralPose(stage.sourceRoot, sourceAnimator, report);
-                stage.targetNeutralPoseApplied = ApplyNeutralPose(stage.targetRoot, targetAnimator, report);
-                return;
-            }
-
-            if (sourceAnimator == null)
-                ReportNoNeutralPose(stage.sourceRoot, report);
-            if (targetAnimator == null)
-                ReportNoNeutralPose(stage.targetRoot, report);
-
-            if (sourceAnimator != targetAnimator)
-            {
-                report.Warn("neutral-pose-skipped-asymmetric",
-                    "Only one side has a humanoid Animator, so ReFit left both staged avatars in their current/imported pose. " +
-                    "Applying a neutral humanoid pose to only one side changes the comparison frame and can create false refit deltas.");
-            }
-        }
-
-        /// <summary>Drives a staged avatar into the muscle-neutral humanoid pose, facing identity rotation.</summary>
-        private static bool ApplyNeutralPose(GameObject cloneRoot, Animator animator, ReFitReport report)
-        {
-            if (cloneRoot == null || animator == null) return false;
-
-            try
-            {
-                var handler = new HumanPoseHandler(animator.avatar, animator.transform);
-                var pose = new HumanPose();
-                handler.GetHumanPose(ref pose);
-                if (pose.muscles != null)
-                    for (int i = 0; i < pose.muscles.Length; i++) pose.muscles[i] = 0f;
-                pose.bodyRotation = Quaternion.identity;
-                handler.SetHumanPose(ref pose);
-                handler.Dispose();
-                return true;
-            }
-            catch (Exception e)
-            {
-                report.Warn("neutral-pose-failed", $"Could not apply the neutral pose to '{cloneRoot.name}': {e.Message}");
-                return false;
-            }
-        }
-
-        private static void ReportNoNeutralPose(GameObject cloneRoot, ReFitReport report)
-        {
-            if (cloneRoot == null) return;
-            report.Warn("no-neutral-pose",
-                $"'{cloneRoot.name}' is not a humanoid avatar; assuming it is already posed consistently with the other model.");
-        }
-
-        // ------------------------------------------------------------------
         // Scale & alignment
         // ------------------------------------------------------------------
 
@@ -648,10 +592,9 @@ namespace Orbiters.ReFit
 
             if (armspan.valid)
             {
-                if (!stage.sourceNeutralPoseApplied || !stage.targetNeutralPoseApplied)
-                    report.Warn("scale-armspan-unposed",
-                        "Using hand-span scale as a last resort even though both avatars were not neutral-posed. " +
-                        "This can be wrong when one rig is in A-pose and the other is in T-pose.");
+                report.Warn("scale-armspan-authored-pose",
+                    "Using hand-span scale as a last resort in the authored pose. " +
+                    "This can be wrong when one rig is in A-pose and the other is in T-pose.");
                 return armspan;
             }
 

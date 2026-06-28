@@ -189,6 +189,10 @@ namespace Orbiters.ReFit
             public Vector3[] primaryRawLocalDeltas;
             public Vector3[] primaryLocalDeltas;
             public Vector3[] primaryNormalDeltas;
+            public Vector3[] targetSpaceBaseLocalDeltas;
+            public Vector3[] targetSpaceBaseGroupDeltas;
+            public string[] targetSpaceBaseShapeNames;
+            public ReFitGeneratedAssetMetadataData targetSpaceMetadata;
             public BoneWeight[] newWeights;
             public ReFitWeightTransferDebugInfo weightDebug;
             public float[] upperBodyHemWeights;
@@ -278,7 +282,30 @@ namespace Orbiters.ReFit
 
                 // Snapshots
                 progress?.Invoke(0.08f, "Capturing meshes");
-                state.asset = MeshSnapshot.Capture(stage.assetRenderer, true, null, report);
+                Dictionary<int, float> assetShapeOverrides = null;
+                if (ShouldUseTargetSpaceBaseBlendshape(request, stage))
+                {
+                    state.targetSpaceMetadata = CopyGeneratedMetadata(stage.assetRenderer);
+                    assetShapeOverrides = BuildTargetSpaceBaseBlendshapeOverrides(
+                        stage.assetRenderer,
+                        requestedNames,
+                        state.settings,
+                        state.targetSpaceMetadata?.primaryShapeName,
+                        out state.targetSpaceBaseLocalDeltas,
+                        out state.targetSpaceBaseShapeNames);
+                    if (state.targetSpaceBaseShapeNames != null && state.targetSpaceBaseShapeNames.Length > 0)
+                    {
+                        report.Info("target-space-base-blendshape",
+                            $"Using active base blendshape(s) '{string.Join(", ", state.targetSpaceBaseShapeNames)}' as the already-fitted target-space deformation.");
+                    }
+                }
+
+                state.asset = MeshSnapshot.Capture(stage.assetRenderer, true, assetShapeOverrides, report);
+                if (state.targetSpaceBaseLocalDeltas != null)
+                    state.targetSpaceBaseGroupDeltas = ToRendererWorldGroupDeltas(
+                        state.asset,
+                        state.targetSpaceBaseLocalDeltas,
+                        state.targetSpaceMetadata);
                 state.targetBasis = MeshSnapshot.Capture(stage.targetBody, false,
                     BuildZeroBlendShapeOverrides(stage.targetBody), report);
                 if (state.wantMesh)
@@ -324,6 +351,400 @@ namespace Orbiters.ReFit
             } // stage disposed: everything below works on captured arrays only
 
             return state;
+        }
+
+        private static bool ShouldUseTargetSpaceBaseBlendshape(ReFitRequest request, NormalizedStage stage)
+        {
+            return request != null &&
+                   stage != null &&
+                   request.mode == ReFitMode.Blendshape &&
+                   stage.sourceIsTarget &&
+                   stage.assetInTargetSpace;
+        }
+
+        private static Dictionary<int, float> BuildTargetSpaceBaseBlendshapeOverrides(
+            SkinnedMeshRenderer renderer,
+            List<string> requestedTargetShapes,
+            ReFitSettings settings,
+            string metadataPrimaryShapeName,
+            out Vector3[] baseLocalDeltas,
+            out string[] baseShapeNames)
+        {
+            baseLocalDeltas = null;
+            baseShapeNames = null;
+            var mesh = renderer != null ? renderer.sharedMesh : null;
+            if (mesh == null || mesh.blendShapeCount == 0)
+                return null;
+
+            var names = new List<string>();
+            var overrides = new Dictionary<int, float>();
+            var accumulated = new Vector3[mesh.vertexCount];
+            var frameDeltas = new Vector3[mesh.vertexCount];
+            for (int s = 0; s < mesh.blendShapeCount; s++)
+            {
+                float weight = renderer.GetBlendShapeWeight(s) / 100f;
+                if (Mathf.Abs(weight) <= 1e-4f)
+                    continue;
+
+                string shapeName = mesh.GetBlendShapeName(s);
+                if (!IsTargetSpaceBaseBlendshapeName(shapeName, requestedTargetShapes, settings, metadataPrimaryShapeName))
+                    continue;
+
+                int frame = mesh.GetBlendShapeFrameCount(s) - 1;
+                if (frame < 0)
+                    continue;
+
+                Array.Clear(frameDeltas, 0, frameDeltas.Length);
+                mesh.GetBlendShapeFrameVertices(s, frame, frameDeltas, null, null);
+                for (int i = 0; i < accumulated.Length; i++)
+                    accumulated[i] += frameDeltas[i] * weight;
+
+                overrides[s] = 0f;
+                names.Add(shapeName);
+            }
+
+            if (names.Count == 0)
+                return null;
+
+            baseLocalDeltas = accumulated;
+            baseShapeNames = names.ToArray();
+            return overrides;
+        }
+
+        private static bool IsTargetSpaceBaseBlendshapeName(
+            string shapeName,
+            List<string> requestedTargetShapes,
+            ReFitSettings settings,
+            string metadataPrimaryShapeName)
+        {
+            if (string.IsNullOrEmpty(shapeName) || settings == null)
+                return false;
+
+            if (!string.IsNullOrEmpty(metadataPrimaryShapeName))
+                return string.Equals(shapeName, metadataPrimaryShapeName, StringComparison.Ordinal);
+
+            string baseName = settings.blendshapeName;
+            if (string.IsNullOrEmpty(baseName))
+                return false;
+
+            if (requestedTargetShapes != null)
+            {
+                for (int i = 0; i < requestedTargetShapes.Count; i++)
+                {
+                    string requested = requestedTargetShapes[i];
+                    if (string.IsNullOrEmpty(requested))
+                        continue;
+
+                    string generated = settings.prefixTransferredShapes ? $"{baseName}_{requested}" : requested;
+                    if (string.Equals(shapeName, generated, StringComparison.Ordinal))
+                        return false;
+                }
+            }
+
+            if (string.Equals(shapeName, baseName, StringComparison.Ordinal))
+                return true;
+
+            return shapeName.StartsWith(baseName + " ", StringComparison.Ordinal);
+        }
+
+        private static ReFitGeneratedAssetMetadataData CopyGeneratedMetadata(SkinnedMeshRenderer renderer)
+        {
+            var component = renderer != null ? renderer.GetComponent<ReFitGeneratedAssetMetadata>() : null;
+            return component != null && component.data != null ? component.data.Clone() : null;
+        }
+
+        private static Vector3[] ToRendererWorldGroupDeltas(
+            MeshSnapshot asset,
+            Vector3[] localDeltas,
+            ReFitGeneratedAssetMetadataData metadata)
+        {
+            if (asset == null || localDeltas == null || asset.groupRep == null)
+                return null;
+
+            int groupCount = asset.GroupCount;
+            var groupDeltas = new Vector3[groupCount];
+            var localToWorld = metadata != null && metadata.hasDeltaWorldToLocal
+                ? metadata.deltaWorldToLocal.inverse
+                : asset.rendererLocalToWorld;
+            Parallel.For(0, groupCount, g =>
+            {
+                int rep = asset.groupRep[g];
+                if (rep < 0 || rep >= localDeltas.Length)
+                    return;
+
+                groupDeltas[g] = localToWorld.MultiplyVector(localDeltas[rep]);
+            });
+            return groupDeltas;
+        }
+
+        private static SurfaceBinding[] BuildTransferBindingsFromMetadata(State state, MeshSnapshot targetBasis)
+        {
+            var metadata = state?.targetSpaceMetadata;
+            var asset = state?.asset;
+            if (metadata == null || asset == null || targetBasis == null ||
+                metadata.transferTriangles == null || metadata.transferBarycentrics == null ||
+                metadata.groupCount != asset.GroupCount ||
+                metadata.targetBodyVertexCount != targetBasis.localVertices.Length ||
+                metadata.targetBodyTriangleIndexCount != targetBasis.triangles.Length)
+                return null;
+
+            int groupCount = asset.GroupCount;
+            if (metadata.transferTriangles.Length < groupCount || metadata.transferBarycentrics.Length < groupCount)
+                return null;
+
+            var bindings = new SurfaceBinding[groupCount];
+            for (int g = 0; g < groupCount; g++)
+            {
+                int triangle = metadata.transferTriangles[g];
+                if (triangle < 0 || triangle * 3 + 2 >= targetBasis.triangles.Length)
+                    continue;
+
+                var bary = metadata.transferBarycentrics[g];
+                bindings[g] = new SurfaceBinding
+                {
+                    valid = true,
+                    triangle = triangle,
+                    bary = bary,
+                    point = targetBasis.BaryPoint(triangle, bary),
+                    distance = 0f,
+                    normalDot = 1f
+                };
+            }
+
+            return bindings;
+        }
+
+        private static void ApplyMetadataFalloff(ReFitGeneratedAssetMetadataData metadata, float[] falloff)
+        {
+            if (metadata == null || metadata.falloff == null || falloff == null ||
+                metadata.falloff.Length < falloff.Length)
+                return;
+
+            Array.Copy(metadata.falloff, falloff, falloff.Length);
+        }
+
+        private static float[] CloneMetadataWeights(float[] weights, int groupCount)
+        {
+            if (weights == null || groupCount <= 0 || weights.Length < groupCount)
+                return null;
+
+            var clone = new float[groupCount];
+            Array.Copy(weights, clone, groupCount);
+            return clone;
+        }
+
+        private static Vector3 TargetShapeDeltaToWorld(
+            State state,
+            MeshSnapshot targetBasis,
+            int vertex,
+            Vector3 localDelta)
+        {
+            var metadata = state?.targetSpaceMetadata;
+            var matrices = metadata?.targetBodyShapeBoneMatrices;
+            var valid = metadata?.targetBodyShapeBoneValid;
+            var weights = targetBasis?.boneWeights;
+            if (metadata != null &&
+                matrices != null &&
+                valid != null &&
+                weights != null &&
+                vertex >= 0 &&
+                vertex < weights.Length &&
+                metadata.targetBodyBoneCount == matrices.Length &&
+                valid.Length >= matrices.Length &&
+                matrices.Length > 0)
+            {
+                Vector3 result = Vector3.zero;
+                float total = 0f;
+                var bw = weights[vertex];
+                AccumulateMetadataShapeDelta(ref result, ref total, matrices, valid, bw.boneIndex0, bw.weight0, localDelta);
+                AccumulateMetadataShapeDelta(ref result, ref total, matrices, valid, bw.boneIndex1, bw.weight1, localDelta);
+                AccumulateMetadataShapeDelta(ref result, ref total, matrices, valid, bw.boneIndex2, bw.weight2, localDelta);
+                AccumulateMetadataShapeDelta(ref result, ref total, matrices, valid, bw.boneIndex3, bw.weight3, localDelta);
+                if (total > 1e-6f)
+                    return Mathf.Abs(total - 1f) > 1e-4f ? result / total : result;
+            }
+
+            return targetBasis.skinMatrices[vertex].MultiplyVector(localDelta);
+        }
+
+        private static void AccumulateMetadataShapeDelta(
+            ref Vector3 result,
+            ref float total,
+            Matrix4x4[] matrices,
+            bool[] valid,
+            int index,
+            float weight,
+            Vector3 localDelta)
+        {
+            if (weight <= 0f || index < 0 || index >= matrices.Length || !valid[index])
+                return;
+
+            result += matrices[index].MultiplyVector(localDelta) * weight;
+            total += weight;
+        }
+
+        private static Vector3[] FindCachedTransferredLocalDeltas(
+            ReFitGeneratedAssetMetadataData metadata,
+            string sourceName,
+            int vertexCount)
+        {
+            if (metadata?.transferredShapes == null || string.IsNullOrEmpty(sourceName) || vertexCount <= 0)
+                return null;
+
+            for (int i = 0; i < metadata.transferredShapes.Length; i++)
+            {
+                var shape = metadata.transferredShapes[i];
+                if (shape == null ||
+                    !string.Equals(shape.sourceName, sourceName, StringComparison.Ordinal) ||
+                    shape.localDeltas == null ||
+                    shape.localDeltas.Length != vertexCount)
+                    continue;
+
+                return (Vector3[])shape.localDeltas.Clone();
+            }
+
+            return null;
+        }
+
+        private static ReFitClearanceCorrection.Profile BuildClearanceProfileFromMetadata(
+            State state,
+            MeshSnapshot targetBasis,
+            SurfaceBinding[] targetBindings,
+            Vector3[] primaryGroupDeltas)
+        {
+            var metadata = state?.targetSpaceMetadata;
+            var asset = state?.asset;
+            if (metadata == null || asset == null || targetBasis == null ||
+                metadata.clearanceEligible == null ||
+                metadata.sourceClearance == null ||
+                metadata.groupCount != asset.GroupCount ||
+                metadata.clearanceEligible.Length < asset.GroupCount ||
+                metadata.sourceClearance.Length < asset.GroupCount)
+                return null;
+
+            var profile = new ReFitClearanceCorrection.Profile
+            {
+                eligible = new bool[asset.GroupCount],
+                sourceClearance = new float[asset.GroupCount],
+                sourceBodyPoint = new Vector3[asset.GroupCount]
+            };
+
+            var localToWorld = asset.rendererLocalToWorld;
+            for (int g = 0; g < asset.GroupCount; g++)
+            {
+                if (!metadata.clearanceEligible[g])
+                    continue;
+
+                profile.eligible[g] = true;
+                profile.sourceClearance[g] = metadata.sourceClearance[g];
+                if (metadata.sourcePrimaryExpansion != null &&
+                    metadata.sourcePrimaryExpansion.Length > g &&
+                    targetBindings != null &&
+                    targetBindings.Length > g &&
+                    targetBindings[g].valid)
+                {
+                    var normal = targetBasis.BaryNormal(targetBindings[g].triangle, targetBindings[g].bary);
+                    profile.sourceBodyPoint[g] = targetBindings[g].point - normal * metadata.sourcePrimaryExpansion[g];
+                }
+                else if (metadata.sourceBodyPointFromRefitLocalOffset != null &&
+                         metadata.sourceBodyPointFromRefitLocalOffset.Length > g)
+                {
+                    int rep = asset.groupRep[g];
+                    var primary = primaryGroupDeltas != null && g < primaryGroupDeltas.Length
+                        ? primaryGroupDeltas[g]
+                        : Vector3.zero;
+                    profile.sourceBodyPoint[g] =
+                        asset.worldVertices[rep] + primary +
+                        localToWorld.MultiplyVector(metadata.sourceBodyPointFromRefitLocalOffset[g]);
+                }
+                else if (metadata.sourceBodyPointLocal != null && metadata.sourceBodyPointLocal.Length > g)
+                {
+                    profile.sourceBodyPoint[g] = localToWorld.MultiplyPoint3x4(metadata.sourceBodyPointLocal[g]);
+                }
+                else
+                {
+                    profile.eligible[g] = false;
+                    continue;
+                }
+                profile.eligibleGroups++;
+            }
+
+            return profile.eligibleGroups > 0 ? profile : null;
+        }
+
+        private static ReFitGeneratedAssetMetadataData BuildGeneratedMetadata(
+            State state,
+            MeshSnapshot targetBasis,
+            SurfaceBinding[] transferBindings,
+            float[] falloff,
+            ReFitClearanceCorrection.Profile clearanceProfile,
+            Vector3[] primaryGroupDeltas)
+        {
+            var asset = state?.asset;
+            if (asset == null || targetBasis == null || transferBindings == null || falloff == null ||
+                clearanceProfile == null || asset.GroupCount == 0)
+                return null;
+
+            int groupCount = asset.GroupCount;
+            if (transferBindings.Length < groupCount || falloff.Length < groupCount)
+                return null;
+
+            var data = new ReFitGeneratedAssetMetadataData
+            {
+                groupCount = groupCount,
+                targetBodyVertexCount = targetBasis.localVertices.Length,
+                targetBodyTriangleIndexCount = targetBasis.triangles.Length,
+                targetBodyBoneCount = targetBasis.boneMatrices != null ? targetBasis.boneMatrices.Length : 0,
+                hasDeltaWorldToLocal = true,
+                deltaWorldToLocal = asset.rendererWorldToLocal,
+                targetBodyShapeBoneMatrices = targetBasis.boneMatrices != null
+                    ? (Matrix4x4[])targetBasis.boneMatrices.Clone()
+                    : null,
+                targetBodyShapeBoneValid = targetBasis.boneMatrixValid != null
+                    ? (bool[])targetBasis.boneMatrixValid.Clone()
+                    : null,
+                transferTriangles = new int[groupCount],
+                transferBarycentrics = new Vector3[groupCount],
+                falloff = new float[groupCount],
+                upperBodyHemWeights = CloneMetadataWeights(state.upperBodyHemWeights, groupCount),
+                openBoundaryWeights = CloneMetadataWeights(state.openBoundaryWeights, groupCount),
+                clearanceEligible = new bool[groupCount],
+                sourceClearance = new float[groupCount],
+                sourcePrimaryExpansion = new float[groupCount],
+                sourceBodyPointLocal = new Vector3[groupCount],
+                sourceBodyPointFromRefitLocalOffset = new Vector3[groupCount]
+            };
+
+            var worldToLocal = asset.rendererWorldToLocal;
+            for (int g = 0; g < groupCount; g++)
+            {
+                var binding = transferBindings[g];
+                data.transferTriangles[g] = binding.valid ? binding.triangle : -1;
+                data.transferBarycentrics[g] = binding.valid ? binding.bary : Vector3.zero;
+                data.falloff[g] = falloff[g];
+
+                bool eligible = g < clearanceProfile.eligible.Length && clearanceProfile.eligible[g];
+                data.clearanceEligible[g] = eligible;
+                if (!eligible)
+                    continue;
+
+                data.sourceClearance[g] = clearanceProfile.sourceClearance[g];
+                data.sourceBodyPointLocal[g] = worldToLocal.MultiplyPoint3x4(clearanceProfile.sourceBodyPoint[g]);
+                if (binding.valid)
+                {
+                    var normal = targetBasis.BaryNormal(binding.triangle, binding.bary);
+                    data.sourcePrimaryExpansion[g] =
+                        Vector3.Dot(binding.point - clearanceProfile.sourceBodyPoint[g], normal);
+                }
+                int rep = asset.groupRep[g];
+                var primary = primaryGroupDeltas != null && g < primaryGroupDeltas.Length
+                    ? primaryGroupDeltas[g]
+                    : Vector3.zero;
+                data.sourceBodyPointFromRefitLocalOffset[g] =
+                    worldToLocal.MultiplyVector(clearanceProfile.sourceBodyPoint[g] - asset.worldVertices[rep] - primary);
+            }
+
+            return data;
         }
 
         private static List<string> RequestedShapeNames(ReFitRequest request)
@@ -383,7 +804,9 @@ namespace Orbiters.ReFit
             var targetBasis = state.targetBasis;
             int groupCount = asset.GroupCount;
             int vertexCount = asset.localVertices.Length;
-            state.openBoundaryWeights = BuildOpenBoundaryWeights(asset);
+            state.openBoundaryWeights =
+                CloneMetadataWeights(state.targetSpaceMetadata?.openBoundaryWeights, groupCount) ??
+                BuildOpenBoundaryWeights(asset);
 
             // Spatial indices
             SetBackgroundProgress(state, 0.05f, "Building spatial indices");
@@ -427,7 +850,21 @@ namespace Orbiters.ReFit
                     ? DeltaField.Falloff(bindings[g].distance, settings.falloffStartDistance, settings.maxProjectionDistance)
                     : 0f;
             var clearanceProfile = ReFitClearanceCorrection.BuildProfile(asset, firstSnap, bindings, settings);
-            state.upperBodyHemWeights = BuildUpperBodyHemWeights(state);
+            var metadataTransferBindings = BuildTransferBindingsFromMetadata(state, targetBasis);
+            if (metadataTransferBindings != null)
+            {
+                ApplyMetadataFalloff(state.targetSpaceMetadata, falloff);
+                var metadataProfile = BuildClearanceProfileFromMetadata(
+                    state,
+                    targetBasis,
+                    metadataTransferBindings,
+                    state.targetSpaceBaseGroupDeltas);
+                if (metadataProfile != null)
+                    clearanceProfile = metadataProfile;
+            }
+            state.upperBodyHemWeights =
+                CloneMetadataWeights(state.targetSpaceMetadata?.upperBodyHemWeights, groupCount) ??
+                BuildUpperBodyHemWeights(state);
 
             // ---- Mesh deformation field --------------------------------------------------
             Vector3[] primaryGroupDeltas = null;
@@ -479,6 +916,20 @@ namespace Orbiters.ReFit
 
                 transferBindings = BindRefittedAssetToTarget(state, bvhTarget, primaryGroupDeltas, targetBindings);
             }
+            else if (state.targetSpaceBaseGroupDeltas != null)
+            {
+                primaryGroupDeltas = state.targetSpaceBaseGroupDeltas;
+                transferBindings = metadataTransferBindings ?? targetBindings;
+            }
+
+            if (state.wantMesh)
+                state.comp.generatedMetadata = BuildGeneratedMetadata(
+                    state,
+                    targetBasis,
+                    transferBindings,
+                    falloff,
+                    clearanceProfile,
+                    primaryGroupDeltas);
 
             // ---- Blendshape transfer fields ----------------------------------------------
             if (state.shapes.Count > 0)
@@ -492,7 +943,7 @@ namespace Orbiters.ReFit
 
                     var worldShapeDelta = new Vector3[bodyVerts];
                     Parallel.For(0, bodyVerts, i =>
-                        worldShapeDelta[i] = targetBasis.skinMatrices[i].MultiplyVector(shape.frameDeltas[i]));
+                        worldShapeDelta[i] = TargetShapeDeltaToWorld(state, targetBasis, i, shape.frameDeltas[i]));
 
                     var groupDeltas = new Vector3[groupCount];
                     Parallel.For(0, groupCount, g =>
@@ -511,6 +962,21 @@ namespace Orbiters.ReFit
                     ApplyUpperBodyHemDamping(groupDeltas, state.upperBodyHemWeights, settings);
                     ApplyDetachedTransferredComponentCoherence(state, primaryGroupDeltas, groupDeltas, shape.sourceName);
                     shape.rawLocalDeltas = ToLocalDeltas(state, groupDeltas, false);
+
+                    var cachedLocalDeltas = FindCachedTransferredLocalDeltas(
+                        state.targetSpaceMetadata,
+                        shape.sourceName,
+                        vertexCount);
+                    if (cachedLocalDeltas != null)
+                    {
+                        shape.localDeltas = cachedLocalDeltas;
+                        state.Report.Info("target-space-cached-transferred-shape",
+                            $"Reused the previously generated tightness-corrected transfer for '{shape.sourceName}'.");
+                        if (settings.recalculateNormalDeltas)
+                            shape.normalDeltas = NormalDeltas(asset, shape.localDeltas, state.primaryLocalDeltas);
+                        shape.frameDeltas = null;
+                        continue;
+                    }
 
                     var clearanceStats = ReFitClearanceCorrection.Apply(
                         asset,
@@ -1800,12 +2266,14 @@ namespace Orbiters.ReFit
             var asset = state.asset;
             int vertexCount = asset.localVertices.Length;
             var result = new Vector3[vertexCount];
-            var w2l = asset.rendererWorldToLocal;
-            bool replace = state.replace;
+            var w2l = state.targetSpaceMetadata != null && state.targetSpaceMetadata.hasDeltaWorldToLocal
+                ? state.targetSpaceMetadata.deltaWorldToLocal
+                : asset.rendererWorldToLocal;
+            bool rendererLocalDeltas = state.replace || state.targetSpaceMetadata != null;
             Parallel.For(0, vertexCount, i =>
             {
                 var dWorld = groupDeltas[asset.groupOfVertex[i]];
-                if (replace)
+                if (rendererLocalDeltas)
                 {
                     // New bindposes are captured in the staged pose: at rest the rebuilt armature maps mesh
                     // space through the renderer transform. Store only the requested surface displacement here.
@@ -1837,6 +2305,8 @@ namespace Orbiters.ReFit
                 comp.primaryShapeName = UniqueShapeName(newMesh, settings.blendshapeName);
                 newMesh.AddBlendShapeFrame(comp.primaryShapeName, 100f, state.primaryLocalDeltas, state.primaryNormalDeltas, null);
                 comp.debugPrimaryRawLocalDeltas = state.primaryRawLocalDeltas;
+                if (comp.generatedMetadata != null)
+                    comp.generatedMetadata.primaryShapeName = comp.primaryShapeName;
             }
 
             if (state.shapes.Count > 0)
@@ -1844,6 +2314,8 @@ namespace Orbiters.ReFit
                 comp.secondaryShapeNames = new string[state.shapes.Count];
                 comp.secondaryMirrorWeights = new float[state.shapes.Count];
                 comp.debugSecondaryRawLocalDeltas = new Vector3[state.shapes.Count][];
+                if (comp.generatedMetadata != null)
+                    comp.generatedMetadata.transferredShapes = new ReFitGeneratedTransferredShapeMetadata[state.shapes.Count];
                 for (int s = 0; s < state.shapes.Count; s++)
                 {
                     var shape = state.shapes[s];
@@ -1855,6 +2327,16 @@ namespace Orbiters.ReFit
                     comp.secondaryShapeNames[s] = name;
                     comp.secondaryMirrorWeights[s] = shape.mirrorWeight;
                     comp.debugSecondaryRawLocalDeltas[s] = shape.rawLocalDeltas;
+                    if (comp.generatedMetadata?.transferredShapes != null)
+                    {
+                        comp.generatedMetadata.transferredShapes[s] = new ReFitGeneratedTransferredShapeMetadata
+                        {
+                            sourceName = shape.sourceName,
+                            localDeltas = shape.localDeltas != null
+                                ? (Vector3[])shape.localDeltas.Clone()
+                                : null
+                        };
+                    }
                 }
             }
 
@@ -2201,6 +2683,7 @@ namespace Orbiters.ReFit
                 bindposes[i] = stageBones[i].worldToLocalMatrix * rendererL2W;
 
             comp.bones = refs.ToArray();
+            comp.assetBoneToNewBoneIndices = assetBoneToNew;
             comp.keptPlacements = placements.ToArray();
             comp.leafTailHints = BuildLeafTailHints(stageBones, originalAssetBonesByNew, assetBoneSet);
             bodyBoneToNewOut = bodyBoneToNew;

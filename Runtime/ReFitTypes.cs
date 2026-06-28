@@ -453,6 +453,100 @@ namespace Orbiters.ReFit
         public string note;
     }
 
+    /// <summary>Reusable source-to-target binding data saved on generated assets for later target-space blendshape transfers.</summary>
+    [Serializable]
+    public class ReFitGeneratedAssetMetadataData
+    {
+        public string primaryShapeName;
+        public int groupCount;
+        public int targetBodyVertexCount;
+        public int targetBodyTriangleIndexCount;
+        public int targetBodyBoneCount;
+        public bool hasDeltaWorldToLocal;
+        public Matrix4x4 deltaWorldToLocal;
+        public Matrix4x4[] targetBodyShapeBoneMatrices;
+        public bool[] targetBodyShapeBoneValid;
+        public int[] transferTriangles;
+        public Vector3[] transferBarycentrics;
+        public float[] falloff;
+        public float[] upperBodyHemWeights;
+        public float[] openBoundaryWeights;
+        public bool[] clearanceEligible;
+        public float[] sourceClearance;
+        public float[] sourcePrimaryExpansion;
+        public Vector3[] sourceBodyPointLocal;
+        public Vector3[] sourceBodyPointFromRefitLocalOffset;
+        public ReFitGeneratedTransferredShapeMetadata[] transferredShapes;
+
+        public ReFitGeneratedAssetMetadataData Clone()
+        {
+            return new ReFitGeneratedAssetMetadataData
+            {
+                primaryShapeName = primaryShapeName,
+                groupCount = groupCount,
+                targetBodyVertexCount = targetBodyVertexCount,
+                targetBodyTriangleIndexCount = targetBodyTriangleIndexCount,
+                targetBodyBoneCount = targetBodyBoneCount,
+                hasDeltaWorldToLocal = hasDeltaWorldToLocal,
+                deltaWorldToLocal = deltaWorldToLocal,
+                targetBodyShapeBoneMatrices = targetBodyShapeBoneMatrices != null
+                    ? (Matrix4x4[])targetBodyShapeBoneMatrices.Clone()
+                    : null,
+                targetBodyShapeBoneValid = targetBodyShapeBoneValid != null
+                    ? (bool[])targetBodyShapeBoneValid.Clone()
+                    : null,
+                transferTriangles = transferTriangles != null ? (int[])transferTriangles.Clone() : null,
+                transferBarycentrics = transferBarycentrics != null ? (Vector3[])transferBarycentrics.Clone() : null,
+                falloff = falloff != null ? (float[])falloff.Clone() : null,
+                upperBodyHemWeights = upperBodyHemWeights != null ? (float[])upperBodyHemWeights.Clone() : null,
+                openBoundaryWeights = openBoundaryWeights != null ? (float[])openBoundaryWeights.Clone() : null,
+                clearanceEligible = clearanceEligible != null ? (bool[])clearanceEligible.Clone() : null,
+                sourceClearance = sourceClearance != null ? (float[])sourceClearance.Clone() : null,
+                sourcePrimaryExpansion = sourcePrimaryExpansion != null ? (float[])sourcePrimaryExpansion.Clone() : null,
+                sourceBodyPointLocal = sourceBodyPointLocal != null ? (Vector3[])sourceBodyPointLocal.Clone() : null,
+                sourceBodyPointFromRefitLocalOffset = sourceBodyPointFromRefitLocalOffset != null
+                    ? (Vector3[])sourceBodyPointFromRefitLocalOffset.Clone()
+                    : null,
+                transferredShapes = CloneTransferredShapes(transferredShapes)
+            };
+        }
+
+        private static ReFitGeneratedTransferredShapeMetadata[] CloneTransferredShapes(
+            ReFitGeneratedTransferredShapeMetadata[] shapes)
+        {
+            if (shapes == null)
+                return null;
+
+            var clone = new ReFitGeneratedTransferredShapeMetadata[shapes.Length];
+            for (int i = 0; i < shapes.Length; i++)
+                clone[i] = shapes[i]?.Clone();
+            return clone;
+        }
+    }
+
+    [Serializable]
+    public class ReFitGeneratedTransferredShapeMetadata
+    {
+        public string sourceName;
+        public Vector3[] localDeltas;
+
+        public ReFitGeneratedTransferredShapeMetadata Clone()
+        {
+            return new ReFitGeneratedTransferredShapeMetadata
+            {
+                sourceName = sourceName,
+                localDeltas = localDeltas != null ? (Vector3[])localDeltas.Clone() : null
+            };
+        }
+    }
+
+    /// <summary>Scene component carrying binding metadata from a mesh refit to later blendshape-only passes.</summary>
+    [DisallowMultipleComponent]
+    public class ReFitGeneratedAssetMetadata : MonoBehaviour
+    {
+        public ReFitGeneratedAssetMetadataData data;
+    }
+
     /// <summary>Per-snapshot welded vertex group diagnostics for Scene view mesh-edge overlays.</summary>
     [Serializable]
     public class ReFitWeldedGroupDebugData
@@ -503,12 +597,16 @@ namespace Orbiters.ReFit
         public bool armatureReplaced;
         /// <summary>New bone list (aligned with the mesh bindposes), null when the armature is kept.</summary>
         public ReFitBoneRef[] bones;
+        /// <summary>For each original asset renderer bone, the corresponding index in <see cref="bones"/>.</summary>
+        public int[] assetBoneToNewBoneIndices;
         /// <summary>Kept bone subtree roots that must be (re)attached under target bones.</summary>
         public ReFitKeptBonePlacement[] keptPlacements;
         /// <summary>Non-deforming leaf-tail helpers to create under rebuilt leaf bones for debug/armature visualization.</summary>
         public ReFitLeafTailHint[] leafTailHints;
         /// <summary>Optional per-projection diagnostics captured for editor debug gizmos.</summary>
         public ReFitProjectionDebugData projectionDebug;
+        /// <summary>Reusable source-to-target binding metadata for later target-space blendshape-only passes.</summary>
+        public ReFitGeneratedAssetMetadataData generatedMetadata;
         /// <summary>Aggregate stats for the clearance correction pass, when enabled.</summary>
         public ReFitClearanceCorrectionStats clearanceCorrectionStats;
         /// <summary>Debug-only island propagation decisions from the primary clearance correction pass.</summary>

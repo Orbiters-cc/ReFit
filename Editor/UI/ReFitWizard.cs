@@ -31,6 +31,8 @@ namespace Orbiters.ReFit.Editor
         private const string BlackOrbitProfilePath = "Packages/orbiters.refit/blackorbit.png";
         private const string KofiSymbolPath = "Packages/orbiters.refit/kofi_symbol.png";
         private const string KofiUrl = "https://ko-fi.com/blackorbit";
+        private const float ClothingDefaultTightness = 0.93f;
+        private const float AccessoryDefaultTightness = 0f;
 
         private enum Step
         {
@@ -45,6 +47,7 @@ namespace Orbiters.ReFit.Editor
             AssetFileInput,
             TargetForFile,
             FileAssetChoice,
+            Tightness,
             Summary,
             Settings,
             GravityPreview,
@@ -71,6 +74,8 @@ namespace Orbiters.ReFit.Editor
         private bool clearanceAdvanced;
         private bool clearanceTightnessKnown = true;
         private float clearanceTightnessPreset = 0.5f;
+        private bool clearanceTightnessUserChosen;
+        private bool standardTightnessInitialized;
 
         private ScrollView content;
         private Button backButton;
@@ -164,6 +169,7 @@ namespace Orbiters.ReFit.Editor
             myAvatar = null; asset = null; assetFileObject = null;
             targetAvatar = null; sourceAvatar = null; blendshape = null;
             mode = ReFitMode.MeshToMesh;
+            ResetTightnessChoice();
             validateReport = null; lastResult = null;
             lastRequest = null; gravityPreview = null;
             Render();
@@ -186,13 +192,14 @@ namespace Orbiters.ReFit.Editor
                 case Step.AvatarSelect: BuildAvatarSelect(); break;
                 case Step.AssetSelect: BuildAssetSelect(); break;
                 case Step.FitChoice: BuildFitChoice(); break;
-                case Step.TargetInput: BuildTargetInput(Step.Summary); break;
+                case Step.TargetInput: BuildTargetInput(Step.Tightness); break;
                 case Step.MyAvatarChoice: BuildMyAvatarChoice(); break;
                 case Step.SourceInput: BuildSourceInput(); break;
                 case Step.BlendshapeSelect: BuildBlendshapeSelect(); break;
                 case Step.AssetFileInput: BuildAssetFileInput(); break;
                 case Step.TargetForFile: BuildTargetInput(Step.FileAssetChoice); break;
                 case Step.FileAssetChoice: BuildFileAssetChoice(); break;
+                case Step.Tightness: BuildTightness(); break;
                 case Step.Summary: BuildSummary(); break;
                 case Step.Settings: BuildToolSettings(); break;
                 case Step.GravityPreview: BuildGravityPreview(); break;
@@ -304,7 +311,7 @@ namespace Orbiters.ReFit.Editor
                 if (smr.sharedMesh == null) continue;
                 var s = smr;
                 var sub = $"{smr.sharedMesh.vertexCount} vertices" + (smr == body ? "  -  looks like the body" : "");
-                cards.Add(Card(s.name, sub, () => { asset = s; Go(Step.FitChoice); }, "refit-card--list"));
+                cards.Add(Card(s.name, sub, () => { asset = s; ResetTightnessChoice(); Go(Step.FitChoice); }, "refit-card--list"));
             }
         }
 
@@ -312,7 +319,7 @@ namespace Orbiters.ReFit.Editor
         {
             Question("Do you want to make it fit your avatar or another one ?");
             var cards = Cards();
-            cards.Add(Card("To my avatar", "The asset stays on this avatar", () => { targetAvatar = myAvatar; Go(Step.MyAvatarChoice); }));
+            cards.Add(Card("To my avatar", "The asset stays on this avatar", () => { targetAvatar = myAvatar; ResetTightnessChoice(); Go(Step.MyAvatarChoice); }));
             cards.Add(Card("To another one", "Move and fit the asset onto a different avatar", () =>
             {
                 sourceAvatar = myAvatar;
@@ -331,6 +338,7 @@ namespace Orbiters.ReFit.Editor
             var nextButton = Primary("Next", () =>
             {
                 targetAvatar = (GameObject)field.value;
+                ResetTightnessChoice();
                 Go(next);
             });
             nextButton.SetEnabled(targetAvatar != null);
@@ -360,7 +368,7 @@ namespace Orbiters.ReFit.Editor
             {
                 sourceAvatar = (GameObject)field.value;
                 mode = ReFitMode.MeshToMesh;
-                Go(Step.Summary);
+                Go(Step.Tightness);
             });
             nextButton.SetEnabled(sourceAvatar != null);
             field.RegisterValueChangedCallback(e => nextButton.SetEnabled(e.newValue != null));
@@ -399,7 +407,7 @@ namespace Orbiters.ReFit.Editor
                 blendshape = dropdown.value;
                 sourceAvatar = (GameObject)sourceField.value;
                 mode = sourceAvatar != null ? ReFitMode.MeshAndBlendshape : ReFitMode.Blendshape;
-                Go(Step.Summary);
+                Go(Step.Tightness);
             });
         }
 
@@ -430,6 +438,7 @@ namespace Orbiters.ReFit.Editor
                 if (renderers.Length == 1)
                 {
                     asset = renderers[0];
+                    ResetTightnessChoice();
                     Go(Step.TargetForFile);
                     return;
                 }
@@ -443,7 +452,7 @@ namespace Orbiters.ReFit.Editor
                 {
                     if (smr.sharedMesh == null) continue;
                     var s = smr;
-                    cards.Add(Card(s.name, $"{s.sharedMesh.vertexCount} vertices", () => { asset = s; Go(Step.TargetForFile); }, "refit-card--list"));
+                    cards.Add(Card(s.name, $"{s.sharedMesh.vertexCount} vertices", () => { asset = s; ResetTightnessChoice(); Go(Step.TargetForFile); }, "refit-card--list"));
                 }
             }
 
@@ -467,6 +476,80 @@ namespace Orbiters.ReFit.Editor
                 () => Go(Step.BlendshapeSelect)));
         }
 
+        private void BuildTightness()
+        {
+            EnsureStandardTightnessDefault();
+
+            Question("How tight should the asset be around the growing parts ?");
+
+            var layout = new VisualElement();
+            layout.AddToClassList("refit-tightness-layout");
+            content.Add(layout);
+
+            layout.Add(BuildTightnessOption("Not tight", false, "Best for accessories"));
+
+            var sliderColumn = new VisualElement();
+            sliderColumn.AddToClassList("refit-tightness-slider-column");
+            var slider = new Slider(" ", 0f, 1f)
+            {
+                value = clearanceTightnessKnown ? clearanceTightnessPreset : 0.5f
+            };
+            slider.AddToClassList("refit-tightness-slider");
+            slider.RegisterValueChangedCallback(e =>
+            {
+                ApplyClearanceTightnessPreset(e.newValue);
+            });
+            sliderColumn.Add(slider);
+            layout.Add(sliderColumn);
+
+            layout.Add(BuildTightnessOption("Tight", true, "Best for clothing"));
+
+            if (!clearanceTightnessKnown)
+                Help("Custom advanced setup is active. Move the slider to replace it with a tightness preset.");
+
+            var footer = new VisualElement();
+            footer.AddToClassList("refit-tightness-footer");
+            content.Add(footer);
+
+            var next = new Button(() => Go(Step.Summary)) { text = "Next" };
+            next.AddToClassList("refit-primary");
+            next.AddToClassList("refit-tightness-next");
+            footer.Add(next);
+        }
+
+        private VisualElement BuildTightnessOption(string title, bool tight, string caption)
+        {
+            var column = new VisualElement();
+            column.AddToClassList("refit-tightness-option");
+
+            var titleLabel = new Label(title);
+            titleLabel.AddToClassList("refit-tightness-title");
+            column.Add(titleLabel);
+
+            column.Add(new TightnessIllustration(tight));
+
+            var captionLabel = new Label(caption);
+            captionLabel.AddToClassList("refit-tightness-caption");
+            column.Add(captionLabel);
+
+            return column;
+        }
+
+        private void EnsureStandardTightnessDefault()
+        {
+            if (standardTightnessInitialized)
+                return;
+
+            standardTightnessInitialized = true;
+            if (clearanceTightnessUserChosen || !clearanceTightnessKnown)
+                return;
+
+            var candidate = ReFitGravityRelaxation.DetectCandidate(asset, targetAvatar);
+            ApplyClearanceTightnessPreset(candidate != null && candidate.isCandidate
+                ? ClothingDefaultTightness
+                : AccessoryDefaultTightness, false);
+        }
+
         // ------------------------------------------------------------------
         // Summary & execution
         // ------------------------------------------------------------------
@@ -480,6 +563,9 @@ namespace Orbiters.ReFit.Editor
             if (mode != ReFitMode.Blendshape) SummaryRow("Made for", sourceAvatar != null ? sourceAvatar.name : "-");
             SummaryRow("Fit to", targetAvatar != null ? targetAvatar.name : "-");
             if (mode != ReFitMode.MeshToMesh) SummaryRow("Blendshape", blendshape ?? "-");
+            SummaryRow("Tightness", clearanceTightnessKnown
+                ? $"{Mathf.RoundToInt(clearanceTightnessPreset * 100f)}%"
+                : "Custom");
 
             // Advanced settings
             var advanced = new Foldout { text = "Advanced options", value = false };
@@ -888,10 +974,12 @@ namespace Orbiters.ReFit.Editor
                 AddInlineHelp(parent, "Custom advanced setup is active. Move the slider to replace it with a tightness preset.");
         }
 
-        private void ApplyClearanceTightnessPreset(float value)
+        private void ApplyClearanceTightnessPreset(float value, bool userChosen = true)
         {
             clearanceTightnessPreset = Mathf.Clamp01(value);
             clearanceTightnessKnown = true;
+            if (userChosen)
+                clearanceTightnessUserChosen = true;
 
             settings.clearanceTightnessFactor = LerpPreset(clearanceTightnessPreset, 0.85f, 0.5f, 0.08f);
             settings.clearanceMinimumSafetyDistance = LerpPreset(clearanceTightnessPreset, 0.006f, 0.003f, 0.002f);
@@ -924,6 +1012,15 @@ namespace Orbiters.ReFit.Editor
         private void MarkClearanceTightnessCustom()
         {
             clearanceTightnessKnown = false;
+            clearanceTightnessUserChosen = true;
+        }
+
+        private void ResetTightnessChoice()
+        {
+            standardTightnessInitialized = false;
+            clearanceTightnessUserChosen = false;
+            clearanceTightnessKnown = true;
+            clearanceTightnessPreset = 0.5f;
         }
 
         private static float SmoothPreset(float value)
@@ -1486,6 +1583,147 @@ namespace Orbiters.ReFit.Editor
             catch (UnityException)
             {
                 return texture;
+            }
+        }
+
+        private sealed class TightnessIllustration : VisualElement
+        {
+            private const float NoTightWidth = 102f;
+            private const float TightWidth = 89f;
+            private const float ViewHeight = 218f;
+            private readonly bool tight;
+
+            public TightnessIllustration(bool tight)
+            {
+                this.tight = tight;
+                pickingMode = PickingMode.Ignore;
+                AddToClassList("refit-tightness-illustration");
+                style.width = tight ? TightWidth : NoTightWidth;
+                style.height = ViewHeight;
+                generateVisualContent += OnGenerateVisualContent;
+            }
+
+            private void OnGenerateVisualContent(MeshGenerationContext context)
+            {
+                var rect = contentRect;
+                if (rect.width <= 0f || rect.height <= 0f)
+                    return;
+
+                float viewWidth = tight ? TightWidth : NoTightWidth;
+                float scale = Mathf.Min(rect.width / viewWidth, rect.height / ViewHeight);
+                float offsetX = rect.x + (rect.width - viewWidth * scale) * 0.5f;
+                float offsetY = rect.y + (rect.height - ViewHeight * scale) * 0.5f;
+                var painter = context.painter2D;
+                painter.fillColor = new Color(217f / 255f, 217f / 255f, 217f / 255f, 1f);
+
+                Func<float, float, Vector2> point = (x, y) => new Vector2(offsetX + x * scale, offsetY + y * scale);
+                if (tight)
+                    DrawTightSvg(painter, point);
+                else
+                    DrawNoTightSvg(painter, point);
+            }
+
+            private static void DrawNoTightSvg(Painter2D painter, Func<float, float, Vector2> point)
+            {
+                FillPath(painter,
+                    p => p.MoveTo(point(39.6337f, 0f)),
+                    p => p.BezierCurveTo(point(32.9696f, 7.30301f), point(20.245f, 26.069f), point(20.245f, 42.7087f)),
+                    p => p.BezierCurveTo(point(20.245f, 59.3485f), point(39.6337f, 85.4174f), point(39.6337f, 85.4174f)),
+                    p => p.LineTo(point(32.1702f, 85.4174f)),
+                    p => p.BezierCurveTo(point(23.9509f, 78.5767f), point(13.5891f, 60.4578f), point(13.5891f, 42.7087f)),
+                    p => p.BezierCurveTo(point(13.5891f, 24.9597f), point(23.9509f, 6.84082f), point(32.1702f, 0.0000329479f)),
+                    p => p.LineTo(point(39.6337f, 0f)));
+
+                FillPath(painter,
+                    p => p.MoveTo(point(34.9679f, 42.7087f)),
+                    p => p.BezierCurveTo(point(34.9679f, 61.1234f), point(51.4065f, 78.854f), point(59.6258f, 85.4174f)),
+                    p => p.BezierCurveTo(point(67.8451f, 78.3918f), point(84.2837f, 60.0141f), point(84.2837f, 42.7087f)),
+                    p => p.BezierCurveTo(point(84.2837f, 25.4034f), point(67.8451f, 7.02567f), point(59.6258f, 0f)),
+                    p => p.BezierCurveTo(point(51.4065f, 6.56348f), point(34.9679f, 24.2941f), point(34.9679f, 42.7087f)));
+
+                FillPath(painter,
+                    p => p.MoveTo(point(39.9107f, 132.563f)),
+                    p => p.BezierCurveTo(point(33.2467f, 139.866f), point(6.65588f, 158.632f), point(6.65588f, 175.272f)),
+                    p => p.BezierCurveTo(point(6.65588f, 191.912f), point(39.9107f, 217.981f), point(39.9107f, 217.981f)),
+                    p => p.LineTo(point(32.4473f, 217.981f)),
+                    p => p.BezierCurveTo(point(24.228f, 211.14f), point(-0.0000305176f, 193.021f), point(-0.0000305176f, 175.272f)),
+                    p => p.BezierCurveTo(point(-0.0000305176f, 157.523f), point(24.228f, 139.404f), point(32.4473f, 132.564f)),
+                    p => p.LineTo(point(39.9107f, 132.563f)));
+
+                FillPath(painter,
+                    p => p.MoveTo(point(21.3788f, 175.272f)),
+                    p => p.BezierCurveTo(point(21.3788f, 193.687f), point(51.6835f, 211.417f), point(59.9028f, 217.981f)),
+                    p => p.BezierCurveTo(point(68.1221f, 210.955f), point(101.78f, 192.578f), point(101.78f, 175.272f)),
+                    p => p.BezierCurveTo(point(101.78f, 157.967f), point(68.1221f, 139.589f), point(59.9028f, 132.563f)),
+                    p => p.BezierCurveTo(point(51.6835f, 139.127f), point(21.3788f, 156.858f), point(21.3788f, 175.272f)));
+
+                FillPath(painter,
+                    p => p.MoveTo(point(47.4233f, 95.4014f)),
+                    p => p.LineTo(point(50.4739f, 95.4014f)),
+                    p => p.LineTo(point(50.4739f, 104.553f)),
+                    p => p.LineTo(point(58.5164f, 104.553f)),
+                    p => p.LineTo(point(48.8099f, 121.47f)),
+                    p => p.LineTo(point(38.826f, 104.553f)),
+                    p => p.LineTo(point(47.4233f, 104.553f)),
+                    p => p.LineTo(point(47.4233f, 95.4014f)));
+            }
+
+            private static void DrawTightSvg(Painter2D painter, Func<float, float, Vector2> point)
+            {
+                FillPath(painter,
+                    p => p.MoveTo(point(26.3217f, 132.563f)),
+                    p => p.BezierCurveTo(point(22.61f, 136.631f), point(20.6647f, 144.254f), point(16.3624f, 153.086f)),
+                    p => p.BezierCurveTo(point(12.9402f, 160.111f), point(6.65591f, 167.9f), point(6.65591f, 175.272f)),
+                    p => p.BezierCurveTo(point(6.65591f, 181.362f), point(13.0223f, 188.715f), point(16.3624f, 195.591f)),
+                    p => p.BezierCurveTo(point(22.1488f, 207.502f), point(26.3217f, 217.981f), point(26.3217f, 217.981f)),
+                    p => p.LineTo(point(18.8582f, 217.981f)),
+                    p => p.BezierCurveTo(point(13.857f, 213.818f), point(11.6921f, 205.48f), point(7.84106f, 195.591f)),
+                    p => p.BezierCurveTo(point(5.36313f, 189.227f), point(0f, 182.221f), point(0f, 175.272f)),
+                    p => p.BezierCurveTo(point(0f, 167.636f), point(5.70156f, 159.931f), point(8.60014f, 153.086f)),
+                    p => p.BezierCurveTo(point(12.4388f, 144.02f), point(14.1751f, 136.461f), point(18.8582f, 132.564f)),
+                    p => p.LineTo(point(26.3217f, 132.563f)));
+
+                FillPath(painter,
+                    p => p.MoveTo(point(7.78976f, 175.272f)),
+                    p => p.BezierCurveTo(point(7.78976f, 193.687f), point(38.0944f, 211.417f), point(46.3137f, 217.981f)),
+                    p => p.BezierCurveTo(point(54.533f, 210.955f), point(88.1908f, 192.578f), point(88.1908f, 175.272f)),
+                    p => p.BezierCurveTo(point(88.1908f, 157.967f), point(54.533f, 139.589f), point(46.3137f, 132.563f)),
+                    p => p.BezierCurveTo(point(38.0944f, 139.127f), point(7.78976f, 156.858f), point(7.78976f, 175.272f)));
+
+                FillPath(painter,
+                    p => p.MoveTo(point(28.2633f, 0f)),
+                    p => p.BezierCurveTo(point(21.5992f, 7.30301f), point(8.8746f, 26.069f), point(8.8746f, 42.7087f)),
+                    p => p.BezierCurveTo(point(8.8746f, 59.3485f), point(28.2633f, 85.4174f), point(28.2633f, 85.4174f)),
+                    p => p.LineTo(point(20.7998f, 85.4174f)),
+                    p => p.BezierCurveTo(point(12.5805f, 78.5767f), point(2.21869f, 60.4578f), point(2.21869f, 42.7087f)),
+                    p => p.BezierCurveTo(point(2.21869f, 24.9597f), point(12.5805f, 6.84082f), point(20.7998f, 0.0000329479f)),
+                    p => p.LineTo(point(28.2633f, 0f)));
+
+                FillPath(painter,
+                    p => p.MoveTo(point(23.5976f, 42.7087f)),
+                    p => p.BezierCurveTo(point(23.5976f, 61.1234f), point(40.0361f, 78.854f), point(48.2554f, 85.4174f)),
+                    p => p.BezierCurveTo(point(56.4747f, 78.3918f), point(72.9133f, 60.0141f), point(72.9133f, 42.7087f)),
+                    p => p.BezierCurveTo(point(72.9133f, 25.4034f), point(56.4747f, 7.02567f), point(48.2554f, 0f)),
+                    p => p.BezierCurveTo(point(40.0361f, 6.56348f), point(23.5976f, 24.2941f), point(23.5976f, 42.7087f)));
+
+                FillPath(painter,
+                    p => p.MoveTo(point(36.0528f, 95.4014f)),
+                    p => p.LineTo(point(39.1035f, 95.4014f)),
+                    p => p.LineTo(point(39.1035f, 104.553f)),
+                    p => p.LineTo(point(47.146f, 104.553f)),
+                    p => p.LineTo(point(37.4395f, 121.47f)),
+                    p => p.LineTo(point(27.4556f, 104.553f)),
+                    p => p.LineTo(point(36.0528f, 104.553f)),
+                    p => p.LineTo(point(36.0528f, 95.4014f)));
+            }
+
+            private static void FillPath(Painter2D painter, params Action<Painter2D>[] commands)
+            {
+                painter.BeginPath();
+                for (int i = 0; i < commands.Length; i++)
+                    commands[i](painter);
+                painter.ClosePath();
+                painter.Fill();
             }
         }
 

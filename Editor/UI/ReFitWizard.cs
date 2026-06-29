@@ -22,6 +22,7 @@ namespace Orbiters.ReFit.Editor
             public string meshAssetPath;
             public SkinnedMeshRenderer sceneRenderer;
             public Mesh originalMesh;
+            public ReFitRendererState originalRendererState;
             public Mesh refitMesh;
         }
 
@@ -247,7 +248,7 @@ namespace Orbiters.ReFit.Editor
                 row.Add(name);
 
                 var captured = entry;
-                if (active && entry.originalMesh != null)
+                if (active && (entry.originalRendererState != null || entry.originalMesh != null))
                 {
                     var revert = new Button(() => RevertEntry(captured)) { text = "Revert" };
                     revert.AddToClassList("refit-back");
@@ -271,11 +272,18 @@ namespace Orbiters.ReFit.Editor
 
         private void RevertEntry(RefitLogEntry entry)
         {
-            if (entry?.sceneRenderer != null && entry.originalMesh != null)
+            if (entry?.sceneRenderer != null)
             {
-                Undo.RecordObject(entry.sceneRenderer, "ReFit revert");
-                entry.sceneRenderer.sharedMesh = entry.originalMesh;
-                EditorUtility.SetDirty(entry.sceneRenderer);
+                if (entry.originalRendererState != null)
+                {
+                    entry.originalRendererState.Restore(entry.sceneRenderer, "ReFit revert");
+                }
+                else if (entry.originalMesh != null)
+                {
+                    Undo.RecordObject(entry.sceneRenderer, "ReFit revert");
+                    entry.sceneRenderer.sharedMesh = entry.originalMesh;
+                    EditorUtility.SetDirty(entry.sceneRenderer);
+                }
             }
             Render();
         }
@@ -1237,6 +1245,7 @@ namespace Orbiters.ReFit.Editor
                     meshAssetPath = lastResult.meshAssetPath,
                     sceneRenderer = lastResult.sceneRenderer,
                     originalMesh = lastResult.originalMesh,
+                    originalRendererState = lastResult.originalRendererState,
                     refitMesh = lastResult.mesh
                 });
             }

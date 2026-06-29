@@ -19,6 +19,8 @@ namespace Orbiters.ReFit.Editor
         public SkinnedMeshRenderer sceneRenderer;
         /// <summary>The mesh the renderer used before the re-fit (assign it back to revert).</summary>
         public Mesh originalMesh;
+        /// <summary>The renderer state captured before the re-fit was applied, including skinning and local pose.</summary>
+        public ReFitRendererState originalRendererState;
         /// <summary>Name of the generated primary refit blendshape.</summary>
         public string primaryShapeName;
         /// <summary>Names of the generated transferred blendshapes.</summary>
@@ -40,6 +42,281 @@ namespace Orbiters.ReFit.Editor
                         names.Add(secondaryShapeNames[i]);
             }
             return names.ToArray();
+        }
+    }
+
+    /// <summary>Undoable scene-renderer state captured before applying a ReFit result.</summary>
+    public class ReFitRendererState
+    {
+        private readonly List<TransformState> transformStates = new List<TransformState>();
+        private Mesh mesh;
+        private Transform snapshotRoot;
+        private Transform[] bones;
+        private string[] bonePaths;
+        private Transform rootBone;
+        private string rootBonePath;
+        private bool updateWhenOffscreen;
+        private Bounds localBounds;
+        private string[] blendShapeNames;
+        private float[] blendShapeWeights;
+        private bool hadGeneratedMetadata;
+        private ReFitGeneratedAssetMetadataData generatedMetadata;
+
+        private class TransformState
+        {
+            public Transform transform;
+            public string path;
+            public Vector3 localPosition;
+            public Quaternion localRotation;
+            public Vector3 localScale;
+        }
+
+        public static ReFitRendererState Capture(SkinnedMeshRenderer renderer)
+        {
+            if (renderer == null) return null;
+
+            var state = new ReFitRendererState
+            {
+                mesh = renderer.sharedMesh,
+                snapshotRoot = renderer.transform.root,
+                bones = renderer.bones != null ? (Transform[])renderer.bones.Clone() : null,
+                rootBone = renderer.rootBone,
+                updateWhenOffscreen = renderer.updateWhenOffscreen,
+                localBounds = renderer.localBounds
+            };
+
+            state.rootBonePath = GetPath(state.snapshotRoot, renderer.rootBone);
+            if (state.bones != null)
+            {
+                state.bonePaths = new string[state.bones.Length];
+                for (int i = 0; i < state.bones.Length; i++)
+                    state.bonePaths[i] = GetPath(state.snapshotRoot, state.bones[i]);
+            }
+
+            CaptureBlendShapes(renderer, state);
+            CaptureGeneratedMetadata(renderer, state);
+
+            var capturedPaths = new HashSet<string>();
+            CaptureTransformAndAncestors(state.snapshotRoot, renderer.transform, state.transformStates, capturedPaths);
+            CaptureTransformAndAncestors(state.snapshotRoot, renderer.rootBone, state.transformStates, capturedPaths);
+            if (state.bones != null)
+            {
+                foreach (var bone in state.bones)
+                    CaptureTransformAndAncestors(state.snapshotRoot, bone, state.transformStates, capturedPaths);
+            }
+
+            return state;
+        }
+
+        public bool Restore(SkinnedMeshRenderer renderer, string undoName)
+        {
+            if (renderer == null) return false;
+
+            var root = snapshotRoot != null ? snapshotRoot : renderer.transform.root;
+            var statesByPath = BuildStateMap(transformStates);
+            for (int i = 0; i < transformStates.Count; i++)
+            {
+                var state = transformStates[i];
+                var transform = state.transform != null
+                    ? state.transform
+                    : ResolveOrCreateTransform(root, state.path, statesByPath, undoName);
+                if (transform == null) continue;
+
+                Undo.RecordObject(transform, undoName);
+                transform.localPosition = state.localPosition;
+                transform.localRotation = state.localRotation;
+                transform.localScale = state.localScale;
+                EditorUtility.SetDirty(transform);
+            }
+
+            Undo.RecordObject(renderer, undoName);
+            renderer.sharedMesh = mesh;
+
+            if (bonePaths != null)
+            {
+                var restoredBones = new Transform[bonePaths.Length];
+                for (int i = 0; i < restoredBones.Length; i++)
+                {
+                    restoredBones[i] = bones != null && i < bones.Length && bones[i] != null
+                        ? bones[i]
+                        : ResolveOrCreateTransform(root, bonePaths[i], statesByPath, undoName);
+                }
+                renderer.bones = restoredBones;
+            }
+
+            renderer.rootBone = rootBone != null
+                ? rootBone
+                : ResolveOrCreateTransform(root, rootBonePath, statesByPath, undoName);
+            renderer.updateWhenOffscreen = updateWhenOffscreen;
+            renderer.localBounds = localBounds;
+            RestoreBlendShapeWeights(renderer);
+            RestoreGeneratedMetadata(renderer, undoName);
+            EditorUtility.SetDirty(renderer);
+            PrefabUtility.RecordPrefabInstancePropertyModifications(renderer);
+            return true;
+        }
+
+        private static void CaptureBlendShapes(SkinnedMeshRenderer renderer, ReFitRendererState state)
+        {
+            var sourceMesh = renderer.sharedMesh;
+            if (sourceMesh == null || sourceMesh.blendShapeCount == 0)
+            {
+                state.blendShapeNames = new string[0];
+                state.blendShapeWeights = new float[0];
+                return;
+            }
+
+            state.blendShapeNames = new string[sourceMesh.blendShapeCount];
+            state.blendShapeWeights = new float[sourceMesh.blendShapeCount];
+            for (int i = 0; i < sourceMesh.blendShapeCount; i++)
+            {
+                state.blendShapeNames[i] = sourceMesh.GetBlendShapeName(i);
+                state.blendShapeWeights[i] = renderer.GetBlendShapeWeight(i);
+            }
+        }
+
+        private static void CaptureGeneratedMetadata(SkinnedMeshRenderer renderer, ReFitRendererState state)
+        {
+            var metadata = renderer.GetComponent<ReFitGeneratedAssetMetadata>();
+            state.hadGeneratedMetadata = metadata != null;
+            state.generatedMetadata = metadata != null && metadata.data != null ? metadata.data.Clone() : null;
+        }
+
+        private void RestoreBlendShapeWeights(SkinnedMeshRenderer renderer)
+        {
+            var targetMesh = renderer.sharedMesh;
+            if (targetMesh == null || blendShapeNames == null || blendShapeWeights == null) return;
+
+            for (int i = 0; i < targetMesh.blendShapeCount; i++)
+                renderer.SetBlendShapeWeight(i, 0f);
+
+            int count = Mathf.Min(blendShapeNames.Length, blendShapeWeights.Length);
+            for (int i = 0; i < count; i++)
+            {
+                if (string.IsNullOrEmpty(blendShapeNames[i])) continue;
+                int index = targetMesh.GetBlendShapeIndex(blendShapeNames[i]);
+                if (index >= 0) renderer.SetBlendShapeWeight(index, blendShapeWeights[i]);
+            }
+        }
+
+        private void RestoreGeneratedMetadata(SkinnedMeshRenderer renderer, string undoName)
+        {
+            var metadata = renderer.GetComponent<ReFitGeneratedAssetMetadata>();
+            if (!hadGeneratedMetadata)
+            {
+                if (metadata != null) Undo.DestroyObjectImmediate(metadata);
+                return;
+            }
+
+            if (metadata == null)
+            {
+                metadata = Undo.AddComponent<ReFitGeneratedAssetMetadata>(renderer.gameObject);
+            }
+            else
+            {
+                Undo.RecordObject(metadata, undoName);
+            }
+
+            metadata.data = generatedMetadata != null ? generatedMetadata.Clone() : null;
+            EditorUtility.SetDirty(metadata);
+        }
+
+        private static void CaptureTransformAndAncestors(Transform root, Transform transform,
+            List<TransformState> states, HashSet<string> capturedPaths)
+        {
+            if (root == null || transform == null || !transform.IsChildOf(root)) return;
+
+            var chain = new List<Transform>();
+            var current = transform;
+            while (current != null && current != root)
+            {
+                chain.Add(current);
+                current = current.parent;
+            }
+
+            for (int i = chain.Count - 1; i >= 0; i--)
+            {
+                var t = chain[i];
+                string path = GetPath(root, t);
+                if (string.IsNullOrEmpty(path) || !capturedPaths.Add(path)) continue;
+                states.Add(new TransformState
+                {
+                    transform = t,
+                    path = path,
+                    localPosition = t.localPosition,
+                    localRotation = t.localRotation,
+                    localScale = t.localScale
+                });
+            }
+        }
+
+        private static Dictionary<string, TransformState> BuildStateMap(List<TransformState> states)
+        {
+            var map = new Dictionary<string, TransformState>();
+            if (states == null) return map;
+            for (int i = 0; i < states.Count; i++)
+            {
+                var state = states[i];
+                if (state == null || string.IsNullOrEmpty(state.path) || map.ContainsKey(state.path)) continue;
+                map.Add(state.path, state);
+            }
+            return map;
+        }
+
+        private static Transform ResolveOrCreateTransform(Transform root, string path,
+            Dictionary<string, TransformState> statesByPath, string undoName)
+        {
+            if (root == null || path == null) return null;
+            if (path.Length == 0) return root;
+
+            var existing = root.Find(path);
+            if (existing != null) return existing;
+
+            var parts = path.Split('/');
+            var parent = root;
+            string currentPath = string.Empty;
+            for (int i = 0; i < parts.Length; i++)
+            {
+                string part = parts[i];
+                currentPath = currentPath.Length == 0 ? part : currentPath + "/" + part;
+                var child = parent.Find(part);
+                if (child == null)
+                {
+                    var go = new GameObject(part);
+                    Undo.RegisterCreatedObjectUndo(go, undoName);
+                    child = go.transform;
+                    child.SetParent(parent, false);
+                }
+
+                if (statesByPath != null && statesByPath.TryGetValue(currentPath, out var state))
+                {
+                    Undo.RecordObject(child, undoName);
+                    child.localPosition = state.localPosition;
+                    child.localRotation = state.localRotation;
+                    child.localScale = state.localScale;
+                    EditorUtility.SetDirty(child);
+                }
+
+                parent = child;
+            }
+
+            return parent;
+        }
+
+        private static string GetPath(Transform root, Transform transform)
+        {
+            if (root == null || transform == null || !transform.IsChildOf(root)) return null;
+            if (root == transform) return string.Empty;
+
+            var parts = new Stack<string>();
+            var current = transform;
+            while (current != null && current != root)
+            {
+                parts.Push(current.name);
+                current = current.parent;
+            }
+
+            return current == root ? string.Join("/", parts.ToArray()) : null;
         }
     }
 
@@ -71,6 +348,16 @@ namespace Orbiters.ReFit.Editor
         public static SkinnedMeshRenderer ApplyToScene(ReFitRequest request, ReFitComputation comp, ReFitReport report,
             ReFitDebugSession debug = null)
         {
+            return ApplyToScene(request, comp, report, out _, debug);
+        }
+
+        /// <summary>
+        /// Applies the computation to the scene and returns the renderer state captured immediately before mutation.
+        /// </summary>
+        public static SkinnedMeshRenderer ApplyToScene(ReFitRequest request, ReFitComputation comp, ReFitReport report,
+            out ReFitRendererState originalState, ReFitDebugSession debug = null)
+        {
+            originalState = null;
             Undo.IncrementCurrentGroup();
             int undoGroup = Undo.GetCurrentGroup();
             Undo.SetCurrentGroupName("ReFit");
@@ -95,6 +382,7 @@ namespace Orbiters.ReFit.Editor
 
             Undo.RecordObject(renderer, "ReFit");
             comp.appliedOriginalMesh = renderer.sharedMesh;
+            originalState = ReFitRendererState.Capture(renderer);
             CaptureGeneratedMeshPreviewWithOriginalSkinning(debug, renderer, comp);
             renderer.sharedMesh = comp.mesh;
             if (!comp.armatureReplaced)

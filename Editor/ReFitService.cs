@@ -58,8 +58,10 @@ namespace Orbiters.ReFit.Editor
                 debug?.CaptureScenePoseAsDefault("01_scene_pose_as_default", request.assetRenderer);
 
                 progress?.Invoke(0.96f, "Applying to the scene");
-                result.sceneRenderer = ReFitAssetPipeline.ApplyToScene(request, computation, result.report, debug);
+                result.sceneRenderer = ReFitAssetPipeline.ApplyToScene(request, computation, result.report,
+                    out var originalRendererState, debug);
                 result.originalMesh = computation.appliedOriginalMesh;
+                result.originalRendererState = originalRendererState;
                 if (result.sceneRenderer != null && (request.settings == null || request.settings.savePrefab))
                     result.prefabAssetPath = ReFitAssetPipeline.TrySavePrefab(computation, result.sceneRenderer, subfolder, result.report);
 
@@ -117,8 +119,10 @@ namespace Orbiters.ReFit.Editor
                     debug?.CaptureScenePoseAsDefault("01_scene_pose_as_default", request.assetRenderer);
 
                     progress?.Invoke(0.97f, "Applying to the scene");
-                    result.sceneRenderer = ReFitAssetPipeline.ApplyToScene(request, computation, result.report, debug);
+                    result.sceneRenderer = ReFitAssetPipeline.ApplyToScene(request, computation, result.report,
+                        out var originalRendererState, debug);
                     result.originalMesh = computation.appliedOriginalMesh;
+                    result.originalRendererState = originalRendererState;
                     if (result.sceneRenderer != null && (request.settings == null || request.settings.savePrefab))
                         result.prefabAssetPath = ReFitAssetPipeline.TrySavePrefab(computation, result.sceneRenderer, subfolder, result.report);
 

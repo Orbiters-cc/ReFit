@@ -51,6 +51,7 @@ namespace Orbiters.ReFit.Editor
                 result.mesh = computation.mesh;
                 result.primaryShapeName = computation.primaryShapeName;
                 result.secondaryShapeNames = computation.secondaryShapeNames;
+                result.secondarySourceShapeNames = computation.secondarySourceShapeNames;
                 result.meshAssetPath = ReFitAssetPipeline.SaveMesh(computation.mesh, subfolder, result.report);
 
                 debug = ReFitDebugService.BeginSession(request, result.report);
@@ -112,6 +113,7 @@ namespace Orbiters.ReFit.Editor
                     result.mesh = computation.mesh;
                     result.primaryShapeName = computation.primaryShapeName;
                     result.secondaryShapeNames = computation.secondaryShapeNames;
+                    result.secondarySourceShapeNames = computation.secondarySourceShapeNames;
                     result.meshAssetPath = ReFitAssetPipeline.SaveMesh(computation.mesh, subfolder, result.report);
 
                     debug = ReFitDebugService.BeginSession(request, result.report);

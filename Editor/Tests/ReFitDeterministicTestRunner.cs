@@ -23,6 +23,7 @@ namespace Orbiters.ReFit.Editor.Tests
         private const string FbxFixtureV1Path = "Packages/orbiters.refit/ReFit unit test v1.fbx";
         private const string FbxFixtureV2DifferentArmaturePath = "Packages/orbiters.refit/ReFit unit test v2 clothing with different armature.fbx";
         private const string FbxShapeName = "custom blendshape";
+        private const string RealHoodiePrefabPath = "Assets/Hoodie/Hoodie Prefab.prefab";
         private const string RealHoodiePath = "Assets/Hoodie/Model/Hoodie.fbx";
         private const string RealSourceAvatarPath = "Assets/my custom winterpaw orbit/default_MasculineCanine.v1.5.fbx";
         private const string RealTargetAvatarPath = "Assets/my custom winterpaw orbit/ulti paw v2.8.fbx";
@@ -40,6 +41,22 @@ namespace Orbiters.ReFit.Editor.Tests
             {
                 Debug.LogException(e);
                 EditorUtility.DisplayDialog("ReFit deterministic tests failed", e.Message, "OK");
+            }
+        }
+
+        [MenuItem("Tools/Orbiters/ReFit/Validate Active Scene Hoodie VRCFury State")]
+        public static void ValidateActiveSceneHoodieVrcfuryStateFromMenu()
+        {
+            try
+            {
+                ActiveSceneHoodiePrefab_HasFreshVrcfuryArmatureStateWhenPresent();
+                EditorUtility.DisplayDialog("ReFit active scene Hoodie check",
+                    "Active scene Hoodie VRCFury armature state is buildable.", "OK");
+            }
+            catch (Exception e)
+            {
+                Debug.LogException(e);
+                EditorUtility.DisplayDialog("ReFit active scene Hoodie check failed", e.Message, "OK");
             }
         }
 
@@ -116,11 +133,23 @@ namespace Orbiters.ReFit.Editor.Tests
                     "Real hoodie no-source blendshape matches source-FBX whole hoodie",
                     RealHoodie_NoSourceBlendshape_MatchesSourceFbxWholeHoodie);
                 RunCase(failures,
+                    "Real hoodie prefab refit keeps VRCFury Armature Link traversable",
+                    RealHoodiePrefab_ArmatureLinkTraversesTargetArmature);
+                RunCase(failures,
+                    "Real hoodie prefab VRCFury test-copy build merges armature bones",
+                    RealHoodiePrefab_VrcfuryTestCopyBuildMergesArmatureBones);
+                RunCase(failures,
+                    "Active scene Hoodie prefab has fresh VRCFury armature state when present",
+                    ActiveSceneHoodiePrefab_HasFreshVrcfuryArmatureStateWhenPresent);
+                RunCase(failures,
                     "Mesh refit with armature replacement disabled preserves clothing root bone",
                     MeshAndBlendshape_ArmatureReplacementDisabled_PreservesRootBone);
                 RunCase(failures,
                     "Armature replacement removes stale accessory skeleton",
                     MeshAndBlendshape_ArmatureReplacement_RemovesStaleAccessorySkeleton);
+                RunCase(failures,
+                    "Armature replacement restore restores original asset parentage",
+                    ArmatureReplacement_RestoreRestoresOriginalAssetParentage);
                 RunCase(failures,
                     "Armature replacement rebinds serialized component bone references",
                     ArmatureReplacement_RebindsSerializedComponentBoneReferences);
@@ -128,8 +157,20 @@ namespace Orbiters.ReFit.Editor.Tests
                     "Armature replacement repairs VRCFury Armature Link",
                     ArmatureReplacement_RepairsVrcfuryArmatureLink);
                 RunCase(failures,
+                    "Scene asset armature preflight repairs stale VRCFury alias state",
+                    SceneAssetArmaturePreflight_RepairsStaleVrcfuryAliasState);
+                RunCase(failures,
+                    "Standalone staging bakes the asset after source posing",
+                    Staging_StandaloneAssetBakeMatchesPostPoseSkin);
+                RunCase(failures,
+                    "Fresh target-nested source asset still stages through source pose",
+                    Staging_FreshTargetNestedSourceAssetDoesNotAssumeTargetSpace);
+                RunCase(failures,
                     "Armature replacement keeps extra ChestUp as a clothing side branch",
                     ArmatureReplacement_ChestUpSideBranchDoesNotTrapHumanChain);
+                RunCase(failures,
+                    "Armature replacement normalizes aliases for VRCFury traversal",
+                    ArmatureReplacement_NormalizesAliasesForVrcfuryTraversal);
                 RunCase(failures,
                     "Armature replacement adds target-derived non-deforming leaf helpers",
                     ArmatureReplacement_TargetChildCreatesLeafTailHelper);
@@ -1676,6 +1717,203 @@ namespace Orbiters.ReFit.Editor.Tests
             }
         }
 
+        private static void RealHoodiePrefab_ArmatureLinkTraversesTargetArmature()
+        {
+            if (!RealHoodieArtifactFixture.CanLoadRequiredAssets(out var missingAsset))
+            {
+                Debug.LogWarning(
+                    $"[ReFit Tests] Skipping real hoodie prefab VRCFury regression; missing '{missingAsset}'.");
+                return;
+            }
+            if (AssetDatabase.LoadAssetAtPath<GameObject>(RealHoodiePrefabPath) == null)
+            {
+                Debug.LogWarning(
+                    $"[ReFit Tests] Skipping real hoodie prefab VRCFury regression; missing '{RealHoodiePrefabPath}'.");
+                return;
+            }
+
+            using (var fixture = RealHoodieArtifactFixture.Create(RealHoodiePrefabPath))
+            {
+                var armatureLink = FindVrcfuryArmatureLink(fixture.hoodieRoot);
+                AssertTrue(armatureLink != null,
+                    "The real Hoodie prefab test object has no VRCFury Armature Link component to validate.");
+
+                var request = BuildRealHoodieSourceRequest(fixture);
+                ApplyHighTightnessSettings(request.settings);
+
+                var comp = new ReFitEngine().Run(request);
+                try
+                {
+                    AssertComputationSucceeded(comp);
+                    var applied = ReFitAssetPipeline.ApplyToScene(request, comp, comp.report);
+                    AssertTrue(applied != null, "Could not materialize the real Hoodie prefab refit result.");
+                    AssertTrue(applied.rootBone != null, "The real Hoodie prefab refit result has no root bone.");
+
+                    AssertVrcfuryArmatureLink(armatureLink, applied.rootBone,
+                        "The real Hoodie prefab VRCFury Armature Link was not rebound to the rebuilt root bone.");
+                    AssertTrue(!RendererHasBone(applied, "Left shoulder") &&
+                               !RendererHasBone(applied, "Right shoulder") &&
+                               !RendererHasBone(applied, "Left arm") &&
+                               !RendererHasBone(applied, "Right arm"),
+                        "Rex-style shoulder/arm bone names survived in the real Hoodie prefab renderer bones.");
+
+                    var targetHumanIndex = HumanoidBoneMapper.BuildHumanoidBoneIndex(fixture.targetAvatar.transform);
+                    AssertTrue(targetHumanIndex.TryGetValue(HumanBodyBones.Hips, out var targetHips) && targetHips != null,
+                        "The real target avatar fixture has no target Hips bone.");
+                    var matched = SimulateVrcfuryRecursiveMatches(applied.rootBone, targetHips);
+                    var requiredBones = new[]
+                    {
+                        HumanBodyBones.Chest,
+                        HumanBodyBones.Neck,
+                        HumanBodyBones.LeftShoulder,
+                        HumanBodyBones.LeftUpperArm,
+                        HumanBodyBones.RightShoulder,
+                        HumanBodyBones.RightUpperArm
+                    };
+                    foreach (var requiredBone in requiredBones)
+                    {
+                        if (!targetHumanIndex.TryGetValue(requiredBone, out var targetBone) || targetBone == null)
+                            continue;
+
+                        var rebuiltBone = FindRendererBone(applied, targetBone.name);
+                        AssertTrue(rebuiltBone != null,
+                            $"The real Hoodie prefab refit did not create a target-named '{targetBone.name}' bone for {requiredBone}.");
+                        AssertTrue(matched.Contains(rebuiltBone),
+                            $"VRCFury exact recursive traversal would leave '{targetBone.name}' ({requiredBone}) unmerged after the real Hoodie prefab refit.");
+                    }
+                }
+                finally
+                {
+                    DestroyComputationMesh(comp);
+                }
+            }
+        }
+
+        private static void RealHoodiePrefab_VrcfuryTestCopyBuildMergesArmatureBones()
+        {
+            if (!RealHoodieArtifactFixture.CanLoadRequiredAssets(out var missingAsset))
+            {
+                Debug.LogWarning(
+                    $"[ReFit Tests] Skipping real hoodie prefab VRCFury build regression; missing '{missingAsset}'.");
+                return;
+            }
+            if (AssetDatabase.LoadAssetAtPath<GameObject>(RealHoodiePrefabPath) == null)
+            {
+                Debug.LogWarning(
+                    $"[ReFit Tests] Skipping real hoodie prefab VRCFury build regression; missing '{RealHoodiePrefabPath}'.");
+                return;
+            }
+            if (FindLoadedType("VF.Menu.VRCFuryTestCopyMenuItem") == null)
+            {
+                Debug.LogWarning("[ReFit Tests] Skipping real hoodie prefab VRCFury build regression; VRCFury test-copy menu is not loaded.");
+                return;
+            }
+            if (FindLoadedType("VRC.SDK3.Avatars.Components.VRCAvatarDescriptor") == null)
+            {
+                Debug.LogWarning("[ReFit Tests] Skipping real hoodie prefab VRCFury build regression; VRChat avatar descriptor type is not loaded.");
+                return;
+            }
+
+            using (var fixture = RealHoodieArtifactFixture.Create(RealHoodiePrefabPath))
+            {
+                EnsureVrcAvatarDescriptor(fixture.targetAvatar);
+                fixture.hoodieRoot.transform.SetParent(fixture.targetAvatar.transform, true);
+                var armatureLink = FindVrcfuryArmatureLink(fixture.hoodieRoot);
+                AssertTrue(armatureLink != null,
+                    "The real Hoodie prefab test object has no VRCFury Armature Link component to validate.");
+
+                var request = BuildRealHoodieSourceRequest(fixture);
+                ApplyHighTightnessSettings(request.settings);
+
+                ReFitComputation comp = null;
+                GameObject buildClone = null;
+                try
+                {
+                    comp = new ReFitEngine().Run(request);
+                    AssertComputationSucceeded(comp);
+                    var applied = ReFitAssetPipeline.ApplyToScene(request, comp, comp.report);
+                    AssertTrue(applied != null, "Could not materialize the real Hoodie prefab refit result.");
+                    AssertVrcfuryArmatureLink(armatureLink, applied.rootBone,
+                        "The real Hoodie prefab VRCFury Armature Link was not repaired before the build callback.");
+                    var beforeBuildWorldVertices = CaptureBakedWorldVertices(applied);
+
+                    PrepareHierarchyForVrcfurySceneBuild(fixture.targetAvatar);
+                    buildClone = BuildVrcfuryEditorTestCopy(fixture.targetAvatar);
+                    AssertTrue(buildClone != null,
+                        "VRCFury did not create an editor test copy for the real Hoodie prefab refit.");
+
+                    var builtHoodie = RequireRenderer(buildClone, "Hoodie", null);
+                    var afterBuildWorldVertices = CaptureBakedWorldVertices(builtHoodie);
+                    float maxVrcfurySurfaceDrift = MaxVertexDistance(beforeBuildWorldVertices, afterBuildWorldVertices);
+                    AssertLessOrEqual(maxVrcfurySurfaceDrift, 0.002f,
+                        $"VRCFury changed the refitted Hoodie surface by {maxVrcfurySurfaceDrift:0.######}m while building the editor test copy.");
+
+                    var targetHumanIndex = HumanoidBoneMapper.BuildHumanoidBoneIndex(buildClone.transform);
+                    AssertBuiltRendererUsesAvatarBone(builtHoodie, targetHumanIndex, HumanBodyBones.Chest);
+                    AssertBuiltRendererUsesAvatarBone(builtHoodie, targetHumanIndex, HumanBodyBones.Neck);
+                    AssertBuiltRendererUsesAvatarBone(builtHoodie, targetHumanIndex, HumanBodyBones.LeftShoulder);
+                    AssertBuiltRendererUsesAvatarBone(builtHoodie, targetHumanIndex, HumanBodyBones.LeftUpperArm);
+                    AssertBuiltRendererUsesAvatarBone(builtHoodie, targetHumanIndex, HumanBodyBones.RightShoulder);
+                    AssertBuiltRendererUsesAvatarBone(builtHoodie, targetHumanIndex, HumanBodyBones.RightUpperArm);
+                    AssertTrue(!RendererHasBone(builtHoodie, "Left shoulder") &&
+                               !RendererHasBone(builtHoodie, "Right shoulder") &&
+                               !RendererHasBone(builtHoodie, "Left arm") &&
+                               !RendererHasBone(builtHoodie, "Right arm"),
+                        "VRCFury build left Rex-style shoulder/arm bones in the built Hoodie renderer.");
+                    AssertNoUnmergedHumanAliasUnderVrcfuryGeneratedWrapper(buildClone);
+                }
+                finally
+                {
+                    if (buildClone != null) Object.DestroyImmediate(buildClone);
+                    DestroyComputationMesh(comp);
+                }
+            }
+        }
+
+        private static void ActiveSceneHoodiePrefab_HasFreshVrcfuryArmatureStateWhenPresent()
+        {
+            var hoodieRoot = FindActiveSceneObjectByPathOrName("MasculineCanine/Hoodie Prefab", "Hoodie Prefab");
+            if (hoodieRoot == null)
+            {
+                Debug.LogWarning("[ReFit Tests] Skipping active-scene Hoodie VRCFury check; no 'Hoodie Prefab' object was found in the active scene.");
+                return;
+            }
+
+            var renderer = RequireRenderer(hoodieRoot, "Hoodie", null);
+            var issues = new List<string>();
+            if (renderer.rootBone == null)
+                issues.Add("The Hoodie renderer has no root bone, so VRCFury cannot merge it into the avatar armature.");
+
+            var armatureLink = FindVrcfuryArmatureLink(hoodieRoot);
+            if (armatureLink == null)
+                issues.Add("The Hoodie Prefab has no VRCFury Armature Link component.");
+            else
+                CollectVrcfuryArmatureLinkIssues(armatureLink, renderer.rootBone, issues);
+
+            AddRendererBoneAliasIssue(renderer, "Left shoulder",
+                "Rex-style Left shoulder renderer bone survived instead of target shoulder naming.", issues);
+            AddRendererBoneAliasIssue(renderer, "Right shoulder",
+                "Rex-style Right shoulder renderer bone survived instead of target shoulder naming.", issues);
+            AddRendererBoneAliasIssue(renderer, "Left arm",
+                "Rex-style Left arm renderer bone survived instead of target upper-arm naming.", issues);
+            AddRendererBoneAliasIssue(renderer, "Right arm",
+                "Rex-style Right arm renderer bone survived instead of target upper-arm naming.", issues);
+            AddRendererBoneUnderIssue(renderer, "shoulder.L", "ChestUp",
+                "Target-named left shoulder is still routed through the unmatched ChestUp side branch.", issues);
+            AddRendererBoneUnderIssue(renderer, "shoulder.R", "ChestUp",
+                "Target-named right shoulder is still routed through the unmatched ChestUp side branch.", issues);
+            AddRendererBoneUnderIssue(renderer, "upper_arm.L", "ChestUp",
+                "Target-named left upper arm is still routed through the unmatched ChestUp side branch.", issues);
+            AddRendererBoneUnderIssue(renderer, "upper_arm.R", "ChestUp",
+                "Target-named right upper arm is still routed through the unmatched ChestUp side branch.", issues);
+            AddRendererBoneUnderIssue(renderer, "Neck", "ChestUp",
+                "Target-named neck is still routed through the unmatched ChestUp side branch.", issues);
+
+            if (issues.Count > 0)
+                throw new Exception("Active scene Hoodie Prefab is not VRCFury-buildable:\n- " +
+                                    string.Join("\n- ", issues.ToArray()));
+        }
+
         private static void MeshAndBlendshape_ArmatureReplacementDisabled_PreservesRootBone()
         {
             using (var fixture = ReFitTestFixture.Create())
@@ -1895,6 +2133,168 @@ namespace Orbiters.ReFit.Editor.Tests
             }
         }
 
+        private static void SceneAssetArmaturePreflight_RepairsStaleVrcfuryAliasState()
+        {
+            using (var fixture = ReFitTestFixture.Create())
+            {
+                var accessory = fixture.sourceSpaceAccessory;
+                var targetLeftShoulder = fixture.target.bones[(int)RigBone.LeftUpperArm];
+                targetLeftShoulder.name = "shoulder.L";
+                CreateBone("upper_arm.L", targetLeftShoulder,
+                    targetLeftShoulder.position + new Vector3(-0.18f, -0.08f, 0.01f));
+
+                var chestUp = CreateBone("ChestUp", accessory.chest,
+                    accessory.chest.position + new Vector3(0f, 0.06f, -0.02f));
+                var aliasShoulder = accessory.bones[(int)RigBone.LeftUpperArm];
+                aliasShoulder.name = "Left shoulder";
+                aliasShoulder.SetParent(chestUp, true);
+                var aliasArm = CreateBone("Left arm", aliasShoulder,
+                    aliasShoulder.position + new Vector3(-0.18f, -0.08f, 0.01f));
+
+                AppendRendererBone(accessory, chestUp);
+                AppendRendererBone(accessory, aliasArm);
+                accessory.mesh.bindposes = BuildBindposes(accessory.renderer.transform, accessory.renderer.bones);
+                aliasShoulder.rotation = Quaternion.Euler(0f, 0f, -18f);
+
+                var armatureLink = CreateVrcfuryArmatureLink(accessory.root, accessory.hips.gameObject);
+                if (armatureLink == null)
+                {
+                    Debug.LogWarning("[ReFit Tests] Skipping scene VRCFury preflight repair check because VRCFury is not installed.");
+                    return;
+                }
+
+                var request = new ReFitRequest
+                {
+                    mode = ReFitMode.MeshAndBlendshape,
+                    assetRenderer = accessory.renderer,
+                    sourceAvatar = fixture.source.root,
+                    targetAvatar = fixture.target.root,
+                    sourceBodyRenderer = fixture.source.renderer,
+                    targetBodyRenderer = fixture.target.renderer,
+                    targetBlendshape = BodyShapeName,
+                    settings = CreateDeterministicSettings(true)
+                };
+                var report = new ReFitReport();
+                var beforeBaked = CaptureBakedVertices(accessory.renderer);
+
+                ReFitAssetPipeline.RepairSceneAssetArmature(request, report);
+                var afterBaked = CaptureBakedVertices(accessory.renderer);
+                float maxSurfaceDrift = MaxVertexDistance(beforeBaked, afterBaked);
+
+                var repairedShoulder = FindRendererBone(accessory.renderer, "shoulder.L");
+                var repairedUpperArm = FindRendererBone(accessory.renderer, "upper_arm.L");
+                var repairedChestUp = FindRendererBone(accessory.renderer, "ChestUp");
+                AssertTrue(repairedShoulder != null && repairedUpperArm != null && repairedChestUp != null,
+                    "The scene armature preflight did not keep the expected repaired shoulder/arm/ChestUp bones.");
+                AssertSame(repairedChestUp.parent, accessory.chest,
+                    "The scene armature preflight should keep unmatched ChestUp as a Chest side branch.");
+                AssertSame(repairedShoulder.parent, accessory.chest,
+                    "The scene armature preflight did not move the target-equivalent shoulder out from under ChestUp.");
+                AssertSame(repairedUpperArm.parent, repairedShoulder,
+                    "The scene armature preflight did not parent the target-equivalent upper arm under the repaired shoulder.");
+                AssertTrue(!RendererHasBone(accessory.renderer, "Left shoulder") &&
+                           !RendererHasBone(accessory.renderer, "Left arm"),
+                    "The scene armature preflight left stale Rex-style aliases in renderer bones.");
+                AssertVrcfuryArmatureLink(armatureLink, accessory.renderer.rootBone,
+                    "The scene armature preflight did not repair the stale VRCFury Armature Link.");
+                AssertReportContains(report, "scene-vrcfury-armature-link-repaired",
+                    "The scene armature preflight did not report repairing the stale VRCFury link.");
+                AssertLessOrEqual(maxSurfaceDrift, 0.0001f,
+                    $"The scene armature preflight changed the skinned mesh pose by {maxSurfaceDrift:0.######}m while only repairing topology/link metadata.");
+            }
+        }
+
+        private static void ArmatureReplacement_RestoreRestoresOriginalAssetParentage()
+        {
+            using (var fixture = ReFitTestFixture.Create())
+            {
+                var accessory = fixture.sourceSpaceAccessory;
+                var originalParent = accessory.root.transform.parent;
+                var originalMesh = accessory.renderer.sharedMesh;
+                var request = BuildMeshAndBlendshapeRequest(fixture, accessory.renderer, true);
+                var comp = new ReFitEngine().Run(request);
+                ReFitRendererState originalState = null;
+                try
+                {
+                    AssertComputationSucceeded(comp);
+                    var applied = ReFitAssetPipeline.ApplyToScene(request, comp, comp.report,
+                        out originalState);
+                    AssertTrue(applied != null, "ApplyToScene returned no renderer.");
+                    AssertSame(accessory.root.transform.parent, fixture.target.root.transform,
+                        "ApplyToScene did not reparent the standalone accessory under the target avatar.");
+                    AssertTrue(originalState != null && originalState.Restore(applied, "ReFit test restore"),
+                        "Captured renderer state could not restore the applied ReFit result.");
+                    AssertSame(accessory.root.transform.parent, originalParent,
+                        "ReFit restore did not restore the accessory root's original parent.");
+                    AssertSame(accessory.renderer.sharedMesh, originalMesh,
+                        "ReFit restore did not restore the original renderer mesh.");
+                }
+                finally
+                {
+                    DestroyComputationMesh(comp);
+                }
+            }
+        }
+
+        private static void Staging_StandaloneAssetBakeMatchesPostPoseSkin()
+        {
+            using (var fixture = ReFitTestFixture.Create())
+            {
+                var accessory = fixture.sourceSpaceAccessory;
+                accessory.bones[(int)RigBone.LeftUpperArm].position += new Vector3(0f, 0.26f, 0f);
+                accessory.bones[(int)RigBone.RightUpperArm].position += new Vector3(0f, 0.26f, 0f);
+                accessory.mesh.bindposes = BuildBindposes(accessory.renderer.transform, accessory.renderer.bones);
+
+                var request = BuildMeshAndBlendshapeRequest(fixture, accessory.renderer, true);
+                var report = new ReFitReport();
+                using (var stage = PoseNormalizer.CreateStage(request, report))
+                {
+                    AssertTrue(stage != null,
+                        "Could not create a staged source-space accessory.\n" + FormatReport(report));
+                    AssertReportContains(report, "armature-matched",
+                        "The standalone accessory was not posed onto the source before baking.");
+                    AssertReportContains(report, "asset-scene-pose-default",
+                        "The standalone accessory current pose was not baked into a mesh rest pose.");
+
+                    var snapshot = MeshSnapshot.Capture(stage.assetRenderer, false, null, report);
+                    var vertices = stage.assetRenderer.sharedMesh.vertices;
+                    var rendererLocalToWorld = stage.assetRenderer.transform.localToWorldMatrix;
+                    float maxDrift = 0f;
+                    for (int i = 0; i < vertices.Length; i++)
+                    {
+                        var restWorld = rendererLocalToWorld.MultiplyPoint3x4(vertices[i]);
+                        maxDrift = Mathf.Max(maxDrift, Vector3.Distance(restWorld, snapshot.worldVertices[i]));
+                    }
+
+                    AssertLessOrEqual(maxDrift, 0.0001f,
+                        $"The staged standalone asset mesh rest pose and current skinned pose differ by {maxDrift:0.######}m. " +
+                        "This means the scene-pose bake ran before source-armature posing.");
+                }
+            }
+        }
+
+        private static void Staging_FreshTargetNestedSourceAssetDoesNotAssumeTargetSpace()
+        {
+            using (var fixture = ReFitTestFixture.Create())
+            {
+                fixture.sourceSpaceAccessory.root.transform.SetParent(fixture.target.root.transform, true);
+
+                var request = BuildMeshAndBlendshapeRequest(fixture, fixture.sourceSpaceAccessory.renderer, true);
+                var report = new ReFitReport();
+                using (var stage = PoseNormalizer.CreateStage(request, report))
+                {
+                    AssertTrue(stage != null,
+                        "Could not create a staged target-nested source accessory.\n" + FormatReport(report));
+                    AssertTrue(!stage.assetInTargetSpace,
+                        "A fresh source-space asset nested under the target was incorrectly staged as already target-space.");
+                    AssertReportContains(report, "armature-matched",
+                        "The fresh target-nested source accessory was not posed onto the source avatar.");
+                    AssertReportDoesNotContain(report, "asset-target-space",
+                        "A fresh target-nested source accessory with armature replacement enabled should not skip source posing.");
+                }
+            }
+        }
+
         private static void ArmatureReplacement_ChestUpSideBranchDoesNotTrapHumanChain()
         {
             using (var fixture = ReFitTestFixture.Create())
@@ -1933,6 +2333,69 @@ namespace Orbiters.ReFit.Editor.Tests
                                !rebuiltLeftArm.IsChildOf(rebuiltChestUp) &&
                                !rebuiltRightArm.IsChildOf(rebuiltChestUp),
                         "A humanoid chain bone was incorrectly placed under the extra ChestUp branch.");
+                }
+                finally
+                {
+                    DestroyComputationMesh(comp);
+                }
+            }
+        }
+
+        private static void ArmatureReplacement_NormalizesAliasesForVrcfuryTraversal()
+        {
+            using (var fixture = ReFitTestFixture.Create())
+            {
+                var accessory = fixture.sourceSpaceAccessory;
+                var targetLeftShoulder = fixture.target.bones[(int)RigBone.LeftUpperArm];
+                targetLeftShoulder.name = "shoulder.L";
+                CreateBone("upper_arm.L", targetLeftShoulder,
+                    targetLeftShoulder.position + new Vector3(-0.18f, -0.08f, 0.01f));
+
+                var chestUp = CreateBone("ChestUp", accessory.chest,
+                    accessory.chest.position + new Vector3(0f, 0.06f, -0.02f));
+                var aliasShoulder = accessory.bones[(int)RigBone.LeftUpperArm];
+                aliasShoulder.name = "Left shoulder";
+                aliasShoulder.SetParent(chestUp, true);
+                var aliasArm = CreateBone("Left arm", aliasShoulder,
+                    aliasShoulder.position + new Vector3(-0.18f, -0.08f, 0.01f));
+
+                AppendRendererBone(accessory, chestUp);
+                AppendRendererBone(accessory, aliasArm);
+                accessory.mesh.bindposes = BuildBindposes(accessory.renderer.transform, accessory.renderer.bones);
+
+                var request = BuildMeshAndBlendshapeRequest(fixture, accessory.renderer, true);
+                var comp = new ReFitEngine().Run(request);
+                try
+                {
+                    AssertComputationSucceeded(comp);
+                    var applied = ReFitAssetPipeline.ApplyToScene(request, comp, comp.report);
+                    AssertTrue(applied != null, "ApplyToScene returned no renderer.");
+
+                    var rebuiltChest = FindRendererBone(applied, "Chest");
+                    var rebuiltChestUp = FindRendererBone(applied, "ChestUp");
+                    var rebuiltShoulder = FindRendererBone(applied, "shoulder.L");
+                    var rebuiltUpperArm = FindRendererBone(applied, "upper_arm.L");
+                    AssertTrue(rebuiltChest != null && rebuiltChestUp != null &&
+                               rebuiltShoulder != null && rebuiltUpperArm != null,
+                        "The rebuilt armature is missing expected ChestUp or target-named left arm bones.");
+                    AssertSame(rebuiltChestUp.parent, rebuiltChest,
+                        "ChestUp should stay as a clothing side branch under Chest when the target has no UpperChest.");
+                    AssertSame(rebuiltShoulder.parent, rebuiltChest,
+                        "The Rex-style Left shoulder alias should be renamed to target shoulder.L and moved out from under ChestUp.");
+                    AssertSame(rebuiltUpperArm.parent, rebuiltShoulder,
+                        "The Rex-style Left arm alias should be renamed to target upper_arm.L and parented under shoulder.L.");
+                    AssertTrue(!RendererHasBone(applied, "Left shoulder") && !RendererHasBone(applied, "Left arm"),
+                        "Target-equivalent Rex alias bone names survived in the generated renderer bones.");
+
+                    var matched = SimulateVrcfuryRecursiveMatches(applied.rootBone, fixture.target.hips);
+                    AssertTrue(matched.Contains(rebuiltChest),
+                        "The VRCFury traversal simulation did not match rebuilt Chest.");
+                    AssertTrue(matched.Contains(rebuiltShoulder),
+                        "VRCFury exact traversal would still leave shoulder.L unmerged.");
+                    AssertTrue(matched.Contains(rebuiltUpperArm),
+                        "VRCFury exact traversal would still leave upper_arm.L unmerged.");
+                    AssertTrue(!matched.Contains(rebuiltChestUp),
+                        "The ChestUp mid-bone should be recursed through but not linked when the target has no UpperChest.");
                 }
                 finally
                 {
@@ -4190,6 +4653,50 @@ namespace Orbiters.ReFit.Editor.Tests
             return metrics;
         }
 
+        private static Vector3[] CaptureBakedVertices(SkinnedMeshRenderer renderer)
+        {
+            AssertTrue(renderer != null, "Cannot capture baked vertices for a null renderer.");
+            var baked = new Mesh();
+            try
+            {
+                renderer.BakeMesh(baked);
+                return baked.vertices;
+            }
+            finally
+            {
+                Object.DestroyImmediate(baked);
+            }
+        }
+
+        private static Vector3[] CaptureBakedWorldVertices(SkinnedMeshRenderer renderer)
+        {
+            AssertTrue(renderer != null, "Cannot capture baked world vertices for a null renderer.");
+            var baked = new Mesh();
+            try
+            {
+                renderer.BakeMesh(baked);
+                var vertices = baked.vertices;
+                var localToWorld = renderer.transform.localToWorldMatrix;
+                for (int i = 0; i < vertices.Length; i++)
+                    vertices[i] = localToWorld.MultiplyPoint3x4(vertices[i]);
+                return vertices;
+            }
+            finally
+            {
+                Object.DestroyImmediate(baked);
+            }
+        }
+
+        private static float MaxVertexDistance(Vector3[] a, Vector3[] b)
+        {
+            AssertTrue(a != null && b != null && a.Length == b.Length,
+                "Cannot compare baked vertex arrays with different sizes.");
+            float max = 0f;
+            for (int i = 0; i < a.Length; i++)
+                max = Mathf.Max(max, Vector3.Distance(a[i], b[i]));
+            return max;
+        }
+
         private static Bounds BoundsOf(Vector3[] points)
         {
             AssertTrue(points != null && points.Length > 0, "Cannot compute bounds for an empty point set.");
@@ -4387,6 +4894,342 @@ namespace Orbiters.ReFit.Editor.Tests
             return component;
         }
 
+        private static Component FindVrcfuryArmatureLink(GameObject root)
+        {
+            if (root == null) return null;
+            var components = root.GetComponentsInChildren<Component>(true);
+            for (int i = 0; i < components.Length; i++)
+            {
+                var component = components[i];
+                if (component == null || component.GetType().FullName != "VF.Model.VRCFury")
+                    continue;
+
+                try
+                {
+                    var serialized = new SerializedObject(component);
+                    var content = serialized.FindProperty("content");
+                    if (content != null &&
+                        !string.IsNullOrEmpty(content.managedReferenceFullTypename) &&
+                        content.managedReferenceFullTypename.Contains("VF.Model.Feature.ArmatureLink"))
+                        return component;
+                }
+                catch
+                {
+                    // Ignore unrelated or temporarily broken VRCFury components; the caller asserts if none match.
+                }
+            }
+            return null;
+        }
+
+        private static GameObject BuildVrcfuryEditorTestCopy(GameObject avatarRoot)
+        {
+            AssertTrue(avatarRoot != null, "Cannot build a VRCFury test copy for a null avatar root.");
+            var copyName = "VRCF Test Copy for " + avatarRoot.name;
+            var existing = FindSceneRoot(copyName);
+            if (existing != null)
+                Object.DestroyImmediate(existing);
+
+            var previousSelection = Selection.objects;
+            try
+            {
+                Selection.objects = new Object[] { avatarRoot };
+                Selection.activeGameObject = avatarRoot;
+                AssertTrue(EditorApplication.ExecuteMenuItem("Tools/VRCFury/Build an Editor Test Copy"),
+                    "Could not execute the VRCFury editor test-copy menu item.");
+                var copy = FindSceneRoot(copyName);
+                AssertTrue(copy != null,
+                    $"VRCFury editor test-copy menu succeeded but did not create '{copyName}'.");
+                return copy;
+            }
+            finally
+            {
+                Selection.objects = previousSelection;
+            }
+        }
+
+        private static void PrepareHierarchyForVrcfurySceneBuild(GameObject avatarRoot)
+        {
+            AssertTrue(avatarRoot != null, "Cannot prepare a null avatar root for a VRCFury scene build.");
+            var transforms = avatarRoot.GetComponentsInChildren<Transform>(true);
+            for (int i = 0; i < transforms.Length; i++)
+                transforms[i].gameObject.hideFlags = HideFlags.None;
+
+            var activeScene = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
+            AssertTrue(activeScene.IsValid(), "The active scene is invalid; cannot run the VRCFury editor test-copy build.");
+            if (!avatarRoot.scene.IsValid() || avatarRoot.scene != activeScene)
+                UnityEngine.SceneManagement.SceneManager.MoveGameObjectToScene(avatarRoot, activeScene);
+        }
+
+        private static void EnsureVrcAvatarDescriptor(GameObject avatarRoot)
+        {
+            AssertTrue(avatarRoot != null, "Cannot add a VRChat avatar descriptor to a null avatar root.");
+            var descriptorType = FindLoadedType("VRC.SDK3.Avatars.Components.VRCAvatarDescriptor");
+            AssertTrue(descriptorType != null, "Could not find VRChat avatar descriptor type.");
+            if (avatarRoot.GetComponent(descriptorType) == null)
+                avatarRoot.AddComponent(descriptorType);
+        }
+
+        private static void AssertBuiltRendererUsesAvatarBone(SkinnedMeshRenderer renderer,
+            Dictionary<HumanBodyBones, Transform> targetHumanIndex, HumanBodyBones humanBone)
+        {
+            Transform avatarBone = null;
+            AssertTrue(targetHumanIndex != null &&
+                       targetHumanIndex.TryGetValue(humanBone, out avatarBone) &&
+                       avatarBone != null,
+                $"The built avatar has no {humanBone} bone.");
+
+            var bones = renderer != null ? renderer.bones : null;
+            if (bones != null)
+            {
+                for (int i = 0; i < bones.Length; i++)
+                    if (bones[i] == avatarBone)
+                        return;
+            }
+
+            throw new Exception(
+                $"VRCFury build did not rewrite Hoodie renderer skinning to the avatar {humanBone} bone '{HierarchyPath(avatarBone)}'.");
+        }
+
+        private static void AssertNoUnmergedHumanAliasUnderVrcfuryGeneratedWrapper(GameObject buildClone)
+        {
+            AssertTrue(buildClone != null, "Build clone is null.");
+            var transforms = buildClone.GetComponentsInChildren<Transform>(true);
+            var badNames = new HashSet<string>(StringComparer.Ordinal)
+            {
+                "Left shoulder",
+                "Right shoulder",
+                "Left arm",
+                "Right arm",
+                "shoulder.L",
+                "shoulder.R",
+                "upper_arm.L",
+                "upper_arm.R",
+                "Neck"
+            };
+
+            for (int i = 0; i < transforms.Length; i++)
+            {
+                var wrapper = transforms[i];
+                if (wrapper == null ||
+                    wrapper.name.IndexOf(" from ", StringComparison.OrdinalIgnoreCase) < 0)
+                    continue;
+
+                var descendants = wrapper.GetComponentsInChildren<Transform>(true);
+                for (int j = 0; j < descendants.Length; j++)
+                {
+                    var descendant = descendants[j];
+                    if (descendant == null || descendant == wrapper || !badNames.Contains(descendant.name))
+                        continue;
+                    throw new Exception(
+                        $"VRCFury build left unmerged Rex-style human alias '{descendant.name}' under '{HierarchyPath(wrapper)}'.");
+                }
+            }
+        }
+
+        private static SkinnedMeshRenderer RequireRenderer(GameObject root, string rendererName, string requiredShape)
+        {
+            AssertTrue(root != null, $"Cannot find renderer '{rendererName}' under a null root.");
+            var renderers = root.GetComponentsInChildren<SkinnedMeshRenderer>(true);
+            SkinnedMeshRenderer fallback = null;
+            for (int i = 0; i < renderers.Length; i++)
+            {
+                var renderer = renderers[i];
+                if (renderer == null || renderer.sharedMesh == null)
+                    continue;
+
+                bool shapeMatches = string.IsNullOrEmpty(requiredShape) ||
+                                    renderer.sharedMesh.GetBlendShapeIndex(requiredShape) >= 0;
+                if (shapeMatches && fallback == null)
+                    fallback = renderer;
+
+                if (renderer.name == rendererName && shapeMatches)
+                    return renderer;
+            }
+
+            if (fallback != null)
+                return fallback;
+
+            throw new Exception($"Could not find renderer '{rendererName}' under '{root.name}'.");
+        }
+
+        private static string HierarchyPath(Transform transform)
+        {
+            if (transform == null) return "<null>";
+            var parts = new Stack<string>();
+            var current = transform;
+            while (current != null)
+            {
+                parts.Push(current.name);
+                current = current.parent;
+            }
+            return string.Join("/", parts.ToArray());
+        }
+
+        private static GameObject FindSceneRoot(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return null;
+            var sceneCount = UnityEngine.SceneManagement.SceneManager.sceneCount;
+            for (int sceneIndex = 0; sceneIndex < sceneCount; sceneIndex++)
+            {
+                var scene = UnityEngine.SceneManagement.SceneManager.GetSceneAt(sceneIndex);
+                if (!scene.isLoaded) continue;
+                var roots = scene.GetRootGameObjects();
+                for (int i = 0; i < roots.Length; i++)
+                {
+                    var root = roots[i];
+                    if (root != null && root.name == name)
+                        return root;
+                }
+            }
+            return null;
+        }
+
+        private static GameObject FindActiveSceneObjectByPathOrName(string path, string name)
+        {
+            if (!string.IsNullOrEmpty(path))
+            {
+                var direct = GameObject.Find(path);
+                if (direct != null)
+                    return direct;
+            }
+
+            var activeScene = UnityEngine.SceneManagement.SceneManager.GetActiveScene();
+            if (!activeScene.IsValid() || !activeScene.isLoaded)
+                return null;
+
+            var roots = activeScene.GetRootGameObjects();
+            for (int i = 0; i < roots.Length; i++)
+            {
+                var root = roots[i];
+                if (root == null) continue;
+                if (root.name == name)
+                    return root;
+
+                var transforms = root.GetComponentsInChildren<Transform>(true);
+                for (int j = 0; j < transforms.Length; j++)
+                {
+                    var child = transforms[j];
+                    if (child != null && child.name == name)
+                        return child.gameObject;
+                }
+            }
+            return null;
+        }
+
+        private static void CollectVrcfuryArmatureLinkIssues(Component component, Transform expectedLinkFrom,
+            List<string> issues)
+        {
+            if (component == null)
+            {
+                issues.Add("VRCFury Armature Link component is null.");
+                return;
+            }
+
+            var serialized = new SerializedObject(component);
+            var content = serialized.FindProperty("content");
+            if (content == null ||
+                string.IsNullOrEmpty(content.managedReferenceFullTypename) ||
+                !content.managedReferenceFullTypename.Contains("VF.Model.Feature.ArmatureLink"))
+            {
+                issues.Add("VRCFury component content is not an Armature Link feature.");
+                return;
+            }
+
+            var propBone = content.FindPropertyRelative("propBone");
+            var linkedObject = propBone != null ? propBone.objectReferenceValue as GameObject : null;
+            var expectedObject = expectedLinkFrom != null ? expectedLinkFrom.gameObject : null;
+            if (linkedObject != expectedObject)
+                issues.Add($"Armature Link propBone is '{(linkedObject != null ? linkedObject.name : "<null>")}', expected '{(expectedObject != null ? expectedObject.name : "<null>")}'.");
+
+            AddSerializedBoolIssue(content, "recursive", true,
+                "Armature Link recursive is disabled, so VRCFury will not merge child armature bones.", issues);
+            AddSerializedBoolIssue(content, "alignPosition", false,
+                "Armature Link position alignment is enabled; this can distort already-refit clothing before VRCFury rewrites skinning.", issues);
+            AddSerializedBoolIssue(content, "alignRotation", false,
+                "Armature Link rotation alignment is enabled; this can distort already-refit clothing before VRCFury rewrites skinning.", issues);
+            AddSerializedBoolIssue(content, "alignScale", false,
+                "Armature Link scale alignment is enabled; this can distort already-refit clothing before VRCFury rewrites skinning.", issues);
+            AddSerializedBoolIssue(content, "autoScaleFactor", false,
+                "Armature Link automatic scale factor is enabled even though ReFit preserves the refitted clothing offsets.", issues);
+            AddSerializedBoolIssue(content, "scalingFactorPowersOf10Only", false,
+                "Armature Link still clamps scale factors to powers of ten.", issues);
+            AddSerializedFloatIssue(content, "skinRewriteScalingFactor", 1f, 0.0001f,
+                "Armature Link skin rewrite scaling factor is not valid.", issues);
+            AddSerializedIntIssue(content, "version", 7,
+                "Armature Link is not upgraded to the modern serialized version.", issues);
+        }
+
+        private static void AddRendererBoneAliasIssue(SkinnedMeshRenderer renderer, string boneName, string message,
+            List<string> issues)
+        {
+            var bone = FindRendererBone(renderer, boneName);
+            if (bone == null)
+                return;
+
+            issues.Add(message + $" Found '{boneName}' at '{HierarchyPath(bone)}'.");
+        }
+
+        private static void AddRendererBoneUnderIssue(SkinnedMeshRenderer renderer, string boneName,
+            string ancestorName, string message, List<string> issues)
+        {
+            var bone = FindRendererBone(renderer, boneName);
+            if (bone == null)
+                return;
+
+            var current = bone.parent;
+            while (current != null)
+            {
+                if (current.name == ancestorName)
+                {
+                    issues.Add(message + $" Found '{boneName}' at '{HierarchyPath(bone)}'.");
+                    return;
+                }
+                current = current.parent;
+            }
+        }
+
+        private static void AddSerializedBoolIssue(SerializedProperty parent, string name, bool expected,
+            string message, List<string> issues)
+        {
+            var prop = parent?.FindPropertyRelative(name);
+            if (prop == null || prop.propertyType != SerializedPropertyType.Boolean)
+            {
+                issues.Add($"Missing bool property '{name}'.");
+                return;
+            }
+
+            if (prop.boolValue != expected)
+                issues.Add($"{message} Current {name}={prop.boolValue}, expected {expected}.");
+        }
+
+        private static void AddSerializedFloatIssue(SerializedProperty parent, string name, float expected,
+            float tolerance, string message, List<string> issues)
+        {
+            var prop = parent?.FindPropertyRelative(name);
+            if (prop == null || prop.propertyType != SerializedPropertyType.Float)
+            {
+                issues.Add($"Missing float property '{name}'.");
+                return;
+            }
+
+            if (Mathf.Abs(prop.floatValue - expected) > tolerance)
+                issues.Add($"{message} Current {name}={prop.floatValue:0.###}, expected {expected:0.###}.");
+        }
+
+        private static void AddSerializedIntIssue(SerializedProperty parent, string name, int expected,
+            string message, List<string> issues)
+        {
+            var prop = parent?.FindPropertyRelative(name);
+            if (prop == null || prop.propertyType != SerializedPropertyType.Integer)
+            {
+                issues.Add($"Missing int property '{name}'.");
+                return;
+            }
+
+            if (prop.intValue != expected)
+                issues.Add($"{message} Current {name}={prop.intValue}, expected {expected}.");
+        }
+
         private static void AssertVrcfuryArmatureLink(Component component, Transform expectedLinkFrom, string message)
         {
             AssertTrue(component != null, message + " Component is null.");
@@ -4402,16 +5245,20 @@ namespace Orbiters.ReFit.Editor.Tests
             AssertSame(linkedObject, expectedLinkFrom != null ? expectedLinkFrom.gameObject : null, message);
             AssertSerializedBool(content, "recursive", true,
                 "VRCFury Armature Link was not made recursive for clothing armature merging.");
-            AssertSerializedBool(content, "alignPosition", true,
-                "VRCFury Armature Link did not enable position alignment.");
-            AssertSerializedBool(content, "alignRotation", true,
-                "VRCFury Armature Link did not enable rotation alignment.");
-            AssertSerializedBool(content, "alignScale", true,
-                "VRCFury Armature Link did not enable scale alignment.");
-            AssertSerializedBool(content, "autoScaleFactor", true,
-                "VRCFury Armature Link did not enable automatic scale factor.");
+            AssertSerializedBool(content, "alignPosition", false,
+                "VRCFury Armature Link should not pre-align already-refit clothing bones.");
+            AssertSerializedBool(content, "alignRotation", false,
+                "VRCFury Armature Link should not pre-align already-refit clothing bones.");
+            AssertSerializedBool(content, "alignScale", false,
+                "VRCFury Armature Link should not pre-align already-refit clothing bones.");
+            AssertSerializedBool(content, "autoScaleFactor", false,
+                "VRCFury Armature Link should use ReFit's existing clothing offsets, not an automatic pre-alignment scale.");
+            AssertSerializedBool(content, "scalingFactorPowersOf10Only", false,
+                "VRCFury Armature Link kept power-of-ten scale clamping enabled.");
             AssertSerializedFloat(content, "skinRewriteScalingFactor", 1f, 0.0001f,
                 "VRCFury Armature Link did not get a valid skin rewrite scale factor.");
+            AssertSerializedInt(content, "version", 7,
+                "VRCFury Armature Link was not updated to the modern serialized Armature Link version.");
         }
 
         private static Type FindLoadedType(string fullName)
@@ -4466,6 +5313,60 @@ namespace Orbiters.ReFit.Editor.Tests
             var prop = parent?.FindPropertyRelative(name);
             AssertTrue(prop != null && prop.propertyType == SerializedPropertyType.Float, $"Missing float property '{name}'.");
             AssertLessOrEqual(Mathf.Abs(prop.floatValue - expected), tolerance, message);
+        }
+
+        private static void AssertSerializedInt(SerializedProperty parent, string name, int expected, string message)
+        {
+            var prop = parent?.FindPropertyRelative(name);
+            AssertTrue(prop != null && prop.propertyType == SerializedPropertyType.Integer, $"Missing int property '{name}'.");
+            AssertTrue(prop.intValue == expected, message);
+        }
+
+        private static HashSet<Transform> SimulateVrcfuryRecursiveMatches(Transform propRoot, Transform avatarRoot)
+        {
+            var matched = new HashSet<Transform>();
+            if (propRoot == null || avatarRoot == null)
+                return matched;
+
+            matched.Add(propRoot);
+            var stack = new Stack<RecursiveMatchPair>();
+            stack.Push(new RecursiveMatchPair(propRoot, avatarRoot));
+            while (stack.Count > 0)
+            {
+                var pair = stack.Pop();
+                for (int i = 0; i < pair.prop.childCount; i++)
+                {
+                    var childProp = pair.prop.GetChild(i);
+                    var childAvatar = FindDirectChild(pair.avatar, childProp.name);
+                    bool recurseButDoNotLink = false;
+                    if (childAvatar == null && childProp.name == "ChestUp")
+                    {
+                        childAvatar = pair.avatar;
+                        recurseButDoNotLink = true;
+                    }
+
+                    if (childAvatar == null)
+                        continue;
+
+                    if (!recurseButDoNotLink)
+                        matched.Add(childProp);
+                    stack.Push(new RecursiveMatchPair(childProp, childAvatar));
+                }
+            }
+            return matched;
+        }
+
+        private static Transform FindDirectChild(Transform parent, string name)
+        {
+            if (parent == null)
+                return null;
+            for (int i = 0; i < parent.childCount; i++)
+            {
+                var child = parent.GetChild(i);
+                if (string.Equals(child.name, name, StringComparison.Ordinal))
+                    return child;
+            }
+            return null;
         }
 
         private static Transform FindDirectChildStartingWith(Transform parent, string prefix)
@@ -4824,13 +5725,13 @@ namespace Orbiters.ReFit.Editor.Tests
                 return true;
             }
 
-            public static RealHoodieArtifactFixture Create()
+            public static RealHoodieArtifactFixture Create(string hoodieAssetPath = RealHoodiePath)
             {
                 var fixture = new RealHoodieArtifactFixture
                 {
                     sourceAvatar = InstantiateAssetRoot(RealSourceAvatarPath, "__ReFitReal_SourceDefaultMasculineCanine"),
                     targetAvatar = InstantiateAssetRoot(RealTargetAvatarPath, "__ReFitReal_TargetMasculineCanine"),
-                    hoodieRoot = InstantiateAssetRoot(RealHoodiePath, "__ReFitReal_Hoodie")
+                    hoodieRoot = InstantiateAssetRoot(hoodieAssetPath, "__ReFitReal_Hoodie")
                 };
 
                 fixture.sourceBody = RequireRenderer(fixture.sourceAvatar, "Body", null);
@@ -5075,6 +5976,18 @@ namespace Orbiters.ReFit.Editor.Tests
             {
                 public Transform transform;
                 public GameObject gameObject;
+            }
+        }
+
+        private readonly struct RecursiveMatchPair
+        {
+            public readonly Transform prop;
+            public readonly Transform avatar;
+
+            public RecursiveMatchPair(Transform prop, Transform avatar)
+            {
+                this.prop = prop;
+                this.avatar = avatar;
             }
         }
 

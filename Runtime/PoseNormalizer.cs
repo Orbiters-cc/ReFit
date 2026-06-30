@@ -91,6 +91,8 @@ namespace Orbiters.ReFit
                 if (!stage.sourceIsTarget) ScaleAndAlign(stage, report);
 
                 PoseAsset(stage, report);
+                if (!stage.assetOnSourceAvatar && stage.assetRenderer != null)
+                    BakeCurrentSkinPoseAsDefault(stage.assetRenderer, report);
                 return stage;
             }
             catch (Exception e)
@@ -111,10 +113,10 @@ namespace Orbiters.ReFit
             stage.sourceIsTarget = request.sourceAvatar == null || request.sourceAvatar == request.targetAvatar;
             stage.sourceRoot = stage.sourceIsTarget ? stage.targetRoot : Clone(request.sourceAvatar, stage.stagingRoot.transform);
 
-            bool targetSpaceBlendshapeAsset = ShouldStageBlendshapeAssetAsTargetSpace(request, stage);
+            bool targetSpaceAsset = ShouldStageAssetAsTargetSpace(request, stage);
 
             // Asset: either part of the source avatar hierarchy, or a standalone hierarchy.
-            var carrier = targetSpaceBlendshapeAsset ? null : (stage.sourceIsTarget ? request.targetAvatar : request.sourceAvatar);
+            var carrier = targetSpaceAsset ? null : (stage.sourceIsTarget ? request.targetAvatar : request.sourceAvatar);
             if (carrier != null && request.assetRenderer.transform.IsChildOf(carrier.transform))
             {
                 stage.assetOnSourceAvatar = true;
@@ -129,7 +131,7 @@ namespace Orbiters.ReFit
             {
                 // The asset already lives in the target avatar's space when it is parented under the target and
                 // the source is a distinct reference (e.g. "fit a blendshape on my avatar", or the MCB module).
-                stage.assetInTargetSpace = (targetSpaceBlendshapeAsset || !stage.sourceIsTarget) && request.targetAvatar != null &&
+                stage.assetInTargetSpace = targetSpaceAsset && request.targetAvatar != null &&
                                            request.assetRenderer.transform.IsChildOf(request.targetAvatar.transform);
 
                 var realAssetRoot = FindAssetObjectRoot(request.assetRenderer, request.sourceAvatar, request.targetAvatar);
@@ -145,7 +147,6 @@ namespace Orbiters.ReFit
                 {
                     MarkTargetNestedAssetCopy(request, stage, realAssetRoot, report);
                     RebindExternalBones(request, stage, realAssetRoot, assetClone.transform, report);
-                    BakeCurrentSkinPoseAsDefault(stage.assetRenderer, report);
                 }
             }
 
@@ -159,18 +160,27 @@ namespace Orbiters.ReFit
             if (stage.sourceIsTarget && stage.targetBody == null) stage.targetBody = stage.sourceBody;
         }
 
-        private static bool ShouldStageBlendshapeAssetAsTargetSpace(ReFitRequest request, NormalizedStage stage)
+        private static bool ShouldStageAssetAsTargetSpace(ReFitRequest request, NormalizedStage stage)
         {
             if (request == null || stage == null || request.assetRenderer == null || request.targetAvatar == null)
-                return false;
-            if (request.mode != ReFitMode.Blendshape || !stage.sourceIsTarget)
                 return false;
             if (!request.assetRenderer.transform.IsChildOf(request.targetAvatar.transform))
                 return false;
             if (request.assetRenderer == request.sourceBodyRenderer || request.assetRenderer == request.targetBodyRenderer)
                 return false;
 
-            return true;
+            if (request.mode == ReFitMode.Blendshape && stage.sourceIsTarget)
+                return true;
+
+            if (request.mode != ReFitMode.MeshAndBlendshape || stage.sourceIsTarget)
+                return false;
+
+            var settings = request.settings;
+            if (settings != null && !settings.replaceArmature)
+                return true;
+
+            var metadata = request.assetRenderer.GetComponent<ReFitGeneratedAssetMetadata>();
+            return metadata != null && metadata.data != null;
         }
 
         private static GameObject Clone(GameObject original, Transform parent)

@@ -25,6 +25,8 @@ namespace Orbiters.ReFit.Editor
         public string primaryShapeName;
         /// <summary>Names of the generated transferred blendshapes.</summary>
         public string[] secondaryShapeNames;
+        /// <summary>Source target-body blendshape names aligned with <see cref="secondaryShapeNames"/>.</summary>
+        public string[] secondarySourceShapeNames;
         /// <summary>Gravity blendshape names added after the optional preview is confirmed.</summary>
         public string[] gravityShapeNames;
         /// <summary>Default scene/prefab weight used when the optional gravity blendshapes were applied.</summary>
@@ -51,6 +53,11 @@ namespace Orbiters.ReFit.Editor
         private readonly List<TransformState> transformStates = new List<TransformState>();
         private Mesh mesh;
         private Transform snapshotRoot;
+        private Transform snapshotRootParent;
+        private int snapshotRootSiblingIndex;
+        private Vector3 snapshotRootLocalPosition;
+        private Quaternion snapshotRootLocalRotation;
+        private Vector3 snapshotRootLocalScale;
         private Transform[] bones;
         private string[] bonePaths;
         private Transform rootBone;
@@ -66,6 +73,9 @@ namespace Orbiters.ReFit.Editor
         {
             public Transform transform;
             public string path;
+            public Transform parent;
+            public string parentPath;
+            public int siblingIndex;
             public Vector3 localPosition;
             public Quaternion localRotation;
             public Vector3 localScale;
@@ -84,6 +94,14 @@ namespace Orbiters.ReFit.Editor
                 updateWhenOffscreen = renderer.updateWhenOffscreen,
                 localBounds = renderer.localBounds
             };
+            if (state.snapshotRoot != null)
+            {
+                state.snapshotRootParent = state.snapshotRoot.parent;
+                state.snapshotRootSiblingIndex = state.snapshotRoot.GetSiblingIndex();
+                state.snapshotRootLocalPosition = state.snapshotRoot.localPosition;
+                state.snapshotRootLocalRotation = state.snapshotRoot.localRotation;
+                state.snapshotRootLocalScale = state.snapshotRoot.localScale;
+            }
 
             state.rootBonePath = GetPath(state.snapshotRoot, renderer.rootBone);
             if (state.bones != null)
@@ -114,6 +132,7 @@ namespace Orbiters.ReFit.Editor
 
             var root = snapshotRoot != null ? snapshotRoot : renderer.transform.root;
             var statesByPath = BuildStateMap(transformStates);
+            RestoreSnapshotRoot(undoName);
             for (int i = 0; i < transformStates.Count; i++)
             {
                 var state = transformStates[i];
@@ -122,10 +141,19 @@ namespace Orbiters.ReFit.Editor
                     : ResolveOrCreateTransform(root, state.path, statesByPath, undoName);
                 if (transform == null) continue;
 
+                var expectedParent = state.parent != null
+                    ? state.parent
+                    : ResolveOrCreateTransform(root, state.parentPath, statesByPath, undoName);
+                if (expectedParent != null && transform.parent != expectedParent)
+                    Undo.SetTransformParent(transform, expectedParent, undoName);
+
                 Undo.RecordObject(transform, undoName);
                 transform.localPosition = state.localPosition;
                 transform.localRotation = state.localRotation;
                 transform.localScale = state.localScale;
+                if (state.siblingIndex >= 0 && transform.parent != null &&
+                    state.siblingIndex < transform.parent.childCount)
+                    transform.SetSiblingIndex(state.siblingIndex);
                 EditorUtility.SetDirty(transform);
             }
 
@@ -154,6 +182,23 @@ namespace Orbiters.ReFit.Editor
             EditorUtility.SetDirty(renderer);
             PrefabUtility.RecordPrefabInstancePropertyModifications(renderer);
             return true;
+        }
+
+        private void RestoreSnapshotRoot(string undoName)
+        {
+            if (snapshotRoot == null) return;
+
+            if (snapshotRoot.parent != snapshotRootParent)
+                Undo.SetTransformParent(snapshotRoot, snapshotRootParent, undoName);
+
+            Undo.RecordObject(snapshotRoot, undoName);
+            snapshotRoot.localPosition = snapshotRootLocalPosition;
+            snapshotRoot.localRotation = snapshotRootLocalRotation;
+            snapshotRoot.localScale = snapshotRootLocalScale;
+            if (snapshotRootSiblingIndex >= 0 && snapshotRoot.parent != null &&
+                snapshotRootSiblingIndex < snapshotRoot.parent.childCount)
+                snapshotRoot.SetSiblingIndex(snapshotRootSiblingIndex);
+            EditorUtility.SetDirty(snapshotRoot);
         }
 
         private static void CaptureBlendShapes(SkinnedMeshRenderer renderer, ReFitRendererState state)
@@ -243,6 +288,9 @@ namespace Orbiters.ReFit.Editor
                 {
                     transform = t,
                     path = path,
+                    parent = t.parent,
+                    parentPath = GetPath(root, t.parent),
+                    siblingIndex = t.GetSiblingIndex(),
                     localPosition = t.localPosition,
                     localRotation = t.localRotation,
                     localScale = t.localScale
@@ -285,15 +333,24 @@ namespace Orbiters.ReFit.Editor
                     var go = new GameObject(part);
                     Undo.RegisterCreatedObjectUndo(go, undoName);
                     child = go.transform;
-                    child.SetParent(parent, false);
+                    Undo.SetTransformParent(child, parent, undoName);
                 }
 
                 if (statesByPath != null && statesByPath.TryGetValue(currentPath, out var state))
                 {
+                    var expectedParent = state.parent != null
+                        ? state.parent
+                        : ResolveOrCreateTransform(root, state.parentPath, statesByPath, undoName);
+                    if (expectedParent != null && child.parent != expectedParent)
+                        Undo.SetTransformParent(child, expectedParent, undoName);
+
                     Undo.RecordObject(child, undoName);
                     child.localPosition = state.localPosition;
                     child.localRotation = state.localRotation;
                     child.localScale = state.localScale;
+                    if (state.siblingIndex >= 0 && child.parent != null &&
+                        state.siblingIndex < child.parent.childCount)
+                        child.SetSiblingIndex(state.siblingIndex);
                     EditorUtility.SetDirty(child);
                 }
 
@@ -676,7 +733,31 @@ namespace Orbiters.ReFit.Editor
                 report.Info("stale-armature-repaired",
                     $"Removed {removed} stale local armature branch(es) from '{HierarchyPath(assetRoot)}' before running ReFit.");
 
+            RepairExistingSceneArmatureLinkState(request, assetRoot, renderer, report);
             ValidateExistingInputArmature(assetRoot, renderer, report);
+        }
+
+        private static void RepairExistingSceneArmatureLinkState(ReFitRequest request, Transform assetRoot,
+            SkinnedMeshRenderer renderer, ReFitReport report)
+        {
+            if (request == null || assetRoot == null || renderer == null || renderer.rootBone == null ||
+                request.targetAvatar == null)
+                return;
+
+            var rootBone = renderer.rootBone;
+            if (!rootBone.IsChildOf(assetRoot))
+                return;
+            if (!MakeRestructurable(rootBone, report))
+                return;
+
+            NormalizeTargetEquivalentBoneNames(renderer, renderer.bones, request.targetAvatar,
+                assetRoot, rootBone, report);
+
+            var repairedVrcfuryLinks = RepairVrcfuryArmatureLinks(new List<Transform> { assetRoot },
+                assetRoot, renderer, new Dictionary<Transform, Transform>(), rootBone, report);
+            if (repairedVrcfuryLinks > 0)
+                report.Info("scene-vrcfury-armature-link-repaired",
+                    $"Repaired {repairedVrcfuryLinks} existing scene VRCFury Armature Link component(s) before running ReFit.");
         }
 
         // ------------------------------------------------------------------
@@ -774,6 +855,7 @@ namespace Orbiters.ReFit.Editor
             // Mesh space changed (staged-pose bindposes): the authored local bounds are no longer reliable.
             renderer.updateWhenOffscreen = true;
             CreateLeafTailHelpers(comp, bones, report);
+            NormalizeTargetEquivalentBoneNames(renderer, bones, targetInstance, assetInstanceRoot, newArmatureRoot, report);
             RefreshMeshBindposes(renderer, bones, report);
             ValidateMaterializedArmature(sourceBones, bones, renderer, report);
             RebindArmatureComponentReferences(request, targetInstance, assetInstanceRoot,
@@ -813,6 +895,116 @@ namespace Orbiters.ReFit.Editor
             if (created > 0)
                 report.Info("leaf-tail-helpers-created",
                     $"Created {created} non-deforming leaf-tail helper(s) under rebuilt clothing bones.");
+        }
+
+        private static void NormalizeTargetEquivalentBoneNames(SkinnedMeshRenderer renderer, Transform[] bones,
+            GameObject targetInstance, Transform assetInstanceRoot, Transform newArmatureRoot, ReFitReport report)
+        {
+            if (renderer == null || targetInstance == null || newArmatureRoot == null)
+                return;
+
+            var targetHumanIndex = HumanoidBoneMapper.BuildHumanoidBoneIndex(targetInstance.transform, null, assetInstanceRoot);
+            if (targetHumanIndex == null || targetHumanIndex.Count == 0)
+                return;
+
+            var rendererBones = new HashSet<Transform>();
+            if (bones != null)
+            {
+                foreach (var bone in bones)
+                    if (bone != null)
+                        rendererBones.Add(bone);
+            }
+
+            var candidates = new List<TargetEquivalentBone>();
+            var candidatesByHuman = new Dictionary<HumanBodyBones, List<TargetEquivalentBone>>();
+            var candidateByTarget = new Dictionary<Transform, TargetEquivalentBone>();
+            var armatureTransforms = newArmatureRoot.GetComponentsInChildren<Transform>(true);
+
+            foreach (var bone in armatureTransforms)
+            {
+                if (bone == null || bone == newArmatureRoot)
+                    continue;
+                if (!HumanoidBoneMapper.TryInferHumanoidBone(bone, out var humanBone))
+                    continue;
+                if (!targetHumanIndex.TryGetValue(humanBone, out var targetBone) || targetBone == null)
+                    continue;
+
+                var candidate = new TargetEquivalentBone(bone, targetBone);
+                candidates.Add(candidate);
+                if (!candidatesByHuman.TryGetValue(humanBone, out var group))
+                {
+                    group = new List<TargetEquivalentBone>();
+                    candidatesByHuman[humanBone] = group;
+                }
+                group.Add(candidate);
+            }
+
+            foreach (var group in candidatesByHuman.Values)
+            {
+                TargetEquivalentBone? selected = null;
+                foreach (var rendererCandidate in group)
+                {
+                    if (!rendererBones.Contains(rendererCandidate.bone))
+                        continue;
+                    if (selected.HasValue)
+                    {
+                        selected = null;
+                        break;
+                    }
+                    selected = rendererCandidate;
+                }
+
+                if (!selected.HasValue && group.Count == 1)
+                    selected = group[0];
+                if (!selected.HasValue)
+                    continue;
+
+                var candidate = selected.Value;
+                if (!candidateByTarget.ContainsKey(candidate.target))
+                    candidateByTarget[candidate.target] = candidate;
+            }
+
+            int renamed = 0;
+            int reparented = 0;
+            foreach (var candidate in candidates)
+            {
+                if (!candidateByTarget.TryGetValue(candidate.target, out var unique) || unique.bone != candidate.bone)
+                    continue;
+
+                if (!string.Equals(candidate.bone.name, candidate.target.name, System.StringComparison.Ordinal))
+                {
+                    Undo.RecordObject(candidate.bone.gameObject, "ReFit normalize target bone name");
+                    candidate.bone.name = candidate.target.name;
+                    renamed++;
+                }
+
+                var parent = FindMaterializedTargetAncestor(candidate.target.parent, candidateByTarget);
+                if (parent != null && candidate.bone.parent != parent)
+                {
+                    Undo.RecordObject(candidate.bone, "ReFit normalize target bone parent");
+                    ReparentPreservingWorld(candidate.bone, parent, candidate.bone.lossyScale);
+                    reparented++;
+                }
+            }
+
+            if (renamed > 0 || reparented > 0)
+                report.Info("armature-target-equivalent-bones-normalized",
+                    $"Normalized {renamed} target-equivalent bone name(s) and {reparented} parent link(s) for exact armature-link traversal.");
+        }
+
+        private static Transform FindMaterializedTargetAncestor(Transform target,
+            Dictionary<Transform, TargetEquivalentBone> candidateByTarget)
+        {
+            var current = target;
+            while (current != null)
+            {
+                if (candidateByTarget != null &&
+                    candidateByTarget.TryGetValue(current, out var candidate) &&
+                    candidate.bone != null)
+                    return candidate.bone;
+                current = current.parent;
+            }
+            return null;
         }
 
         private static Transform[] ResolveBoneBlueprints(ReFitRequest request, ReFitComputation comp,
@@ -1186,28 +1378,29 @@ namespace Orbiters.ReFit.Editor
                 return;
 
             var transformMap = BuildOldToNewBoneMap(oldBones, oldRootBone, newBones, comp);
-            if (transformMap.Count == 0)
-                return;
 
             var roots = new List<Transform>();
             AddUniqueRoot(roots, assetInstanceRoot);
             if (targetInstance != null)
                 AddUniqueRoot(roots, targetInstance.transform);
 
-            var staleArmatureRoots = CollectMappedOldArmatureRoots(transformMap, assetInstanceRoot);
             var scanned = new HashSet<Component>();
             var stats = new ComponentReferenceRebindStats();
             var unresolved = new List<string>();
-            foreach (var root in roots)
+            if (transformMap.Count > 0)
             {
-                if (root == null) continue;
-                var components = root.GetComponentsInChildren<Component>(true);
-                foreach (var component in components)
+                var staleArmatureRoots = CollectMappedOldArmatureRoots(transformMap, assetInstanceRoot);
+                foreach (var root in roots)
                 {
-                    if (component == null || component is Transform || !scanned.Add(component)) continue;
-                    if (IsInsideAnyRoot(component.transform, staleArmatureRoots)) continue;
-                    if (IsVrcfuryArmatureLinkComponent(component)) continue;
-                    RebindComponentReferences(component, transformMap, newArmatureRoot, report, ref stats, unresolved);
+                    if (root == null) continue;
+                    var components = root.GetComponentsInChildren<Component>(true);
+                    foreach (var component in components)
+                    {
+                        if (component == null || component is Transform || !scanned.Add(component)) continue;
+                        if (IsInsideAnyRoot(component.transform, staleArmatureRoots)) continue;
+                        if (IsVrcfuryArmatureLinkComponent(component)) continue;
+                        RebindComponentReferences(component, transformMap, newArmatureRoot, report, ref stats, unresolved);
+                    }
                 }
             }
 
@@ -1301,10 +1494,13 @@ namespace Orbiters.ReFit.Editor
                     }
 
                     changed |= SetBool(content, "recursive", true);
-                    changed |= SetBool(content, "alignPosition", true);
-                    changed |= SetBool(content, "alignRotation", true);
-                    changed |= SetBool(content, "alignScale", true);
-                    changed |= SetBool(content, "autoScaleFactor", true);
+                    // ReFit has already rebuilt the clothing armature into the target pose.
+                    // VRCFury should merge/rewrite skins from that pose, not pre-align the
+                    // clothing bones and preserve the aligned deformation.
+                    changed |= SetBool(content, "alignPosition", false);
+                    changed |= SetBool(content, "alignRotation", false);
+                    changed |= SetBool(content, "alignScale", false);
+                    changed |= SetBool(content, "autoScaleFactor", false);
                     changed |= SetBool(content, "scalingFactorPowersOf10Only", false);
                     changed |= SetFloat(content, "skinRewriteScalingFactor", 1f);
                     changed |= SetInt(content, "version", 7);
@@ -1722,6 +1918,18 @@ namespace Orbiters.ReFit.Editor
                 this.proxy = proxy;
                 this.parent = parent;
                 this.lossyScale = lossyScale;
+            }
+        }
+
+        private readonly struct TargetEquivalentBone
+        {
+            public readonly Transform bone;
+            public readonly Transform target;
+
+            public TargetEquivalentBone(Transform bone, Transform target)
+            {
+                this.bone = bone;
+                this.target = target;
             }
         }
 

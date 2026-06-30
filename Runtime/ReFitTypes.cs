@@ -591,6 +591,8 @@ namespace Orbiters.ReFit
         public string primaryShapeName;
         /// <summary>Names of the generated transferred blendshapes (one per requested target shape), null/empty when none.</summary>
         public string[] secondaryShapeNames;
+        /// <summary>Source target-body blendshape names aligned with <see cref="secondaryShapeNames"/>.</summary>
+        public string[] secondarySourceShapeNames;
         /// <summary>For each transferred shape, the weight it currently has on the target body (used to mirror it on the asset).</summary>
         public float[] secondaryMirrorWeights;
         /// <summary>True when <see cref="bones"/>/<see cref="rootBoneIndex"/> describe a new skinning that must be applied to the renderer.</summary>

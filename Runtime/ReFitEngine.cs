@@ -172,6 +172,7 @@ namespace Orbiters.ReFit
             public MeshSnapshot sourceBody;   // null when not wantMesh; == targetBasis when source == target
             public MeshSnapshot targetBasis;
             public List<ShapeTask> shapes = new List<ShapeTask>();
+            public bool assetIsLikelyUpperBodyGarment;
 
             public BodyRegion[] assetGroupRegions;
             public BodyRegion[] sourceTriRegions;
@@ -252,6 +253,7 @@ namespace Orbiters.ReFit
                 state.comp.assetRendererPath = stage.assetRendererPath;
                 state.sourceIsTarget = stage.sourceIsTarget;
                 state.wantMesh = request.mode != ReFitMode.Blendshape;
+                state.assetIsLikelyUpperBodyGarment = IsLikelyUpperBodyGarment(stage.assetRenderer);
 
                 ProportionChecker.Check(stage, state.settings, report);
 
@@ -1191,7 +1193,7 @@ namespace Orbiters.ReFit
 
         private static float[] BuildUpperBodyHemWeights(State state)
         {
-            if (state == null || state.asset == null || !IsLikelyUpperBodyGarment(state.request?.assetRenderer))
+            if (state == null || state.asset == null || !state.assetIsLikelyUpperBodyGarment)
                 return null;
 
             var asset = state.asset;
@@ -2312,6 +2314,7 @@ namespace Orbiters.ReFit
             if (state.shapes.Count > 0)
             {
                 comp.secondaryShapeNames = new string[state.shapes.Count];
+                comp.secondarySourceShapeNames = new string[state.shapes.Count];
                 comp.secondaryMirrorWeights = new float[state.shapes.Count];
                 comp.debugSecondaryRawLocalDeltas = new Vector3[state.shapes.Count][];
                 if (comp.generatedMetadata != null)
@@ -2324,6 +2327,7 @@ namespace Orbiters.ReFit
                         : shape.sourceName;
                     var name = UniqueShapeName(newMesh, desired);
                     newMesh.AddBlendShapeFrame(name, 100f, shape.localDeltas, shape.normalDeltas, null);
+                    comp.secondarySourceShapeNames[s] = shape.sourceName;
                     comp.secondaryShapeNames[s] = name;
                     comp.secondaryMirrorWeights[s] = shape.mirrorWeight;
                     comp.debugSecondaryRawLocalDeltas[s] = shape.rawLocalDeltas;

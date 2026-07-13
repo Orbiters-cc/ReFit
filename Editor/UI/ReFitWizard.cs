@@ -218,56 +218,85 @@ namespace Orbiters.ReFit.Editor
             var cards = Cards();
             cards.Add(Card("On my avatar", null, () => Go(Step.AvatarSelect)));
             cards.Add(Card("In my project files", null, () => Go(Step.AssetFileInput)));
-            BuildSessionLog();
+            BuildRefittedAssets();
         }
 
-        /// <summary>Lists every asset re-fitted this session, each with a Revert button that restores its original mesh.</summary>
-        private void BuildSessionLog()
+        /// <summary>Lists active re-fitted assets from MCB's saved state and this standalone ReFit session.</summary>
+        private void BuildRefittedAssets()
         {
             SessionLog.RemoveAll(e => e == null || e.sceneRenderer == null);
-            if (SessionLog.Count == 0) return;
+            var mcbAssets = MCBIntegrationService.GetRefittedAssets();
+            var mcbRendererIds = new HashSet<int>();
+            foreach (var asset in mcbAssets)
+            {
+                if (asset?.renderer != null) mcbRendererIds.Add(asset.renderer.GetInstanceID());
+            }
 
-            var section = new Label("Re-fitted this session");
+            var activeSessionEntries = new List<RefitLogEntry>();
+            for (int i = SessionLog.Count - 1; i >= 0; i--)
+            {
+                var entry = SessionLog[i];
+                bool active = entry.sceneRenderer != null && entry.refitMesh != null &&
+                              entry.sceneRenderer.sharedMesh == entry.refitMesh;
+                bool resettable = entry.originalRendererState != null || entry.originalMesh != null;
+                if (active && resettable && !mcbRendererIds.Contains(entry.sceneRenderer.GetInstanceID()))
+                    activeSessionEntries.Add(entry);
+            }
+
+            if (mcbAssets.Count == 0 && activeSessionEntries.Count == 0) return;
+
+            var section = new Label("Re-fitted assets");
             section.AddToClassList("refit-section");
             section.style.marginTop = 28;
             content.Add(section);
 
-            for (int i = SessionLog.Count - 1; i >= 0; i--)
+            foreach (var asset in mcbAssets)
             {
-                var entry = SessionLog[i];
-                bool active = entry.sceneRenderer != null && entry.refitMesh != null && entry.sceneRenderer.sharedMesh == entry.refitMesh;
-
-                var row = new VisualElement();
-                row.AddToClassList("refit-summary-row");
-                row.style.alignItems = Align.Center;
-                row.style.marginTop = 4;
-
-                var name = new Label(entry.assetName + (active ? string.Empty : "  (reverted)"));
-                name.AddToClassList("refit-summary-value");
-                name.style.flexGrow = 1;
-                row.Add(name);
-
-                var captured = entry;
-                if (active && (entry.originalRendererState != null || entry.originalMesh != null))
+                var captured = asset;
+                AddRefittedAssetRow(captured.DisplayName, captured.renderer, () =>
                 {
-                    var revert = new Button(() => RevertEntry(captured)) { text = "Revert" };
-                    revert.AddToClassList("refit-back");
-                    row.Add(revert);
-                }
-                var ping = new Button(() =>
-                {
-                    if (captured.sceneRenderer != null)
-                    {
-                        Selection.activeGameObject = captured.sceneRenderer.gameObject;
-                        EditorGUIUtility.PingObject(captured.sceneRenderer.gameObject);
-                    }
-                }) { text = "Select" };
-                ping.AddToClassList("refit-back");
-                ping.style.marginLeft = 6;
-                row.Add(ping);
-
-                content.Add(row);
+                    if (MCBIntegrationService.TryResetRefittedAsset(captured)) Render();
+                });
             }
+
+            foreach (var entry in activeSessionEntries)
+            {
+                var captured = entry;
+                AddRefittedAssetRow(entry.assetName, entry.sceneRenderer, () => RevertEntry(captured));
+            }
+        }
+
+        private void AddRefittedAssetRow(
+            string displayName, SkinnedMeshRenderer renderer, Action resetAction)
+        {
+            var row = new VisualElement();
+            row.AddToClassList("refit-summary-row");
+            row.style.alignItems = Align.Center;
+            row.style.marginTop = 4;
+
+            var name = new Label(displayName);
+            name.AddToClassList("refit-summary-value");
+            name.style.flexGrow = 1;
+            row.Add(name);
+
+            var reset = new Button(resetAction) { text = "Reset" };
+            reset.AddToClassList("refit-back");
+            row.Add(reset);
+
+            var capturedRenderer = renderer;
+            var ping = new Button(() =>
+            {
+                if (capturedRenderer != null)
+                {
+                    Selection.activeGameObject = capturedRenderer.gameObject;
+                    EditorGUIUtility.PingObject(capturedRenderer.gameObject);
+                }
+            }) { text = "Select" };
+            ping.AddToClassList("refit-back");
+            ping.style.marginLeft = 6;
+            row.Add(ping);
+
+            content.Add(row);
         }
 
         private void RevertEntry(RefitLogEntry entry)
@@ -1170,6 +1199,23 @@ namespace Orbiters.ReFit.Editor
             content.Add(operation);
             BuildSettings(content);
 
+            if (MCBIntegrationService.IsAvailable)
+            {
+                var mcbSection = new Label("MCB integration");
+                mcbSection.AddToClassList("refit-section");
+                mcbSection.style.marginTop = 18;
+                content.Add(mcbSection);
+
+                var mcbIntegration = new Toggle("Synchronize ReFit assets with MCB")
+                {
+                    value = MCBIntegrationService.Enabled
+                };
+                mcbIntegration.AddToClassList("refit-field");
+                mcbIntegration.RegisterValueChangedCallback(e => MCBIntegrationService.Enabled = e.newValue);
+                content.Add(mcbIntegration);
+                Help("Registers standalone ReFit results with MCB so version changes and sliders synchronize transferred blendshapes, and the MCB ReFit frame can un-refit the asset. Enabled by default.");
+            }
+
             var debugSection = new Label("Debug");
             debugSection.AddToClassList("refit-section");
             debugSection.style.marginTop = 18;
@@ -1239,6 +1285,7 @@ namespace Orbiters.ReFit.Editor
             }
             if (lastResult != null && lastResult.success)
             {
+                MCBIntegrationService.TryRegisterStandaloneRefit(lastRequest, lastResult);
                 SessionLog.Add(new RefitLogEntry
                 {
                     assetName = asset != null ? asset.name : "asset",

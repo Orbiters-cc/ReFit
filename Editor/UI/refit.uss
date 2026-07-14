@@ -160,6 +160,49 @@
     opacity: 0.55;
 }
 
+.refit-progress-button {
+    position: relative;
+    padding-left: 0;
+    padding-right: 0;
+    background-color: rgba(0, 0, 0, 0);
+    overflow: hidden;
+}
+
+.refit-progress-button:hover {
+    background-color: transparent;
+}
+
+.refit-progress-button__track {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    border-radius: 8px;
+    overflow: hidden;
+}
+
+.refit-progress-button__fill {
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 100%;
+    border-radius: 8px;
+}
+
+.refit-progress-button__label {
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: 0;
+    bottom: 0;
+    color: #ffffff;
+    -unity-font-style: bold;
+    -unity-text-align: middle-center;
+    white-space: normal;
+}
+
 .refit-tightness-layout {
     flex-direction: row;
     justify-content: center;

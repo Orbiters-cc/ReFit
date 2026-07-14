@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using UnityEditor;
@@ -34,6 +35,8 @@ namespace Orbiters.ReFit.Editor
         private const string KofiUrl = "https://ko-fi.com/blackorbit";
         private const float ClothingDefaultTightness = 0.93f;
         private const float AccessoryDefaultTightness = 0f;
+        private static readonly Color32 ReFitGreen = new Color32(0, 218, 109, 255);
+        private static readonly Color ReFitProgressTrack = new Color(0.22f, 0.22f, 0.22f);
 
         private enum Step
         {
@@ -77,6 +80,10 @@ namespace Orbiters.ReFit.Editor
         private float clearanceTightnessPreset = 0.5f;
         private bool clearanceTightnessUserChosen;
         private bool standardTightnessInitialized;
+        private readonly Stack<IEnumerator> executionCoroutines = new Stack<IEnumerator>();
+        private bool isExecuting;
+        private float executionProgress;
+        private string executionStep;
 
         private ScrollView content;
         private Button backButton;
@@ -144,6 +151,7 @@ namespace Orbiters.ReFit.Editor
 
         private void Go(Step next)
         {
+            if (isExecuting) return;
             history.Push(current);
             current = next;
             if (next == Step.Summary) { validateReport = null; validateScheduled = false; }
@@ -152,6 +160,7 @@ namespace Orbiters.ReFit.Editor
 
         private void GoBack()
         {
+            if (isExecuting) return;
             if (history.Count == 0) return;
             if (current == Step.GravityPreview)
             {
@@ -178,6 +187,7 @@ namespace Orbiters.ReFit.Editor
 
         private void OnDisable()
         {
+            StopExecutionPump();
             ReFitGravityPreviewService.ClearPreview(gravityPreview);
         }
 
@@ -186,7 +196,8 @@ namespace Orbiters.ReFit.Editor
             if (content == null) return;
             content.Clear();
             backButton.style.display = history.Count > 0 && current != Step.Result ? DisplayStyle.Flex : DisplayStyle.None;
-            settingsButton.SetEnabled(current != Step.Settings);
+            backButton.SetEnabled(!isExecuting);
+            settingsButton.SetEnabled(current != Step.Settings && !isExecuting);
             switch (current)
             {
                 case Step.AssetLocation: BuildAssetLocation(); break;
@@ -652,8 +663,19 @@ namespace Orbiters.ReFit.Editor
                 }).StartingIn(50);
             }
 
-            var run = Primary("ReFit", Execute);
-            run.SetEnabled(asset != null && targetAvatar != null);
+            var run = new ReFitProgressButtonElement(
+                StartExecution,
+                () => new ReFitProgressButtonData
+                {
+                    text = isExecuting && !string.IsNullOrWhiteSpace(executionStep) ? executionStep : "ReFit",
+                    enabled = !isExecuting && asset != null && targetAvatar != null,
+                    isRunning = isExecuting,
+                    progress = isExecuting ? executionProgress : 1f,
+                    fillColor = ReFitGreen,
+                    trackColor = ReFitProgressTrack
+                });
+            run.AddToClassList("refit-primary");
+            content.Add(run);
             Help("Warnings never block the operation - if the proportions differ because bones were intentionally moved, you can proceed.");
         }
 
@@ -1271,18 +1293,101 @@ namespace Orbiters.ReFit.Editor
             };
         }
 
-        private void Execute()
+        private void StartExecution()
         {
+            if (isExecuting || asset == null || targetAvatar == null) return;
+
             try
             {
                 lastRequest = BuildRequest();
-                lastResult = ReFitService.Execute(lastRequest,
-                    (t, label) => EditorUtility.DisplayProgressBar("ReFit", label, t));
+                lastResult = null;
+                executionProgress = 0f;
+                executionStep = "Preparing...";
+                isExecuting = true;
+                backButton?.SetEnabled(false);
+                settingsButton?.SetEnabled(false);
+                executionCoroutines.Clear();
+                executionCoroutines.Push(RunExecution());
+                EditorApplication.update -= PumpExecution;
+                EditorApplication.update += PumpExecution;
             }
-            finally
+            catch (Exception ex)
             {
-                EditorUtility.ClearProgressBar();
+                CompleteExecutionWithError(ex);
             }
+        }
+
+        private IEnumerator RunExecution()
+        {
+            yield return ReFitService.ExecuteCoroutine(
+                lastRequest,
+                (t, label) =>
+                {
+                    executionProgress = Mathf.Clamp01(t);
+                    executionStep = label;
+                },
+                result => lastResult = result);
+
+            isExecuting = false;
+            executionProgress = 1f;
+            executionStep = null;
+            FinishExecution();
+        }
+
+        /// <summary>Drives nested ReFit enumerators from editor updates while geometry runs on its worker task.</summary>
+        private void PumpExecution()
+        {
+            try
+            {
+                while (executionCoroutines.Count > 0)
+                {
+                    var currentCoroutine = executionCoroutines.Peek();
+                    if (!currentCoroutine.MoveNext())
+                    {
+                        if (executionCoroutines.Count > 0 && ReferenceEquals(executionCoroutines.Peek(), currentCoroutine))
+                            executionCoroutines.Pop();
+                        else
+                            return;
+                        continue;
+                    }
+
+                    if (currentCoroutine.Current is IEnumerator nested)
+                    {
+                        executionCoroutines.Push(nested);
+                        continue;
+                    }
+
+                    return;
+                }
+
+                StopExecutionPump();
+            }
+            catch (Exception ex)
+            {
+                CompleteExecutionWithError(ex);
+            }
+        }
+
+        private void StopExecutionPump()
+        {
+            EditorApplication.update -= PumpExecution;
+            executionCoroutines.Clear();
+        }
+
+        private void CompleteExecutionWithError(Exception ex)
+        {
+            StopExecutionPump();
+            lastResult = new ReFitResult();
+            lastResult.report.Error("refit-exception", $"Unexpected error: {ex.Message}\n{ex.StackTrace}");
+            isExecuting = false;
+            executionProgress = 1f;
+            executionStep = null;
+            FinishExecution();
+        }
+
+        private void FinishExecution()
+        {
+            StopExecutionPump();
             if (lastResult != null && lastResult.success)
             {
                 MCBIntegrationService.TryRegisterStandaloneRefit(lastRequest, lastResult);

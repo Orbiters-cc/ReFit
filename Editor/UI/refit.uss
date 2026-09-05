@@ -8,27 +8,79 @@
     justify-content: center;
     align-items: center;
     background-color: #383838;
-    height: 64px;
+    height: 80px;
     flex-shrink: 0;
 }
 
+.refit-shape-search { margin-top: 8px; margin-bottom: 10px; height: 34px; min-height: 34px; align-items: center; padding: 0 6px; background-image: none; background-color: #383838; border-width: 1px; border-color: #626262; border-radius: 5px; }
+.refit-shape-search .unity-text-field__input {
+    background-color: transparent; background-image: none; color: #eeeeee;
+    border-width: 0; border-radius: 4px;
+    padding: 5px 8px; min-height: 28px;
+}
+.refit-shape-search .unity-text-field__input:focus { background-color: #414141; }
+.refit-shape-suggestions { flex-direction: row; flex-wrap: wrap; min-width: 0; margin-bottom: 8px; }
+.refit-shape-suggestion { margin-right: 6px; margin-bottom: 6px; padding: 5px 9px; max-width: 100%; white-space: normal; border-radius: 5px; background-image: none; background-color: #494949; color: #eeeeee; border-width: 1px; border-color: #494949; }
+.refit-shape-suggestion:hover { background-color: #575757; border-color: #666666; }
+.refit-shape-suggestion:active { background-color: #626262; }
+.refit-shape-suggestion--selected { border-color: #00da6d; background-color: #234b37; }
+.refit-shape-selected { color: #eeeeee; white-space: normal; margin-bottom: 8px; }
+#refit-commission-section { width: 100%; max-width: 460px; align-self: center; margin-top: 24px; }
+.refit-commission-section-heading { flex-direction: row; align-items: center; justify-content: space-between; margin-bottom: 4px; }
+.refit-commission-section-heading .refit-section { margin: 0; flex-shrink: 1; }
+.refit-commission-section-heading .refit-commission-refresh { margin: 0 0 0 10px; flex-shrink: 0; }
+#refit-active-commissions { width: 100%; }
+.refit-commission-row {
+    margin: 0; padding: 7px 4px; border-width: 0; border-bottom-width: 1px;
+    border-bottom-color: #444444; border-radius: 0; background-color: transparent;
+    flex-shrink: 0; align-items: stretch;
+}
+.refit-commission-row:hover { background-color: #343434; }
+.refit-commission-row:active { background-color: #454545; }
+.refit-commission-heading { flex-direction: row; align-items: center; min-width: 0; }
+.refit-commission-row .refit-commission-name { flex-grow: 1; flex-shrink: 1; min-width: 0; color: #eeeeee; -unity-font-style: bold; overflow: hidden; text-overflow: ellipsis; }
+.refit-commission-creator { flex-direction: row; align-items: center; flex-shrink: 0; max-width: 24%; margin-left: 10px; }
+.refit-commission-creator-name { min-width: 0; flex-shrink: 1; color: #aaaaaa; font-size: 11px; overflow: hidden; text-overflow: ellipsis; }
+.refit-commission-row .refit-commission-avatar { width: 16px; height: 16px; flex-shrink: 0; border-radius: 8px; background-color: #494949; margin-right: 6px; }
+.refit-commission-status { color: #aaaaaa; margin: 0 0 0 10px; max-width: 45%; min-width: 0; flex-shrink: 1; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; -unity-text-align: middle-left; }
+.refit-commission-track { height: 4px; margin-top: 6px; background-color: #45454b; border-radius: 2px; overflow: hidden; }
+.refit-commission-fill { height: 4px; background-color: #008cf0; border-radius: 2px; }
+.refit-commission-refresh, .refit-commission-more { background-image: none; background-color: #494949; color: #eeeeee; border-width: 0; border-radius: 5px; margin-top: 8px; }
+.refit-commission-refresh:hover, .refit-commission-more:hover { background-color: #575757; }
+.refit-commission-refresh:active, .refit-commission-more:active { background-color: #626262; }
+.refit-commission-refresh:disabled, .refit-commission-more:disabled { opacity: 0.5; }
+.refit-commission-refresh { width: 28px; height: 28px; padding: 6px; }
+.refit-commission-more { height: 28px; padding: 4px 10px; }
+.refit-commission-refresh Image { width: 16px; height: 16px; }
+
+.refit-brand { flex-direction: row; align-items: center; }
+.refit-header .refit-nav {
+    position: absolute;
+    left: 18px;
+    right: 18px;
+    top: 27px;
+    height: 26px;
+}
+.refit-header .refit-header-button { background-color: #494949; color: #eeeeee; }
+.refit-header .refit-header-button:hover { background-color: #575757; }
+
 .refit-title {
     color: #ffffff;
-    font-size: 22px;
-    -unity-font-style: bold;
-    margin-left: 12px;
+    font-size: 34px;
+    -unity-font-style: normal;
+    margin-left: 20px;
 }
 
 .refit-body {
     flex-grow: 1;
-    padding: 18px 24px 18px 24px;
+    padding: 18px 20px 18px 20px;
 }
 
 .refit-question {
     color: #e6e6e6;
     font-size: 14px;
     -unity-text-align: middle-center;
-    margin-top: 26px;
+    margin-top: 20px;
     margin-bottom: 28px;
     white-space: normal;
 }
@@ -352,54 +404,147 @@
     cursor: link;
 }
 
-.refit-result-credit {
-    align-self: center;
-    align-items: center;
-    justify-content: center;
+.refit-commission-section {
     margin-top: 28px;
-    margin-bottom: 12px;
-    cursor: link;
-}
-
-.refit-result-credit:hover {
-    opacity: 0.9;
-}
-
-.refit-result-credit:active {
-    opacity: 0.68;
-}
-
-.refit-result-credit-line {
-    flex-direction: row;
-    justify-content: center;
+    padding-top: 26px;
     align-items: center;
-    margin-top: 8px;
 }
 
-.refit-result-credit-text {
-    color: #ededed;
-    font-size: 18px;
+.refit-commission-title {
+    color: #eeeeee;
+    font-size: 16px;
     -unity-font-style: bold;
-    margin-left: 5px;
-    margin-right: 5px;
-    white-space: normal;
-    cursor: link;
+    -unity-text-align: middle-center;
 }
 
-.refit-result-credit-profile {
-    width: 56px;
-    height: 56px;
-    border-radius: 28px;
+.refit-commission-subtitle {
+    color: #bbbbbb;
+    font-size: 16px;
+    margin-top: 18px;
+    margin-bottom: 27px;
+    -unity-text-align: middle-center;
+}
+
+.refit-commission-carousel {
+    position: relative;
+    width: 100%;
+    height: 109px;
+}
+
+.refit-commission-scroll {
+    width: 100%;
+    height: 109px;
+}
+
+.refit-commission-scroll .unity-scroll-view__content-container {
+    flex-direction: row;
+    align-items: flex-start;
+    padding-left: 14px;
+}
+
+.refit-commission-card {
+    width: 234px;
+    height: 109px;
+    flex-shrink: 0;
+    margin-right: 22px;
+    padding: 0;
+    background-color: #202020;
+    border-width: 0;
+    border-radius: 12px;
     overflow: hidden;
-    cursor: link;
+    white-space: normal;
 }
 
-.refit-result-credit-kofi {
-    width: 38px;
-    height: 31px;
-    margin-left: 4px;
-    margin-right: 4px;
-    cursor: link;
+.refit-commission-card:hover {
+    border-color: #8b8b8b;
+    background-color: #2b2b2b;
+}
+
+.refit-commission-card:active {
+    background-color: #454545;
+}
+
+.refit-commission-banner {
+    width: 100%;
+    height: 64px;
+    flex-shrink: 0;
+    background-color: #393939;
+}
+
+.refit-commission-identity {
+    height: 45px;
+    padding-left: 10px;
+    padding-right: 10px;
+    flex-direction: row;
+    align-items: center;
+}
+
+.refit-commission-avatar {
+    width: 28px;
+    height: 28px;
+    flex-shrink: 0;
+    border-radius: 14px;
+    margin-right: 8px;
+    background-color: #4d4d4d;
+    overflow: hidden;
+}
+
+.refit-commission-avatar-image {
+    width: 100%;
+    height: 100%;
+    min-width: 100%;
+    min-height: 100%;
+    flex-grow: 0;
+    flex-shrink: 0;
+}
+
+.refit-commission-name {
+    flex-grow: 1;
+    flex-shrink: 1;
+    min-width: 0;
+    color: #f0f0f0;
+    font-size: 12px;
+    -unity-font-style: bold;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    -unity-text-align: middle-left;
+}
+
+.refit-commission-price {
+    flex-shrink: 0;
+    max-width: 100px;
+    margin-left: 6px;
+    font-size: 11px;
+    color: #cccccc;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    -unity-text-align: middle-right;
+}
+
+.refit-commission-carousel-next {
+    position: absolute;
+    right: 8px;
+    top: 33px;
+    width: 44px;
+    height: 44px;
+    min-width: 44px;
+    min-height: 44px;
+    padding: 0;
+    border-width: 1px;
+    border-color: #8a8a8a;
+    border-radius: 22px;
+    background-color: #3a3a3a;
+    color: #ffffff;
+    font-size: 25px;
+    -unity-font-style: normal;
+    -unity-text-align: middle-center;
+}
+
+.refit-commission-carousel-next:hover {
+    background-color: #4a4a4a;
+    border-color: #b8b8b8;
 }
 
 .refit-logo-bar {

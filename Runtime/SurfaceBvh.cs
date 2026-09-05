@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using UnityEngine;
 
 namespace Orbiters.ReFit
@@ -60,7 +61,6 @@ namespace Orbiters.ReFit
             if (triCount > 0) bvh.BuildNode(0, triCount);
             return bvh;
         }
-
         private int BuildNode(int start, int count)
         {
             int nodeIndex = nodeCount++;
@@ -96,14 +96,11 @@ namespace Orbiters.ReFit
         private void SortRange(int start, int count, int axis)
         {
             var cents = centroids;
-            var seg = new int[count];
-            Array.Copy(triOrder, start, seg, 0, count);
             Comparison<int> cmp;
             if (axis == 0) cmp = (x, y) => cents[x].x.CompareTo(cents[y].x);
             else if (axis == 1) cmp = (x, y) => cents[x].y.CompareTo(cents[y].y);
             else cmp = (x, y) => cents[x].z.CompareTo(cents[y].z);
-            Array.Sort(seg, cmp);
-            Array.Copy(seg, 0, triOrder, start, count);
+            Array.Sort(triOrder, start, count, Comparer<int>.Create(cmp));
         }
 
         /// <summary>
@@ -116,7 +113,9 @@ namespace Orbiters.ReFit
             if (nodeCount == 0) return hit;
 
             float bestSqr = maxDistance * maxDistance;
-            var stack = new int[64];
+            // Median splitting limits depth to <32 for any int-sized triangle array.
+            // A local stack also keeps concurrent and reentrant filtered queries independent.
+            Span<int> stack = stackalloc int[64];
             int sp = 0;
             stack[sp++] = 0;
             while (sp > 0)
@@ -148,7 +147,6 @@ namespace Orbiters.ReFit
                     // Visit the closer child first for better pruning.
                     float dl = SqrDistanceToBounds(point, nodes[node.left].boundsMin, nodes[node.left].boundsMax);
                     float dr = SqrDistanceToBounds(point, nodes[node.right].boundsMin, nodes[node.right].boundsMax);
-                    if (sp + 2 >= stack.Length) Array.Resize(ref stack, stack.Length * 2);
                     if (dl <= dr) { stack[sp++] = node.right; stack[sp++] = node.left; }
                     else { stack[sp++] = node.left; stack[sp++] = node.right; }
                 }

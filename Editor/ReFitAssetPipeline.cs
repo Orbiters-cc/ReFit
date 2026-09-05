@@ -392,8 +392,18 @@ namespace Orbiters.ReFit.Editor
         {
             var folder = EnsureFolder(string.IsNullOrEmpty(subfolder) ? OutputRoot : $"{OutputRoot}/{Sanitize(subfolder)}");
             var path = AssetDatabase.GenerateUniqueAssetPath($"{folder}/{Sanitize(mesh.name)}.asset");
-            AssetDatabase.CreateAsset(mesh, path);
-            AssetDatabase.SaveAssets();
+            try
+            {
+                AssetDatabase.CreateAsset(mesh, path);
+                AssetDatabase.SaveAssetIfDirty(mesh);
+                if (AssetDatabase.GetAssetPath(mesh) != path)
+                    throw new System.InvalidOperationException("Unity did not persist the generated mesh.");
+            }
+            catch
+            {
+                AssetDatabase.DeleteAsset(path);
+                throw;
+            }
             report?.Info("mesh-saved", $"Saved the re-fitted mesh to '{path}'.");
             return path;
         }
@@ -418,96 +428,114 @@ namespace Orbiters.ReFit.Editor
             Undo.IncrementCurrentGroup();
             int undoGroup = Undo.GetCurrentGroup();
             Undo.SetCurrentGroupName("ReFit");
-
-            // --- real target instance ------------------------------------------------------
-            GameObject targetInstance = request.targetAvatar;
-            if (EditorUtility.IsPersistent(targetInstance))
+            bool committed = false;
+            try
             {
-                targetInstance = (GameObject)PrefabUtility.InstantiatePrefab(request.targetAvatar);
-                if (targetInstance == null)
+                // --- real target instance ------------------------------------------------------
+                GameObject targetInstance = request.targetAvatar;
+                if (EditorUtility.IsPersistent(targetInstance))
                 {
-                    report.Error("target-instantiate-failed", "Could not instantiate the target avatar prefab into the scene.");
-                    return null;
+                    targetInstance = (GameObject)PrefabUtility.InstantiatePrefab(request.targetAvatar);
+                    if (targetInstance == null)
+                    {
+                        report.Error("target-instantiate-failed", "Could not instantiate the target avatar prefab into the scene.");
+                        return null;
+                    }
+                    Undo.RegisterCreatedObjectUndo(targetInstance, "ReFit target avatar");
+                    report.Info("target-instantiated", $"Added '{targetInstance.name}' to the scene (the target avatar was a project file).");
                 }
-                Undo.RegisterCreatedObjectUndo(targetInstance, "ReFit target avatar");
-                report.Info("target-instantiated", $"Added '{targetInstance.name}' to the scene (the target avatar was a project file).");
-            }
 
-            // --- real asset instance -------------------------------------------------------
-            var renderer = ResolveAssetInstance(request, comp, targetInstance, report, out var assetInstanceRoot);
-            if (renderer == null) return null;
+                // --- real asset instance -------------------------------------------------------
+                var renderer = ResolveAssetInstance(request, comp, targetInstance, report, out var assetInstanceRoot);
+                if (renderer == null) return null;
 
-            Undo.RecordObject(renderer, "ReFit");
-            comp.appliedOriginalMesh = renderer.sharedMesh;
-            originalState = ReFitRendererState.Capture(renderer);
-            CaptureGeneratedMeshPreviewWithOriginalSkinning(debug, renderer, comp);
-            renderer.sharedMesh = comp.mesh;
-            if (!comp.armatureReplaced)
-                debug?.Capture("02_generated_mesh_assigned", renderer, comp.projectionDebug);
+                Undo.RecordObject(renderer, "ReFit");
+                comp.appliedOriginalMesh = renderer.sharedMesh;
+                originalState = ReFitRendererState.Capture(renderer);
+                CaptureGeneratedMeshPreviewWithOriginalSkinning(debug, renderer, comp);
+                renderer.sharedMesh = comp.mesh;
+                if (!comp.armatureReplaced)
+                    debug?.Capture("02_generated_mesh_assigned", renderer, comp.projectionDebug);
 
-            // --- armature replacement ------------------------------------------------------
-            bool armatureApplied = false;
-            if (comp.armatureReplaced)
-            {
-                armatureApplied = ApplyBonePlan(request, comp, targetInstance, assetInstanceRoot, renderer, report);
-                if (!armatureApplied)
-                    report.Warn("bone-apply-incomplete", "The armature replacement could not be fully applied; check the messages above.");
-                else if (!renderer.transform.IsChildOf(targetInstance.transform))
+                // --- armature replacement ------------------------------------------------------
+                bool armatureApplied = false;
+                if (comp.armatureReplaced)
                 {
-                    // The mesh now follows the target's bones; keep the object tidy under the target avatar.
-                    var container = renderer.transform;
-                    while (container.parent != null &&
-                           !container.parent.IsChildOf(targetInstance.transform) && container.parent != targetInstance.transform &&
-                           container.parent.GetComponentsInChildren<SkinnedMeshRenderer>(true).Length == 1)
-                        container = container.parent;
-                    if (MakeRestructurable(container, report))
-                        Undo.SetTransformParent(container, targetInstance.transform, "ReFit parent asset");
+                    armatureApplied = ApplyBonePlan(request, comp, targetInstance, assetInstanceRoot, renderer, report);
+                    if (!armatureApplied)
+                        report.Error("bone-apply-incomplete", "The armature replacement failed; scene changes will be rolled back.");
+                    else if (!renderer.transform.IsChildOf(targetInstance.transform))
+                    {
+                        // The mesh now follows the target's bones; keep the object tidy under the target avatar.
+                        var container = renderer.transform;
+                        while (container.parent != null &&
+                               !container.parent.IsChildOf(targetInstance.transform) && container.parent != targetInstance.transform &&
+                               container.parent.GetComponentsInChildren<SkinnedMeshRenderer>(true).Length == 1)
+                            container = container.parent;
+                        if (MakeRestructurable(container, report))
+                            Undo.SetTransformParent(container, targetInstance.transform, "ReFit parent asset");
+                    }
                 }
-            }
-            ApplyGeneratedMetadata(renderer, comp.generatedMetadata);
-            debug?.Capture(armatureApplied ? "03_armature_replaced" :
-                (comp.armatureReplaced ? "03_armature_replace_failed" : "03_armature_kept"), renderer);
+                ApplyGeneratedMetadata(renderer, comp.generatedMetadata);
+                debug?.Capture(armatureApplied ? "03_armature_replaced" :
+                    (comp.armatureReplaced ? "03_armature_replace_failed" : "03_armature_kept"), renderer);
 
-            // --- enable the generated shapes -------------------------------------------------
-            SetGeneratedBlendShapeWeights(renderer, comp, 0f, false);
-            if (!string.IsNullOrEmpty(comp.primaryShapeName))
-            {
-                CaptureGeneratedDeltaOverride(debug, renderer, comp, "04_primary_raw_blendshape_enabled",
-                    comp.debugPrimaryRawLocalDeltas, null, true, false);
-
-                int idx = comp.mesh.GetBlendShapeIndex(comp.primaryShapeName);
-                if (idx >= 0) renderer.SetBlendShapeWeight(idx, 100f);
-                debug?.Capture(idx >= 0 ? "05_primary_clearance_corrected" : "05_primary_blendshape_missing",
-                    renderer, null, comp.primaryIslandPropagationDebug);
-            }
-            if (comp.secondaryShapeNames != null)
-            {
-                CaptureGeneratedDeltaOverride(debug, renderer, comp, "06_transferred_raw_blendshapes_enabled",
-                    null, comp.debugSecondaryRawLocalDeltas, true, true);
-
-                bool hadSecondaryShape = false;
-                for (int s = 0; s < comp.secondaryShapeNames.Length; s++)
+                // --- enable the generated shapes -------------------------------------------------
+                SetGeneratedBlendShapeWeights(renderer, comp, 0f, false);
+                if (!string.IsNullOrEmpty(comp.primaryShapeName))
                 {
-                    int idx = comp.mesh.GetBlendShapeIndex(comp.secondaryShapeNames[s]);
-                    if (idx < 0) continue;
-                    hadSecondaryShape = true;
-                    float weight = comp.secondaryMirrorWeights != null && s < comp.secondaryMirrorWeights.Length
-                        ? comp.secondaryMirrorWeights[s]
-                        : 100f;
-                    renderer.SetBlendShapeWeight(idx, weight);
-                }
-                if (hadSecondaryShape)
-                    debug?.Capture("07_transferred_clearance_corrected", renderer, null,
-                        comp.transferredIslandPropagationDebug);
-            }
-            debug?.Capture("08_final_result", renderer, comp.projectionDebug,
-                comp.transferredIslandPropagationDebug ?? comp.primaryIslandPropagationDebug);
+                    CaptureGeneratedDeltaOverride(debug, renderer, comp, "04_primary_raw_blendshape_enabled",
+                        comp.debugPrimaryRawLocalDeltas, null, true, false);
 
-            Undo.FlushUndoRecordObjects();
-            Undo.CollapseUndoOperations(undoGroup);
-            Selection.activeGameObject = renderer.gameObject;
-            EditorGUIUtility.PingObject(renderer.gameObject);
-            return renderer;
+                    int idx = comp.mesh.GetBlendShapeIndex(comp.primaryShapeName);
+                    if (idx >= 0) renderer.SetBlendShapeWeight(idx, 100f);
+                    debug?.Capture(idx >= 0 ? "05_primary_clearance_corrected" : "05_primary_blendshape_missing",
+                        renderer, null, comp.primaryIslandPropagationDebug);
+                }
+                if (comp.secondaryShapeNames != null)
+                {
+                    CaptureGeneratedDeltaOverride(debug, renderer, comp, "06_transferred_raw_blendshapes_enabled",
+                        null, comp.debugSecondaryRawLocalDeltas, true, true);
+
+                    bool hadSecondaryShape = false;
+                    for (int s = 0; s < comp.secondaryShapeNames.Length; s++)
+                    {
+                        int idx = comp.mesh.GetBlendShapeIndex(comp.secondaryShapeNames[s]);
+                        if (idx < 0) continue;
+                        hadSecondaryShape = true;
+                        float weight = comp.secondaryMirrorWeights != null && s < comp.secondaryMirrorWeights.Length
+                            ? comp.secondaryMirrorWeights[s]
+                            : 100f;
+                        renderer.SetBlendShapeWeight(idx, weight);
+                    }
+                    if (hadSecondaryShape)
+                        debug?.Capture("07_transferred_clearance_corrected", renderer, null,
+                            comp.transferredIslandPropagationDebug);
+                }
+                debug?.Capture("08_final_result", renderer, comp.projectionDebug,
+                    comp.transferredIslandPropagationDebug ?? comp.primaryIslandPropagationDebug);
+
+                Undo.FlushUndoRecordObjects();
+                if (report.HasErrors) return null;
+                var generated = renderer.GetComponent<ReFitGeneratedAssetMetadata>();
+                if (generated != null && generated.data != null)
+                {
+                    Undo.RecordObject(generated, "ReFit provenance");
+                    generated.data.assetIdentity = ReFitCacheIdentity.Renderer(renderer, true);
+                }
+                Undo.CollapseUndoOperations(undoGroup);
+                committed = true;
+                return renderer;
+            }
+            finally
+            {
+                if (!committed)
+                {
+                    Undo.FlushUndoRecordObjects();
+                    Undo.RevertAllDownToGroup(undoGroup);
+                    originalState = null;
+                }
+            }
         }
 
         private static void ApplyGeneratedMetadata(SkinnedMeshRenderer renderer, ReFitGeneratedAssetMetadataData data)
@@ -717,6 +745,16 @@ namespace Orbiters.ReFit.Editor
         /// Repairs stale duplicate transform-only armature branches left on a scene asset before a new ReFit run.
         /// This is intentionally conservative: branches used by the renderer or another renderer are not deleted.
         /// </summary>
+        public static void ValidateSceneAssetArmature(ReFitRequest request, ReFitReport report)
+        {
+            var renderer = request?.assetRenderer;
+            if (renderer == null || EditorUtility.IsPersistent(renderer)) return;
+            var root = PoseNormalizer.FindAssetObjectRoot(renderer, request.sourceAvatar, request.targetAvatar);
+            if (root != null && !IsAvatarRoot(root, request, request.targetAvatar))
+                ValidateExistingInputArmature(root, renderer, report);
+        }
+
+        /// <summary>Explicit repair operation. Execute/ExecuteCoroutine only validate input before computing.</summary>
         public static void RepairSceneAssetArmature(ReFitRequest request, ReFitReport report)
         {
             var renderer = request != null ? request.assetRenderer : null;
@@ -2624,7 +2662,8 @@ namespace Orbiters.ReFit.Editor
                 var root = PrefabUtility.GetOutermostPrefabInstanceRoot(t);
                 if (root == t.gameObject) return true;
                 if (root == null) return true;
-                PrefabUtility.UnpackPrefabInstance(root, PrefabUnpackMode.OutermostRoot, InteractionMode.AutomatedAction);
+                // Include prefab connectivity in the operation's Undo transaction as well as transforms.
+                PrefabUtility.UnpackPrefabInstance(root, PrefabUnpackMode.OutermostRoot, InteractionMode.UserAction);
                 report.Info("prefab-unpacked", $"Unpacked the prefab instance '{root.name}' to allow moving '{t.name}'.");
             }
             report.Warn("prefab-unpack-failed", $"Could not unpack the prefab instance containing '{t.name}'.");

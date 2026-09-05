@@ -1,0 +1,7 @@
+{
+  "name": "orbiters.refit.XRay.Editor",
+  "references": ["orbiters.refit.Editor", "orbiters.xraygizmos.Editor"],
+  "includePlatforms": ["Editor"],
+  "defineConstraints": ["REFIT_XRAY"],
+  "versionDefines": [{"name": "orbiters.xraygizmos", "expression": "0.1.0", "define": "REFIT_XRAY"}]
+}

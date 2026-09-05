@@ -24,6 +24,8 @@ namespace Orbiters.ReFit
         RotateWithNormal
     }
 
+    public enum ReFitGarmentKind { Auto, UpperBody, Other }
+
     /// <summary>Tuning options for a re-fit operation. Defaults are sensible for ~1.5m humanoid avatars (units: meters).</summary>
     [Serializable]
     public class ReFitSettings
@@ -125,6 +127,8 @@ namespace Orbiters.ReFit
         [Range(0f, 1f)] public float clearanceLowConfidenceCorrectionScale = 0.35f;
         /// <summary>Scale applied to upper-body garment hem following and inward tightening on lower-body classified groups.</summary>
         [Range(0f, 1f)] public float upperBodyGarmentHemFollowScale = 0.25f;
+        /// <summary>Auto uses only the asset renderer/mesh name, never names of avatar ancestors.</summary>
+        public ReFitGarmentKind garmentKind = ReFitGarmentKind.Auto;
         /// <summary>Propagate clearance corrections from corrected garment polygons to nearby disconnected garment islands.</summary>
         public bool clearancePropagateDisconnectedIslands = true;
         /// <summary>Strength of topology-independent garment-to-garment correction propagation.</summary>
@@ -168,6 +172,15 @@ namespace Orbiters.ReFit
         public ReFitMode mode = ReFitMode.MeshToMesh;
         /// <summary>Tuning options.</summary>
         public ReFitSettings settings = new ReFitSettings();
+
+        /// <summary>Snapshots mutable operation options; Unity object references remain input handles.</summary>
+        public ReFitRequest Clone()
+        {
+            var copy = (ReFitRequest)MemberwiseClone();
+            copy.settings = settings?.Clone() ?? new ReFitSettings();
+            copy.targetBlendshapes = targetBlendshapes != null ? new List<string>(targetBlendshapes) : null;
+            return copy;
+        }
     }
 
     /// <summary>Severity of a <see cref="ReFitMessage"/>.</summary>
@@ -457,6 +470,10 @@ namespace Orbiters.ReFit
     [Serializable]
     public class ReFitGeneratedAssetMetadataData
     {
+        public string targetIdentity;
+        public string assetIdentity;
+        public string settingsIdentity;
+        public string bindingSettingsIdentity;
         public string primaryShapeName;
         public int groupCount;
         public int targetBodyVertexCount;
@@ -482,6 +499,10 @@ namespace Orbiters.ReFit
         {
             return new ReFitGeneratedAssetMetadataData
             {
+                targetIdentity = targetIdentity,
+                assetIdentity = assetIdentity,
+                settingsIdentity = settingsIdentity,
+                bindingSettingsIdentity = bindingSettingsIdentity,
                 primaryShapeName = primaryShapeName,
                 groupCount = groupCount,
                 targetBodyVertexCount = targetBodyVertexCount,
@@ -527,6 +548,8 @@ namespace Orbiters.ReFit
     [Serializable]
     public class ReFitGeneratedTransferredShapeMetadata
     {
+        public string frameIdentity;
+        public string generatedName;
         public string sourceName;
         public Vector3[] localDeltas;
 
@@ -534,6 +557,8 @@ namespace Orbiters.ReFit
         {
             return new ReFitGeneratedTransferredShapeMetadata
             {
+                frameIdentity = frameIdentity,
+                generatedName = generatedName,
                 sourceName = sourceName,
                 localDeltas = localDeltas != null ? (Vector3[])localDeltas.Clone() : null
             };

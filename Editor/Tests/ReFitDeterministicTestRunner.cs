@@ -1,7 +1,6 @@
 using System;
 using System.Collections.Generic;
 using System.Reflection;
-using Orbiters.XRayGizmos.Editor;
 using UnityEditor;
 using UnityEngine;
 using Object = UnityEngine.Object;
@@ -12,8 +11,14 @@ namespace Orbiters.ReFit.Editor.Tests
     /// Deterministic in-memory ReFit checks. These intentionally avoid Unity Test Framework dependencies so they
     /// can be run from the menu, batchmode, CI, or by agents with only an editor executeMethod call.
     /// </summary>
-    public static class ReFitDeterministicTestRunner
+    public static partial class ReFitDeterministicTestRunner
     {
+        private sealed class SkippedTestException : Exception
+        {
+            public SkippedTestException(string message) : base(message) { }
+        }
+        private static readonly List<string> TestOutcomes = new List<string>();
+        public static string LastSummary { get; private set; }
         private const string BodyShapeName = "TestMuscle";
         private const float PrimaryRefitDriftTolerance = 0.002f;
         private const float ChestForwardDeltaMinimum = 0.06f;
@@ -35,7 +40,7 @@ namespace Orbiters.ReFit.Editor.Tests
             try
             {
                 RunOrThrow();
-                EditorUtility.DisplayDialog("ReFit deterministic tests", "All deterministic ReFit tests passed.", "OK");
+                EditorUtility.DisplayDialog("ReFit deterministic tests", LastSummary, "OK");
             }
             catch (Exception e)
             {
@@ -77,10 +82,23 @@ namespace Orbiters.ReFit.Editor.Tests
 
         public static void RunOrThrow()
         {
-            var previousSelection = Selection.activeObject;
+            bool hadHistory = EditorPrefs.HasKey(ReFitBlendshapeHistory.Key);
+            string savedHistory = EditorPrefs.GetString(ReFitBlendshapeHistory.Key);
+            TestOutcomes.Clear();
             var failures = new List<string>();
             try
             {
+                RunArchitectureChecks(failures);
+                RunCase(failures, "Navigation, search, recents and commission rows", ReFitNavigationTests.RunOrThrow);
+                RunCase(failures,
+                    "Commission handoff serializes only selected creators and ReFit context",
+                    CommissionHandoff_JsonContractIsMinimalAndStable);
+                RunCase(failures,
+                    "Commission environment resolves the same dev and production API roots as MCB",
+                    CommissionEnvironment_UsesExpectedApiRoots);
+                RunCase(failures,
+                    "Commission creator avatars are alpha-masked to a circle",
+                    CommissionAvatar_IsCircular);
                 RunCase(failures,
                     "MeshAndBlendshape equal body surfaces do not create primary refit drift",
                     MeshAndBlendshape_EqualSurfaces_NoPrimaryDrift_TransfersMuscle);
@@ -226,11 +244,16 @@ namespace Orbiters.ReFit.Editor.Tests
                 if (failures.Count > 0)
                     throw new Exception("[ReFit Tests] Failed deterministic checks:\n" + string.Join("\n", failures));
 
-                Debug.Log("[ReFit Tests] All deterministic ReFit tests passed.");
             }
             finally
             {
-                Selection.activeObject = previousSelection;
+                LastSummary = $"{TestOutcomes.FindAll(x => x.StartsWith("PASS:")).Count} passed; " +
+                    $"{TestOutcomes.FindAll(x => x.StartsWith("SKIP:")).Count} skipped; {failures.Count} failed.";
+                System.IO.Directory.CreateDirectory("Temp/ReFitTests");
+                System.IO.File.WriteAllLines("Temp/ReFitTests/latest.txt", TestOutcomes);
+                Debug.Log("[ReFit Tests] " + LastSummary);
+                if (hadHistory) EditorPrefs.SetString(ReFitBlendshapeHistory.Key, savedHistory);
+                else EditorPrefs.DeleteKey(ReFitBlendshapeHistory.Key);
             }
         }
 
@@ -379,7 +402,7 @@ namespace Orbiters.ReFit.Editor.Tests
                     Debug.Log($"[ReFit Tests] {label} base expected->generated {baseReverse}");
                     Debug.Log($"[ReFit Tests] {label} base triangle quality {baseQuality}");
                     if (asymmetricAuthoredCoverage)
-                        AssertFbxSurfaceMetrics($"{label} base generated->expected", baseForward, 0.012f, 0.03f, 0.06f, 0.36f);
+                        AssertFbxSurfaceMetrics($"{label} base generated->expected", baseForward, 0.010f, 0.025f, 0.04f, 0.30f);
                     else
                         AssertFbxSurfaceMetrics($"{label} base generated->expected", baseForward, 0.008f, 0.014f, 0.015f, 0.13f);
                     if (asymmetricAuthoredCoverage)
@@ -401,8 +424,8 @@ namespace Orbiters.ReFit.Editor.Tests
                     if (asymmetricAuthoredCoverage)
                     {
                         AssertFbxTransferredShapeProfile(label, generated, fixture.expectedClothing);
-                        AssertFbxSurfaceMetrics($"{label} shape generated->expected", shapeForward, 0.14f, 0.2f, 0.42f, 0.65f);
-                        AssertLessOrEqual(shapeReverse.average, 0.16f,
+                        AssertFbxSurfaceMetrics($"{label} shape generated->expected", shapeForward, 0.010f, 0.025f, 0.04f, 0.29f);
+                        AssertLessOrEqual(shapeReverse.average, 0.06f,
                             $"{label} shape authored-result coverage drift is too high.");
                     }
                     else
@@ -459,13 +482,26 @@ namespace Orbiters.ReFit.Editor.Tests
 
         private static void RunCase(List<string> failures, string name, Action test)
         {
+            var timer = System.Diagnostics.Stopwatch.StartNew();
             try
             {
+                // These have separate explicit menu entry points: automated tests must not select
+                // objects, invoke third-party build menus, or depend on the user's active scene.
+                if (test == RealHoodiePrefab_VrcfuryTestCopyBuildMergesArmatureBones ||
+                    test == ActiveSceneHoodiePrefab_HasFreshVrcfuryArmatureStateWhenPresent)
+                    throw new SkippedTestException("Run the explicit scene/VRCFury integration check separately.");
                 test();
+                TestOutcomes.Add($"PASS: {name} ({timer.Elapsed.TotalMilliseconds:F1} ms)");
                 Debug.Log($"[ReFit Tests] PASS: {name}");
+            }
+            catch (SkippedTestException e)
+            {
+                TestOutcomes.Add($"SKIP: {name}: {e.Message}");
+                Debug.LogWarning($"[ReFit Tests] SKIP: {name}: {e.Message}");
             }
             catch (Exception e)
             {
+                TestOutcomes.Add($"FAIL: {name}: {e}");
                 failures.Add($"- {name}: {e.Message}");
                 Debug.LogError($"[ReFit Tests] FAIL: {name}\n{e}");
             }
@@ -1457,6 +1493,79 @@ namespace Orbiters.ReFit.Editor.Tests
             }
         }
 
+        [MenuItem("Tools/Orbiters/ReFit/Run VRCFury Test Copy Integration (Changes Selection)")]
+        public static void RunVrcfuryTestCopyIntegration()
+        {
+            var previous = Selection.objects;
+            try { RealHoodiePrefab_VrcfuryTestCopyBuildMergesArmatureBones(); }
+            finally { Selection.objects = previous; }
+        }
+
+        private static void CommissionHandoff_JsonContractIsMinimalAndStable()
+        {
+            var payload = new ReFitCommissionHandoffRequest
+            {
+                creatorIds = new List<int> { 4, 9 },
+                details = new ReFitCommissionDetails
+                {
+                    assetName = "Hoodie",
+                    sourceAvatar = "Model A",
+                    targetAvatar = "Model B",
+                    blendshape = "orbit muscles",
+                    mode = ReFitMode.MeshAndBlendshape.ToString()
+                }
+            };
+
+            string json = JsonUtility.ToJson(payload);
+            AssertTrue(json.Contains("\"creatorIds\":[4,9]"), "Commission handoff lost creator order.");
+            AssertTrue(json.Contains("\"assetName\":\"Hoodie\""), "Commission handoff lost the asset name.");
+            AssertTrue(!json.Contains("token"), "Commission handoff payload must not contain an authentication token.");
+
+            string mediaUrl = ReFitCommissionClient.NormalizeMediaUrl("/files/serve/banner.png");
+            AssertTrue(Uri.TryCreate(mediaUrl, UriKind.Absolute, out var parsed), "Relative creator media did not become an absolute URL.");
+            AssertTrue(parsed.AbsolutePath == "/files/serve/banner.png", "Creator media URL changed its server path.");
+
+            var creator = new ReFitCommissionCreator
+            {
+                priceRange = new ReFitCommissionPriceRange { minCents = 400, maxCents = 800, currency = "eur" }
+            };
+            AssertTrue(ReFitCommissionClient.PriceLabel(creator) == "4 - 8 EUR", "Creator price range label is incorrect.");
+        }
+
+        private static void CommissionEnvironment_UsesExpectedApiRoots()
+        {
+            AssertTrue(
+                ReFitCommissionClient.FallbackApiUrl(false) == "https://api.orbiters.cc/refit",
+                "Production ReFit API root does not match MCB production routing.");
+            AssertTrue(
+                ReFitCommissionClient.FallbackApiUrl(true) == "http://localhost:4100/refit",
+                "Development ReFit API root does not match MCB development routing.");
+        }
+
+        private static void CommissionAvatar_IsCircular()
+        {
+            var source = new Texture2D(8, 6, TextureFormat.RGBA32, false);
+            Texture2D circular = null;
+            try
+            {
+                var pixels = new Color[source.width * source.height];
+                for (int i = 0; i < pixels.Length; i++) pixels[i] = Color.white;
+                source.SetPixels(pixels);
+                source.Apply();
+
+                circular = ReFitCommissionClient.CreateCircularAvatarTexture(source);
+                AssertTrue(circular != null, "Circular avatar processing returned no texture.");
+                AssertTrue(circular.width == 6 && circular.height == 6, "Circular avatar was not center-cropped to a square.");
+                AssertTrue(circular.GetPixel(0, 0).a < 0.01f, "Circular avatar retained an opaque corner.");
+                AssertTrue(circular.GetPixel(3, 3).a > 0.99f, "Circular avatar removed its center pixels.");
+            }
+            finally
+            {
+                if (circular != null && !ReferenceEquals(circular, source)) UnityEngine.Object.DestroyImmediate(circular);
+                UnityEngine.Object.DestroyImmediate(source);
+            }
+        }
+
         private static void BlendshapeOnly_TargetNestedAccessory_MatchesEquivalentSourceTightness()
         {
             using (var fixture = ReFitTestFixture.Create())
@@ -1556,9 +1665,7 @@ namespace Orbiters.ReFit.Editor.Tests
         {
             if (!RealHoodieArtifactFixture.CanLoadRequiredAssets(out var missingAsset))
             {
-                Debug.LogWarning(
-                    $"[ReFit Tests] Skipping real hoodie source/no-source artifact regression; missing '{missingAsset}'.");
-                return;
+                throw new SkippedTestException($"[ReFit Tests] Skipping real hoodie source/no-source artifact regression; missing '{missingAsset}'.");
             }
 
             using (var fixture = RealHoodieArtifactFixture.Create())
@@ -1681,9 +1788,7 @@ namespace Orbiters.ReFit.Editor.Tests
         {
             if (!RealHoodieArtifactFixture.CanLoadRequiredAssets(out var missingAsset))
             {
-                Debug.LogWarning(
-                    $"[ReFit Tests] Skipping real hoodie no-source staging pose regression; missing '{missingAsset}'.");
-                return;
+                throw new SkippedTestException($"[ReFit Tests] Skipping real hoodie no-source staging pose regression; missing '{missingAsset}'.");
             }
 
             using (var fixture = RealHoodieArtifactFixture.Create())
@@ -1721,15 +1826,11 @@ namespace Orbiters.ReFit.Editor.Tests
         {
             if (!RealHoodieArtifactFixture.CanLoadRequiredAssets(out var missingAsset))
             {
-                Debug.LogWarning(
-                    $"[ReFit Tests] Skipping real hoodie prefab VRCFury regression; missing '{missingAsset}'.");
-                return;
+                throw new SkippedTestException($"[ReFit Tests] Skipping real hoodie prefab VRCFury regression; missing '{missingAsset}'.");
             }
             if (AssetDatabase.LoadAssetAtPath<GameObject>(RealHoodiePrefabPath) == null)
             {
-                Debug.LogWarning(
-                    $"[ReFit Tests] Skipping real hoodie prefab VRCFury regression; missing '{RealHoodiePrefabPath}'.");
-                return;
+                throw new SkippedTestException($"[ReFit Tests] Skipping real hoodie prefab VRCFury regression; missing '{RealHoodiePrefabPath}'.");
             }
 
             using (var fixture = RealHoodieArtifactFixture.Create(RealHoodiePrefabPath))
@@ -1793,25 +1894,19 @@ namespace Orbiters.ReFit.Editor.Tests
         {
             if (!RealHoodieArtifactFixture.CanLoadRequiredAssets(out var missingAsset))
             {
-                Debug.LogWarning(
-                    $"[ReFit Tests] Skipping real hoodie prefab VRCFury build regression; missing '{missingAsset}'.");
-                return;
+                throw new SkippedTestException($"[ReFit Tests] Skipping real hoodie prefab VRCFury build regression; missing '{missingAsset}'.");
             }
             if (AssetDatabase.LoadAssetAtPath<GameObject>(RealHoodiePrefabPath) == null)
             {
-                Debug.LogWarning(
-                    $"[ReFit Tests] Skipping real hoodie prefab VRCFury build regression; missing '{RealHoodiePrefabPath}'.");
-                return;
+                throw new SkippedTestException($"[ReFit Tests] Skipping real hoodie prefab VRCFury build regression; missing '{RealHoodiePrefabPath}'.");
             }
             if (FindLoadedType("VF.Menu.VRCFuryTestCopyMenuItem") == null)
             {
-                Debug.LogWarning("[ReFit Tests] Skipping real hoodie prefab VRCFury build regression; VRCFury test-copy menu is not loaded.");
-                return;
+                throw new SkippedTestException("[ReFit Tests] Skipping real hoodie prefab VRCFury build regression; VRCFury test-copy menu is not loaded.");
             }
             if (FindLoadedType("VRC.SDK3.Avatars.Components.VRCAvatarDescriptor") == null)
             {
-                Debug.LogWarning("[ReFit Tests] Skipping real hoodie prefab VRCFury build regression; VRChat avatar descriptor type is not loaded.");
-                return;
+                throw new SkippedTestException("[ReFit Tests] Skipping real hoodie prefab VRCFury build regression; VRChat avatar descriptor type is not loaded.");
             }
 
             using (var fixture = RealHoodieArtifactFixture.Create(RealHoodiePrefabPath))
@@ -1875,8 +1970,7 @@ namespace Orbiters.ReFit.Editor.Tests
             var hoodieRoot = FindActiveSceneObjectByPathOrName("MasculineCanine/Hoodie Prefab", "Hoodie Prefab");
             if (hoodieRoot == null)
             {
-                Debug.LogWarning("[ReFit Tests] Skipping active-scene Hoodie VRCFury check; no 'Hoodie Prefab' object was found in the active scene.");
-                return;
+                throw new SkippedTestException("[ReFit Tests] Skipping active-scene Hoodie VRCFury check; no 'Hoodie Prefab' object was found in the active scene.");
             }
 
             var renderer = RequireRenderer(hoodieRoot, "Hoodie", null);
@@ -2104,8 +2198,7 @@ namespace Orbiters.ReFit.Editor.Tests
                 var nullLink = CreateVrcfuryArmatureLink(accessory.root, null);
                 if (validLink == null || nullLink == null)
                 {
-                    Debug.LogWarning("[ReFit Tests] Skipping VRCFury Armature Link repair check because VRCFury is not installed.");
-                    return;
+                throw new SkippedTestException("[ReFit Tests] Skipping VRCFury Armature Link repair check because VRCFury is not installed.");
                 }
 
                 var request = BuildMeshAndBlendshapeRequest(fixture, accessory.renderer, true);
@@ -2159,8 +2252,7 @@ namespace Orbiters.ReFit.Editor.Tests
                 var armatureLink = CreateVrcfuryArmatureLink(accessory.root, accessory.hips.gameObject);
                 if (armatureLink == null)
                 {
-                    Debug.LogWarning("[ReFit Tests] Skipping scene VRCFury preflight repair check because VRCFury is not installed.");
-                    return;
+                throw new SkippedTestException("[ReFit Tests] Skipping scene VRCFury preflight repair check because VRCFury is not installed.");
                 }
 
                 var request = new ReFitRequest
@@ -2726,35 +2818,9 @@ namespace Orbiters.ReFit.Editor.Tests
 
         private static void XRayExtraGizmoRegistry_RegistersAndTogglesExternalGizmo()
         {
-            const string id = "orbiters.refit.tests.fake-extra-gizmo";
-            bool previousProjection = ReFitProjectionGizmoService.Enabled;
-            bool previousWeldedGroups = ReFitProjectionGizmoService.WeldedGroupsEnabled;
-            bool enabled = false;
-            XRayExternalGizmoRegistry.Register(id, "Fake ReFit gizmo", () => enabled, value => enabled = value);
-            try
-            {
-                XRayExternalGizmoEntry found = null;
-                foreach (var entry in XRayExternalGizmoRegistry.Entries)
-                {
-                    if (entry.Id == id)
-                    {
-                        found = entry;
-                        break;
-                    }
-                }
-
-                AssertTrue(found != null, "The registered external gizmo did not appear in XRayExternalGizmoRegistry.Entries.");
-                found.SetEnabled(true);
-                AssertTrue(enabled, "The registered external gizmo did not receive its enabled toggle.");
-                XRayExternalGizmoRegistry.SetAll(false);
-                AssertTrue(!enabled, "XRayExternalGizmoRegistry.SetAll(false) did not disable the registered gizmo.");
-            }
-            finally
-            {
-                XRayExternalGizmoRegistry.Unregister(id);
-                ReFitProjectionGizmoService.Enabled = previousProjection;
-                ReFitProjectionGizmoService.WeldedGroupsEnabled = previousWeldedGroups;
-            }
+            var adapter = Type.GetType("Orbiters.ReFit.Editor.ReFitXRayIntegration, orbiters.refit.XRay.Editor");
+            if (adapter == null) throw new SkippedTestException("Optional XRay integration is not installed.");
+            adapter.GetMethod("VerifyRegistry").Invoke(null, null);
         }
 
         private static void ArmatureReplacement_ChildFirstPlan_MaterializesWithoutDrift()

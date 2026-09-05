@@ -14,7 +14,7 @@ namespace Orbiters.ReFit.Editor
     /// The ReFit wizard: walks the user through picking the asset, the avatars and the fit mode,
     /// then runs <see cref="ReFitService"/>. UIToolkit, styled after the MCB look.
     /// </summary>
-    public class ReFitWizard : EditorWindow
+    public partial class ReFitWizard : EditorWindow
     {
         /// <summary>One re-fit performed during this editor session (for the reversible list on the first page).</summary>
         public class RefitLogEntry
@@ -84,6 +84,10 @@ namespace Orbiters.ReFit.Editor
         private bool isExecuting;
         private float executionProgress;
         private string executionStep;
+        private ReFitCommissionCreator[] commissionCreators;
+        private bool commissionCreatorsLoading;
+        private bool commissionHandoffLoading;
+        private string commissionError;
 
         private ScrollView content;
         private Button backButton;
@@ -108,10 +112,13 @@ namespace Orbiters.ReFit.Editor
 
             var header = new VisualElement();
             header.AddToClassList("refit-header");
-            header.Add(ReFitLogo.Create(1.05f));
+            var brand = new VisualElement();
+            brand.AddToClassList("refit-brand");
+            brand.Add(ReFitLogo.Create(1.05f));
             var title = new Label("ReFit");
             title.AddToClassList("refit-title");
-            header.Add(title);
+            brand.Add(title);
+            header.Add(brand);
             root.Add(header);
 
             var body = new VisualElement();
@@ -123,6 +130,8 @@ namespace Orbiters.ReFit.Editor
             nav.AddToClassList("refit-nav");
             backButton = new Button(GoBack) { text = "< Back" };
             backButton.AddToClassList("refit-back");
+            backButton.AddToClassList("refit-header-button");
+            backButton.tooltip = "Back";
             nav.Add(backButton);
             var navSpacer = new VisualElement();
             navSpacer.style.flexGrow = 1f;
@@ -133,14 +142,18 @@ namespace Orbiters.ReFit.Editor
             })
             { text = "Settings" };
             settingsButton.AddToClassList("refit-back");
+            settingsButton.AddToClassList("refit-header-button");
             nav.Add(settingsButton);
-            body.Add(nav);
+            header.Add(nav);
 
             content = new ScrollView(ScrollViewMode.Vertical);
             content.AddToClassList("refit-scroll");
             content.horizontalScrollerVisibility = ScrollerVisibility.Hidden;
             body.Add(content);
             body.Add(CreateFooterCredit());
+
+            commissionPoll?.Pause();
+            commissionPoll = root.schedule.Execute(PollCommissions).Every(2000);
 
             Render();
         }
@@ -182,12 +195,20 @@ namespace Orbiters.ReFit.Editor
             ResetTightnessChoice();
             validateReport = null; lastResult = null;
             lastRequest = null; gravityPreview = null;
+            commissionCreators = null;
+            commissionCreatorsLoading = false;
+            commissionHandoffLoading = false;
+            commissionError = null;
             Render();
         }
 
         private void OnDisable()
         {
+            commissionPoll?.Pause();
+            commissionGeneration++;
+            commissionListLoading = false;
             StopExecutionPump();
+            isExecuting = false;
             ReFitGravityPreviewService.ClearPreview(gravityPreview);
         }
 
@@ -230,6 +251,7 @@ namespace Orbiters.ReFit.Editor
             cards.Add(Card("On my avatar", null, () => Go(Step.AvatarSelect)));
             cards.Add(Card("In my project files", null, () => Go(Step.AssetFileInput)));
             BuildRefittedAssets();
+            BuildActiveCommissions();
         }
 
         /// <summary>Lists active re-fitted assets from MCB's saved state and this standalone ReFit session.</summary>
@@ -440,23 +462,52 @@ namespace Orbiters.ReFit.Editor
                 Help("The target body has no blendshapes.");
                 return;
             }
-            int defaultIndex = Mathf.Max(0, names.IndexOf(blendshape));
-            var dropdown = new DropdownField("Blendshape", names, defaultIndex);
-            dropdown.AddToClassList("refit-field");
-            content.Add(dropdown);
+            if (!names.Contains(blendshape)) blendshape = null;
+            var search = new ToolbarSearchField { name = "refit-blendshape-search" };
+            search.AddToClassList("refit-shape-search");
+            search.tooltip = "Search body blendshapes";
+            content.Add(search);
+            var selected = new Label(blendshape ?? "Select a blendshape");
+            selected.AddToClassList("refit-shape-selected");
+            var suggestions = new VisualElement();
+            suggestions.AddToClassList("refit-shape-suggestions");
+            content.Add(suggestions);
+            content.Add(selected);
 
             Help("Optional: if the asset was also made for another avatar base, set it below to re-fit the mesh at the same time.");
             var sourceField = new ObjectField("Source avatar base (optional)") { objectType = typeof(GameObject), allowSceneObjects = true, value = sourceAvatar };
             sourceField.AddToClassList("refit-field");
             content.Add(sourceField);
 
-            Primary("Next", () =>
+            var next = Primary("Next", () =>
             {
-                blendshape = dropdown.value;
                 sourceAvatar = (GameObject)sourceField.value;
                 mode = sourceAvatar != null ? ReFitMode.MeshAndBlendshape : ReFitMode.Blendshape;
                 Go(Step.Tightness);
             });
+            next.SetEnabled(!string.IsNullOrEmpty(blendshape));
+            void RebuildSuggestions()
+            {
+                suggestions.Clear();
+                var matches = ReFitBlendshapeHistory.Suggestions(names, ReFitBlendshapeHistory.Read(), search.value);
+                foreach (string match in matches)
+                {
+                    var button = new Button(() =>
+                    {
+                        blendshape = match;
+                        selected.text = match;
+                        next.SetEnabled(true);
+                        RebuildSuggestions();
+                    }) { text = match, tooltip = match };
+                    button.AddToClassList("refit-shape-suggestion");
+                    button.EnableInClassList("refit-shape-suggestion--selected", match == blendshape);
+                    suggestions.Add(button);
+                }
+                if (matches.Count == 0)
+                    suggestions.Add(new Label(string.IsNullOrWhiteSpace(search.value) ? "No recent blendshapes on this body." : "No matching blendshapes."));
+            }
+            search.RegisterValueChangedCallback(_ => RebuildSuggestions());
+            RebuildSuggestions();
         }
 
         private void BuildAssetFileInput()
@@ -958,6 +1009,10 @@ namespace Orbiters.ReFit.Editor
                     settings.clearanceLowConfidenceCorrectionScale = value;
                 });
 
+            var garmentKind = new EnumField("Garment type", settings.garmentKind);
+            garmentKind.RegisterValueChangedCallback(e => settings.garmentKind = (ReFitGarmentKind)e.newValue);
+            parent.Add(garmentKind);
+
             AddFloatFieldWithReset(parent, "Upper-body hem follow scale", 0f, 1f,
                 settings.upperBodyGarmentHemFollowScale,
                 defaultSettings.upperBodyGarmentHemFollowScale,
@@ -1040,32 +1095,7 @@ namespace Orbiters.ReFit.Editor
             if (userChosen)
                 clearanceTightnessUserChosen = true;
 
-            settings.clearanceTightnessFactor = LerpPreset(clearanceTightnessPreset, 0.85f, 0.5f, 0.08f);
-            settings.clearanceMinimumSafetyDistance = LerpPreset(clearanceTightnessPreset, 0.006f, 0.003f, 0.002f);
-            settings.clearanceMaxOutwardCorrection = LerpPreset(clearanceTightnessPreset, 0.04f, 0.04f, 0.12f);
-            settings.clearanceMaxSurfaceGuardCorrection = LerpPreset(clearanceTightnessPreset, 0.001f, 0.003f, 0.08f);
-            settings.clearanceSurfaceGuardTriggerDistance = LerpPreset(clearanceTightnessPreset, 0.003f, 0.0015f, 0.00025f);
-            settings.clearanceMaxInwardCorrection = LerpPreset(clearanceTightnessPreset, 0.005f, 0.015f, 0.18f);
-            settings.clearanceInwardStrength = LerpPreset(clearanceTightnessPreset, 0.2f, 0.65f, 0.82f);
-            settings.clearanceExpansionStart = LerpPreset(clearanceTightnessPreset, 0.035f, 0.01f, 0.002f);
-            settings.clearanceExpansionFull = LerpPreset(clearanceTightnessPreset, 0.12f, 0.06f, 0.025f);
-            settings.clearanceSmoothingIterations = Mathf.RoundToInt(LerpPreset(clearanceTightnessPreset, 3f, 2f, 1f));
-            settings.clearanceSmoothingStrength = LerpPreset(clearanceTightnessPreset, 0.65f, 0.5f, 0.35f);
-            settings.clearanceSurfaceGuardIterations = Mathf.RoundToInt(LerpPreset(clearanceTightnessPreset, 0f, 1f, 6f));
-            settings.clearanceSurfaceGuardStrength = LerpPreset(clearanceTightnessPreset, 0.25f, 0.45f, 1f);
-            settings.clearanceSurfaceGuardEdgeSamples = Mathf.RoundToInt(LerpPreset(clearanceTightnessPreset, 1f, 1f, 3f));
-            settings.clearanceMaxPrimaryTotalCorrection = LerpPreset(clearanceTightnessPreset, 0.025f, 0.06f, 0.06f);
-            settings.clearanceMaxTransferredTotalCorrection = LerpPreset(clearanceTightnessPreset, 0.015f, 0.035f, 0.045f);
-            settings.clearanceTransferredInwardScale = LerpPreset(clearanceTightnessPreset, 0.45f, 0.75f, 0.92f);
-            settings.clearanceOpenBoundaryCorrectionScale = LerpPreset(clearanceTightnessPreset, 0.18f, 0.1f, 0.06f);
-            settings.clearanceLowConfidenceCorrectionScale = LerpPreset(clearanceTightnessPreset, 0.55f, 0.4f, 0.28f);
-            settings.upperBodyGarmentHemFollowScale = LerpPreset(clearanceTightnessPreset, 0.45f, 0.3f, 0.18f);
-            settings.clearancePropagateDisconnectedIslands = true;
-            settings.clearanceIslandPropagationStrength = LerpPreset(clearanceTightnessPreset, 0.25f, 0.6f, 0.85f);
-            settings.clearanceIslandPropagationSearchDistance = LerpPreset(clearanceTightnessPreset, 0.05f, 0.08f, 0.12f);
-            settings.clearanceMaxIslandPropagationCorrection = LerpPreset(clearanceTightnessPreset, 0.008f, 0.025f, 0.045f);
-            settings.clearanceIslandPropagationMinDonorCorrection = 0.001f;
-            settings.clearanceOutwardStrength = 1f;
+            ReFitSettingsPresets.ApplyTightness(settings, clearanceTightnessPreset);
         }
 
         private void MarkClearanceTightnessCustom()
@@ -1081,21 +1111,6 @@ namespace Orbiters.ReFit.Editor
             clearanceTightnessKnown = true;
             clearanceTightnessPreset = 0.5f;
         }
-
-        private static float SmoothPreset(float value)
-        {
-            float t = Mathf.Clamp01(value);
-            return t * t * (3f - 2f * t);
-        }
-
-        private static float LerpPreset(float value, float loose, float middle, float tight)
-        {
-            value = Mathf.Clamp01(value);
-            if (value <= 0.5f)
-                return Mathf.Lerp(loose, middle, SmoothPreset(value * 2f));
-            return Mathf.Lerp(middle, tight, SmoothPreset((value - 0.5f) * 2f));
-        }
-
         private static void AddInlineHelp(VisualElement parent, string text)
         {
             var label = new Label(text);
@@ -1216,8 +1231,29 @@ namespace Orbiters.ReFit.Editor
         {
             Question("Settings");
 
+            var connection = new Label("Connection");
+            connection.AddToClassList("refit-section");
+            content.Add(connection);
+
+            var devEnvironment = new Toggle("Dev Environment")
+            {
+                value = ReFitCommissionClient.IsDevEnvironment
+            };
+            devEnvironment.AddToClassList("refit-field");
+            devEnvironment.RegisterValueChangedCallback(e =>
+            {
+                ReFitCommissionClient.IsDevEnvironment = e.newValue;
+                commissionCreators = null;
+                commissionError = null;
+                commissionCreatorsLoading = false;
+                commissionHandoffLoading = false;
+            });
+            content.Add(devEnvironment);
+            Help("Uses the local Orbiters API on port 4100. Production is used when disabled. This setting is shared with MCB when MCB is installed.");
+
             var operation = new Label("Operation");
             operation.AddToClassList("refit-section");
+            operation.style.marginTop = 18;
             content.Add(operation);
             BuildSettings(content);
 
@@ -1371,7 +1407,8 @@ namespace Orbiters.ReFit.Editor
         private void StopExecutionPump()
         {
             EditorApplication.update -= PumpExecution;
-            executionCoroutines.Clear();
+            while (executionCoroutines.Count > 0)
+                (executionCoroutines.Pop() as IDisposable)?.Dispose();
         }
 
         private void CompleteExecutionWithError(Exception ex)
@@ -1513,7 +1550,189 @@ namespace Orbiters.ReFit.Editor
             again.style.marginTop = 14;
             content.Add(again);
 
-            content.Add(CreateResultCredit());
+            BuildCommissionSuggestions();
+        }
+
+        private void BuildCommissionSuggestions()
+        {
+            EnsureCommissionCreators();
+
+            var section = new VisualElement();
+            section.AddToClassList("refit-commission-section");
+            var title = new Label("The refit doesn't look right ?");
+            title.AddToClassList("refit-commission-title");
+            section.Add(title);
+            var subtitle = new Label("You can commission an artist for a manual refit:");
+            subtitle.AddToClassList("refit-commission-subtitle");
+            section.Add(subtitle);
+
+            if (commissionCreatorsLoading)
+            {
+                var loading = new Label("Loading available creators...");
+                loading.AddToClassList("refit-help");
+                section.Add(loading);
+            }
+            else if (!string.IsNullOrEmpty(commissionError))
+            {
+                var error = new Label(commissionError);
+                error.AddToClassList("refit-msg");
+                error.AddToClassList("refit-msg--warning");
+                section.Add(error);
+                var retry = new Button(() =>
+                {
+                    commissionCreators = null;
+                    commissionError = null;
+                    EnsureCommissionCreators();
+                    Render();
+                }) { text = "Try again" };
+                retry.AddToClassList("refit-back");
+                retry.style.marginTop = 8;
+                section.Add(retry);
+            }
+            else if (commissionCreators == null || commissionCreators.Length == 0)
+            {
+                var unavailable = new Label("No creator currently lists ReFit commissions.");
+                unavailable.AddToClassList("refit-help");
+                section.Add(unavailable);
+            }
+            else
+            {
+                var carousel = new VisualElement();
+                carousel.AddToClassList("refit-commission-carousel");
+                var creatorScroll = new ScrollView(ScrollViewMode.Horizontal);
+                creatorScroll.AddToClassList("refit-commission-scroll");
+                creatorScroll.verticalScrollerVisibility = ScrollerVisibility.Hidden;
+                creatorScroll.horizontalScrollerVisibility = ScrollerVisibility.Hidden;
+                foreach (var creator in commissionCreators) creatorScroll.Add(CreateCommissionCreatorCard(creator));
+                carousel.Add(creatorScroll);
+                if (commissionCreators.Length > 2)
+                {
+                    var nextCreators = new Button(() =>
+                    {
+                        var offset = creatorScroll.scrollOffset;
+                        offset.x += 256f;
+                        creatorScroll.scrollOffset = offset;
+                    }) { text = "\u203A" };
+                    nextCreators.tooltip = "Show more creators";
+                    nextCreators.AddToClassList("refit-commission-carousel-next");
+                    carousel.Add(nextCreators);
+                }
+                section.Add(carousel);
+
+            }
+
+            content.Add(section);
+        }
+
+        private VisualElement CreateCommissionCreatorCard(ReFitCommissionCreator creator)
+        {
+            var card = new Button(() => OpenCommissionWebsite(creator.id));
+            card.text = string.Empty;
+            card.AddToClassList("refit-commission-card");
+            card.SetEnabled(!commissionHandoffLoading);
+            card.tooltip = commissionHandoffLoading ? "Opening Orbiters..." : "Request a manual refit on Orbiters";
+
+            var banner = new Image { scaleMode = ScaleMode.ScaleAndCrop };
+            banner.AddToClassList("refit-commission-banner");
+            card.Add(banner);
+            ReFitCommissionClient.LoadTexture(creator.bannerUrl, texture =>
+            {
+                if (banner == null) return;
+                if (texture != null)
+                {
+                    banner.image = texture;
+                    return;
+                }
+                ReFitCommissionClient.LoadTexture(creator.avatarUrl, fallback =>
+                {
+                    if (banner != null) banner.image = fallback;
+                });
+            });
+
+            var identity = new VisualElement();
+            identity.AddToClassList("refit-commission-identity");
+            var avatarFrame = new VisualElement();
+            avatarFrame.AddToClassList("refit-commission-avatar");
+            var avatar = new Image { scaleMode = ScaleMode.ScaleAndCrop };
+            avatar.AddToClassList("refit-commission-avatar-image");
+            avatarFrame.Add(avatar);
+            identity.Add(avatarFrame);
+            ReFitCommissionClient.LoadCircularTexture(creator.avatarUrl, texture =>
+            {
+                if (avatar != null) avatar.image = texture;
+            });
+            var name = new Label(string.IsNullOrWhiteSpace(creator.username) ? "Creator" : creator.username);
+            name.AddToClassList("refit-commission-name");
+            name.tooltip = name.text;
+            identity.Add(name);
+            var price = new Label(ReFitCommissionClient.PriceLabel(creator));
+            price.AddToClassList("refit-commission-price");
+            price.tooltip = price.text;
+            identity.Add(price);
+            card.Add(identity);
+            return card;
+        }
+
+        private void EnsureCommissionCreators()
+        {
+            if (commissionCreators != null || commissionCreatorsLoading) return;
+            commissionCreatorsLoading = true;
+            commissionError = null;
+            bool requestedDevEnvironment = ReFitCommissionClient.IsDevEnvironment;
+            ReFitCommissionClient.FetchCreators((creators, error) =>
+            {
+                commissionCreatorsLoading = false;
+                if (requestedDevEnvironment != ReFitCommissionClient.IsDevEnvironment)
+                {
+                    commissionCreators = null;
+                    commissionError = null;
+                    return;
+                }
+                commissionCreators = creators ?? Array.Empty<ReFitCommissionCreator>();
+                commissionError = error;
+                if (current == Step.Result) Render();
+            });
+        }
+
+        private void OpenCommissionWebsite(int creatorId)
+        {
+            if (commissionHandoffLoading) return;
+            commissionHandoffLoading = true;
+            commissionError = null;
+            Render();
+
+            var payload = new ReFitCommissionHandoffRequest
+            {
+                creatorIds = new List<int> { creatorId },
+                details = new ReFitCommissionDetails
+                {
+                    assetName = asset != null ? asset.name : string.Empty,
+                    sourceAvatar = sourceAvatar != null ? sourceAvatar.name : string.Empty,
+                    targetAvatar = targetAvatar != null ? targetAvatar.name : string.Empty,
+                    blendshape = blendshape ?? string.Empty,
+                    mode = mode.ToString()
+                }
+            };
+            List<ReFitCommissionPhoto> photos;
+            try
+            {
+                photos = ReFitCommissionCapture.Capture(targetAvatar, lastResult?.sceneRenderer != null ? lastResult.sceneRenderer : asset,
+                    lastResult?.primaryShapeName ?? settings.blendshapeName);
+            }
+            catch (Exception exception)
+            {
+                commissionHandoffLoading = false;
+                commissionError = "Could not capture avatar previews: " + exception.Message;
+                Render();
+                return;
+            }
+            ReFitCommissionClient.CreateHandoff(payload, (url, error) =>
+            {
+                commissionHandoffLoading = false;
+                commissionError = error;
+                if (!string.IsNullOrEmpty(url)) Application.OpenURL(url);
+                if (current == Step.Result) Render();
+            }, photos);
         }
 
         // ------------------------------------------------------------------
@@ -1602,21 +1821,6 @@ namespace Orbiters.ReFit.Editor
             return credit;
         }
 
-        private static VisualElement CreateResultCredit()
-        {
-            var credit = new VisualElement();
-            credit.AddToClassList("refit-result-credit");
-            ConfigureCreditLink(credit);
-
-            var line = new VisualElement();
-            line.AddToClassList("refit-result-credit-line");
-            line.Add(CreditLabel("Support me on KoFi", "refit-result-credit-text"));
-            line.Add(CreditImage(KofiSymbolPath, "refit-result-credit-kofi", false, ScaleMode.ScaleToFit));
-            line.Add(CreditLabel("if it helps :3", "refit-result-credit-text"));
-            credit.Add(line);
-            return credit;
-        }
-
         private static Label CreditLabel(string text, string className)
         {
             var label = new Label(text);
@@ -1663,7 +1867,7 @@ namespace Orbiters.ReFit.Editor
                 texture.filterMode = FilterMode.Bilinear;
                 if (circular)
                 {
-                    var circularTexture = MakeCircularCreditTexture(texture);
+                    var circularTexture = ReFitCommissionClient.CreateCircularAvatarTexture(texture);
                     if (circularTexture != null && !ReferenceEquals(circularTexture, texture))
                     {
                         if (loadedFromFile) DestroyImmediate(texture);
@@ -1699,52 +1903,6 @@ namespace Orbiters.ReFit.Editor
             texture.filterMode = FilterMode.Bilinear;
             loadedFromFile = true;
             return texture;
-        }
-
-        private static Texture2D MakeCircularCreditTexture(Texture2D texture)
-        {
-            if (texture == null)
-                return null;
-
-            try
-            {
-                int size = Mathf.Min(texture.width, texture.height);
-                int xOffset = Mathf.Max(0, (texture.width - size) / 2);
-                int yOffset = Mathf.Max(0, (texture.height - size) / 2);
-                Color[] sourcePixels = texture.GetPixels(xOffset, yOffset, size, size);
-
-                float radius = size * 0.5f;
-                float softEdge = Mathf.Max(1f, size * 0.015f);
-                for (int y = 0; y < size; y++)
-                {
-                    float dy = (y + 0.5f) - radius;
-                    for (int x = 0; x < size; x++)
-                    {
-                        float dx = (x + 0.5f) - radius;
-                        float distance = Mathf.Sqrt((dx * dx) + (dy * dy));
-                        float alpha = Mathf.Clamp01((radius - distance) / softEdge);
-                        int index = y * size + x;
-                        Color c = sourcePixels[index];
-                        c.a *= alpha;
-                        sourcePixels[index] = c;
-                    }
-                }
-
-                var circular = new Texture2D(size, size, TextureFormat.RGBA32, false)
-                {
-                    hideFlags = HideFlags.HideAndDontSave,
-                    name = texture.name,
-                    wrapMode = TextureWrapMode.Clamp,
-                    filterMode = FilterMode.Bilinear
-                };
-                circular.SetPixels(sourcePixels);
-                circular.Apply();
-                return circular;
-            }
-            catch (UnityException)
-            {
-                return texture;
-            }
         }
 
         private sealed class TightnessIllustration : VisualElement

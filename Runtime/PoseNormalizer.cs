@@ -20,6 +20,16 @@ namespace Orbiters.ReFit
         public SkinnedMeshRenderer assetRenderer;
         public SkinnedMeshRenderer sourceBody;
         public SkinnedMeshRenderer targetBody;
+        internal MeshSnapshot sourceSurface;
+        internal SurfaceBvh sourceSurfaceIndex;
+        internal Mesh ownedAssetMesh;
+
+        internal Mesh TakeAssetMesh()
+        {
+            var mesh = ownedAssetMesh;
+            ownedAssetMesh = null;
+            return mesh;
+        }
         public Dictionary<HumanBodyBones, Transform> sourceHumanMap;
         public Dictionary<HumanBodyBones, Transform> targetHumanMap;
         /// <summary>Root transform of the staged standalone asset (null when the asset lives on the source avatar).</summary>
@@ -52,6 +62,8 @@ namespace Orbiters.ReFit
         public void Dispose()
         {
             if (stagingRoot != null) UnityEngine.Object.DestroyImmediate(stagingRoot);
+            if (ownedAssetMesh != null) UnityEngine.Object.DestroyImmediate(ownedAssetMesh);
+            ownedAssetMesh = null;
             stagingRoot = null;
         }
     }
@@ -91,8 +103,9 @@ namespace Orbiters.ReFit
                 if (!stage.sourceIsTarget) ScaleAndAlign(stage, report);
 
                 PoseAsset(stage, report);
-                if (!stage.assetOnSourceAvatar && stage.assetRenderer != null)
-                    BakeCurrentSkinPoseAsDefault(stage.assetRenderer, report);
+                if (!stage.assetOnSourceAvatar && stage.assetRenderer != null &&
+                    BakeCurrentSkinPoseAsDefault(stage.assetRenderer, report))
+                    stage.ownedAssetMesh = stage.assetRenderer.sharedMesh;
                 return stage;
             }
             catch (Exception e)
@@ -719,6 +732,16 @@ namespace Orbiters.ReFit
                 return;
             }
 
+            var originalPositions = new Vector3[assetTransforms.Length];
+            var originalRotations = new Quaternion[assetTransforms.Length];
+            for (int i = 0; i < assetTransforms.Length; i++)
+            {
+                originalPositions[i] = assetTransforms[i].localPosition;
+                originalRotations[i] = assetTransforms[i].localRotation;
+            }
+            var beforePose = MeshSnapshot.Capture(stage.assetRenderer, false,
+                ZeroBlendShapeOverrides(stage.assetRenderer), null);
+
             // Apply parent-first so children read already-updated parents.
             int applied = 0;
             foreach (var t in assetTransforms) // GetComponentsInChildren is depth-first, parents before children
@@ -757,7 +780,31 @@ namespace Orbiters.ReFit
             }
             else if (applied > 0)
             {
-                report.Info("armature-matched", $"Posed the asset onto the source avatar ({boneMatched}/{boneCount} skinned bones matched).");
+                report.Info("armature-matched", $"Evaluated the source-joint pose ({boneMatched}/{boneCount} skinned bones matched).");
+            }
+
+            if (applied > 0)
+            {
+                stage.sourceSurface = MeshSnapshot.Capture(stage.sourceBody, false,
+                    ZeroBlendShapeOverrides(stage.sourceBody), report);
+                stage.sourceSurfaceIndex = SurfaceBvh.Build(stage.sourceSurface);
+                var afterPose = MeshSnapshot.Capture(stage.assetRenderer, false,
+                    ZeroBlendShapeOverrides(stage.assetRenderer), null);
+                var before = MeasurePoseSurfaceDistance(beforePose, stage.sourceSurfaceIndex);
+                var after = MeasurePoseSurfaceDistance(afterPose, stage.sourceSurfaceIndex);
+                // Joint locations are not mesh correspondences. An inserted garment joint can make
+                // snapping named joints fold an already fitted surface. Preserve the scene pose when
+                // both average and upper-tail clearance get worse by more than numerical noise.
+                if (after.x > before.x + 0.001f && after.y > before.y + 0.001f)
+                {
+                    for (int i = 0; i < assetTransforms.Length; i++)
+                    {
+                        assetTransforms[i].localPosition = originalPositions[i];
+                        assetTransforms[i].localRotation = originalRotations[i];
+                    }
+                    applied = 0;
+                    report.Info("source-pose-preserved", $"Kept the asset's scene pose: source-joint snapping worsened mean/P95 surface distance from {before.x:F4}/{before.y:F4}m to {after.x:F4}/{after.y:F4}m.");
+                }
             }
         }
 
@@ -770,6 +817,22 @@ namespace Orbiters.ReFit
                 if (bone != null)
                     count++;
             return count;
+        }
+
+        private static Vector2 MeasurePoseSurfaceDistance(MeshSnapshot asset, SurfaceBvh source)
+        {
+            int count = Mathf.Min(asset.worldVertices.Length, 512);
+            if (count == 0) return Vector2.zero;
+            var distances = new float[count];
+            double sum = 0;
+            for (int i = 0; i < count; i++)
+            {
+                int vertex = (int)((long)i * asset.worldVertices.Length / count);
+                distances[i] = source.ClosestPoint(asset.worldVertices[vertex], float.MaxValue).distance;
+                sum += distances[i];
+            }
+            Array.Sort(distances);
+            return new Vector2((float)(sum / count), distances[Mathf.Min(count - 1, (int)(count * 0.95f))]);
         }
 
         private static int CountMappedSkinBones(NormalizedStage stage)

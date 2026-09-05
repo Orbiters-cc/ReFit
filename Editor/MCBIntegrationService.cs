@@ -159,16 +159,68 @@ namespace Orbiters.ReFit.Editor
             return null;
         }
 
-        private static Type FindBridgeType()
+        private static Type FindBridgeType() => FindType(BridgeTypeName);
+
+        internal static string TryGetWizardToken()
         {
+            var authType = FindType("AuthenticationService");
+            var method = authType?.GetMethod("GetAuth", BindingFlags.Public | BindingFlags.Static);
+            object auth = null;
+            try { auth = method?.Invoke(null, null); }
+            catch { }
+            if (auth == null) return null;
+            var tokenField = auth.GetType().GetField("token", BindingFlags.Public | BindingFlags.Instance);
+            return tokenField?.GetValue(auth) as string;
+        }
+
+        internal static string TryInvokeStaticString(string typeName, string methodName, params object[] arguments)
+        {
+            var type = FindType(typeName);
+            if (type == null) return null;
+            try
+            {
+                var method = type.GetMethod(methodName, BindingFlags.Public | BindingFlags.Static);
+                return method?.Invoke(null, arguments) as string;
+            }
+            catch { return null; }
+        }
+
+        internal static bool? TryGetStaticBool(string typeName, string propertyName)
+        {
+            var type = FindType(typeName);
+            if (type == null) return null;
+            try
+            {
+                var property = type.GetProperty(propertyName, BindingFlags.Public | BindingFlags.Static);
+                return property != null ? (bool?)property.GetValue(null) : null;
+            }
+            catch { return null; }
+        }
+
+        internal static void TrySetStaticBool(string typeName, string propertyName, bool value)
+        {
+            var type = FindType(typeName);
+            if (type == null) return;
+            try
+            {
+                var property = type.GetProperty(propertyName, BindingFlags.Public | BindingFlags.Static);
+                if (property != null && property.CanWrite) property.SetValue(null, value);
+            }
+            catch { }
+        }
+
+        private static readonly Dictionary<string, Type> Types = new Dictionary<string, Type>();
+
+        internal static Type FindType(string name)
+        {
+            if (Types.TryGetValue(name, out var cached)) return cached;
             foreach (var assembly in AppDomain.CurrentDomain.GetAssemblies())
             {
                 Type type = null;
-                try { type = assembly.GetType(BridgeTypeName); }
+                try { type = assembly.GetType(name); }
                 catch { }
-                if (type != null) return type;
+                if (type != null) { Types[name] = type; return type; }
             }
-
             return null;
         }
 

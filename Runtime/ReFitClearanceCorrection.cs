@@ -25,6 +25,8 @@ namespace Orbiters.ReFit
 
         public sealed class Context
         {
+            /// <summary>Optional immutable index of the unshaped target body for reuse across transferred shapes.</summary>
+            public SurfaceBvh targetBodyIndex;
             public bool transferredBlendshape;
             public BodyRegion[] assetGroupRegions;
             public BodyRegion[] targetTriangleRegions;
@@ -249,6 +251,12 @@ namespace Orbiters.ReFit
                 null,
                 stats);
 
+            // The deformed body stays immutable throughout this pass and island propagation.
+            var bodySurface = BuildBodySurfaceSnapshot(targetBody, bodyWorldShapeDeltas);
+            var bodyBvh = bodySurface != null && bodySurface.worldVertices != null &&
+                bodySurface.worldVertices.Length > 0 && bodySurface.triangles != null
+                ? (context?.targetBodyIndex != null && ReferenceEquals(bodySurface, targetBody)
+                    ? context.targetBodyIndex : SurfaceBvh.Build(bodySurface)) : null;
             ApplySurfaceSafetyGuard(
                 asset,
                 targetBody,
@@ -262,7 +270,7 @@ namespace Orbiters.ReFit
                 context,
                 startingGroupDeltas,
                 null,
-                stats);
+                stats, bodySurface, bodyBvh);
 
             ClampTotalCorrections(startingGroupDeltas, mutableGroupDeltas, settings, context, stats);
 
@@ -307,7 +315,7 @@ namespace Orbiters.ReFit
                     context,
                     startingGroupDeltas,
                     propagation.propagatedGroups,
-                    stats);
+                    stats, bodySurface, bodyBvh);
 
                 ClampTotalCorrections(startingGroupDeltas, mutableGroupDeltas, settings, context, stats,
                     propagation.propagatedGroups);
@@ -323,7 +331,7 @@ namespace Orbiters.ReFit
                 falloff,
                 expansions,
                 settings,
-                context);
+                context, bodySurface, bodyBvh);
 
             return stats;
         }
@@ -411,7 +419,9 @@ namespace Orbiters.ReFit
             Context context,
             Vector3[] startingGroupDeltas,
             bool[] allowedGroups,
-            ReFitClearanceCorrectionStats stats)
+            ReFitClearanceCorrectionStats stats,
+            MeshSnapshot bodySurface,
+            SurfaceBvh bvh)
         {
             if (asset == null || targetBody == null || profile == null || mutableGroupDeltas == null ||
                 settings == null || stats == null || asset.triangles == null || asset.groupOfVertex == null)
@@ -425,12 +435,10 @@ namespace Orbiters.ReFit
             if (iterations <= 0 || strength <= 0f || safety <= 0f || maxGuard <= 0f)
                 return;
 
-            var bodySurface = BuildBodySurfaceSnapshot(targetBody, bodyWorldShapeDeltas);
             if (bodySurface == null || bodySurface.triangles == null || bodySurface.worldVertices == null ||
                 bodySurface.worldVertices.Length == 0)
                 return;
 
-            var bvh = SurfaceBvh.Build(bodySurface);
             float queryRange = Mathf.Max(
                 0.05f,
                 Mathf.Max(
@@ -518,10 +526,7 @@ namespace Orbiters.ReFit
                     break;
             }
 
-            float remainingPenetration = MeasureWorstSurfacePenetration(
-                asset, profile, falloff, expansions, settings, context, allowedGroups, groupWorld, bodySurface, bvh, queryRange, safety);
-            if (remainingPenetration > MeaningfulCorrection)
-                stats.maxPenetrationAfter = Mathf.Max(stats.maxPenetrationAfter, remainingPenetration);
+            // Final penetration is measured once after all guards, clamping and propagation in Apply.
         }
 
         private static IslandPropagationResult ApplyDisconnectedIslandPropagation(
@@ -1704,18 +1709,18 @@ namespace Orbiters.ReFit
             float[] falloff,
             float[] expansions,
             ReFitSettings settings,
-            Context context)
+            Context context,
+            MeshSnapshot bodySurface,
+            SurfaceBvh bvh)
         {
             if (asset == null || targetBody == null || profile == null || mutableGroupDeltas == null ||
                 settings == null || asset.groupRep == null)
                 return 0f;
 
-            var bodySurface = BuildBodySurfaceSnapshot(targetBody, bodyWorldShapeDeltas);
             if (bodySurface == null || bodySurface.worldVertices == null || bodySurface.triangles == null ||
                 bodySurface.worldVertices.Length == 0)
                 return 0f;
 
-            var bvh = SurfaceBvh.Build(bodySurface);
             float safety = Mathf.Max(0f, settings.clearanceMinimumSafetyDistance);
             float queryRange = Mathf.Max(
                 0.05f,

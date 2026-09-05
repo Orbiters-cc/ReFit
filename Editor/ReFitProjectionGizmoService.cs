@@ -3,7 +3,6 @@ using Unity.Profiling;
 using UnityEditor;
 using UnityEngine;
 using UnityEngine.Rendering;
-using Orbiters.XRayGizmos.Editor;
 
 namespace Orbiters.ReFit.Editor
 {
@@ -53,18 +52,6 @@ namespace Orbiters.ReFit.Editor
 
         static ReFitProjectionGizmoService()
         {
-            XRayExternalGizmoRegistry.Register(
-                "orbiters.refit.projection-rays",
-                "ReFit projection rays",
-                () => Enabled,
-                value => Enabled = value,
-                "Asset/source/target projection diagnostics");
-            XRayExternalGizmoRegistry.Register(
-                "orbiters.refit.welded-groups",
-                "ReFit welded vertex groups",
-                () => WeldedGroupsEnabled,
-                value => WeldedGroupsEnabled = value,
-                "Welded vertex group markers on ReFit debug mesh-edge snapshots");
             SceneView.duringSceneGui += OnSceneGui;
             EditorApplication.hierarchyChanged += MarkComponentCacheDirty;
             AssemblyReloadEvents.beforeAssemblyReload += ClearCaches;
@@ -81,7 +68,7 @@ namespace Orbiters.ReFit.Editor
 
                 EditorPrefs.SetBool(EnabledKey, value);
                 MarkComponentCacheDirty();
-                XRayExternalGizmoRegistry.NotifyChanged();
+                ReFitGizmoIntegration.NotifyChanged();
                 SceneView.RepaintAll();
             }
         }
@@ -96,7 +83,7 @@ namespace Orbiters.ReFit.Editor
 
                 EditorPrefs.SetBool(WeldedGroupsEnabledKey, value);
                 MarkComponentCacheDirty();
-                XRayExternalGizmoRegistry.NotifyChanged();
+                ReFitGizmoIntegration.NotifyChanged();
                 SceneView.RepaintAll();
             }
         }
@@ -133,7 +120,7 @@ namespace Orbiters.ReFit.Editor
                 return;
 
             bool drawProjectionRays = Enabled;
-            bool drawWeldedGroups = WeldedGroupsEnabled && XRayMeshEdgeService.Enabled;
+            bool drawWeldedGroups = WeldedGroupsEnabled && ReFitGizmoIntegration.MeshEdgesEnabled;
             if (!drawProjectionRays && !drawWeldedGroups)
                 return;
 
@@ -533,7 +520,7 @@ namespace Orbiters.ReFit.Editor
         private static void BuildActiveRendererSet()
         {
             ActiveRendererIds.Clear();
-            foreach (var renderer in XRayMeshEdgeService.ActiveRenderers)
+            foreach (var renderer in ReFitGizmoIntegration.ActiveRenderers)
                 if (renderer != null)
                     ActiveRendererIds.Add(renderer.GetInstanceID());
         }

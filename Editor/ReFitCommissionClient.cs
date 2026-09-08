@@ -312,9 +312,29 @@ namespace Orbiters.ReFit.Editor
         internal static string NormalizeMediaUrl(string value)
         {
             if (string.IsNullOrWhiteSpace(value)) return null;
-            if (Uri.TryCreate(value, UriKind.Absolute, out _)) return value;
-            if (!Uri.TryCreate(ApiUrl, UriKind.Absolute, out var api)) return value;
-            return api.GetLeftPart(UriPartial.Authority).TrimEnd('/') + "/" + value.TrimStart('/');
+            return MCBIntegrationService.TryInvokeStaticString("MCBUtils", "ResolveImageUrl", value)
+                ?? NormalizeMediaUrl(value, ApiUrl);
+        }
+
+        // Standalone ReFit has no MCB dependency. Keep image request policy in this shared client.
+        internal static string NormalizeMediaUrl(string value, string apiUrl)
+        {
+            if (string.IsNullOrWhiteSpace(value)) return null;
+            if (!Uri.TryCreate(apiUrl, UriKind.Absolute, out var api)) return value;
+            var origin = new Uri(api.GetLeftPart(UriPartial.Authority) + "/");
+            var uri = Uri.TryCreate(value, UriKind.Absolute, out var absolute) &&
+                (absolute.Scheme == Uri.UriSchemeHttp || absolute.Scheme == Uri.UriSchemeHttps)
+                ? absolute : new Uri(origin, value);
+            if (uri.Host != api.Host || uri.Port != api.Port ||
+                !uri.AbsolutePath.StartsWith("/files/serve/", StringComparison.OrdinalIgnoreCase)) return uri.ToString();
+
+            // Uploaded Orbiters banners default to WebP; Unity's texture loader needs PNG/JPEG.
+            string query = uri.Query.TrimStart('?');
+            var format = new System.Text.RegularExpressions.Regex(@"(^|&)format=[^&]*",
+                System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+            query = format.IsMatch(query) ? format.Replace(query, "$1format=png")
+                : query + (query.Length == 0 ? "" : "&") + "format=png";
+            return new UriBuilder(uri) { Query = query }.Uri.ToString();
         }
 
         internal static string PriceLabel(ReFitCommissionCreator creator)

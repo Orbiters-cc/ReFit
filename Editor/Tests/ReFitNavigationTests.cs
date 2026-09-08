@@ -12,6 +12,7 @@ namespace Orbiters.ReFit.Editor.Tests
     {
         public static void RunOrThrow()
         {
+            ReFitCommissionImageTests.RunOrThrow();
             bool existed = EditorPrefs.HasKey(ReFitBlendshapeHistory.Key);
             string history = EditorPrefs.GetString(ReFitBlendshapeHistory.Key);
             try

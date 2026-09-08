@@ -28,3 +28,7 @@ Desktop.ini
 # Local package/export artifacts.
 *.tgz
 *.unitypackage
+
+# Release workflow outputs.
+packageFiles
+*.zip

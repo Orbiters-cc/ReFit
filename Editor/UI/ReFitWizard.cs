@@ -1012,6 +1012,10 @@ namespace Orbiters.ReFit.Editor
             var garmentKind = new EnumField("Garment type", settings.garmentKind);
             garmentKind.RegisterValueChangedCallback(e => settings.garmentKind = (ReFitGarmentKind)e.newValue);
             parent.Add(garmentKind);
+            var tubes = new Toggle("Preserve closed tubes") { value = settings.preserveClosedTubes,
+                tooltip = "Automatically detect closed tubular rings and preserve their thickness while fitting. Other meshes keep surface fitting." };
+            tubes.RegisterValueChangedCallback(e => settings.preserveClosedTubes = e.newValue);
+            parent.Add(tubes);
 
             AddFloatFieldWithReset(parent, "Upper-body hem follow scale", 0f, 1f,
                 settings.upperBodyGarmentHemFollowScale,

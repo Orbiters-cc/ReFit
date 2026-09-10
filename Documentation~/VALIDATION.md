@@ -1,4 +1,73 @@
-# Validation Record: 2026-09-05
+# Validation Records
+
+## 2026-09-10: Closed Tubular Accessories
+
+Validated with Unity 2022.3.22f1 via MCP and offscreen Unity camera renders. No desktop input was used and
+no live accessory was reset or assigned a generated mesh. Private PNGs and geometry reports stay under
+`Temp/ReFitTests/accessories`; they must not be committed or published.
+
+- The deterministic suite passed 64 checks, skipped 2 opt-in scene/build checks, and failed none. Both authored
+  FBX fixtures and the existing Hoodie skinning, staging, clearance and lifecycle checks passed.
+- Standalone compilation passed with other Orbiters/project assemblies excluded.
+- The runtime guard rejects severely stretched, collapsed or locally folded tube geometry before service
+  application. An excessive-expansion fixture checks that this is an error, not a successful result.
+- New public fixtures reproduce the opposite-face normal-binding bug on two equal-size closed rings. They
+  check analytic expansion, thickness, zero-field identity, translated/rotated/3.57x-scaled inputs, open-sleeve
+  rejection, the disable switch, complete engine output, different A/B default radii and repeated shapes within a batch. Final triangles
+  are checked at 0/25/50/75/100%, with independent crossing/coplanar intersection and volume-check self-tests.
+- Private output passed a Unity serialized-mesh round trip. All 24 authored glowstick shapes individually retain
+  their original world geometry within 0.001 mm with generated shapes disabled; skin weights match. The Hoodie's
+  authored shapes have 0.009156 mm original-to-output pose-baking drift, identical with the feature on/off.
+- All 24 components of the private glowstick mesh are detected. Primary maximum edge ratio is 1.043. At full
+  muscles it is 2.488 rather than the prior 66.615; 148 triangles still exceed 2x edge stretch around the strongly
+  changing lower legs. These are reported, not hidden. There are zero orientation reversals, degenerate faces,
+  or within-ring self-intersections at all five sampled weights.
+- Separate rings intersect in the original asset (18 triangle pairs). At full muscles there are 11 pairs,
+  including four newly intersecting triangle pairs. This is not a claim of collision-free inter-ring packing.
+- Independent nearest-surface checks include vertices and triangle centers. Suspected >1 mm crossings are
+  cross-checked with solid-angle winding: zero newly outside-to-inside crossings were confirmed for the
+  glowsticks. Collapsed/internal body polygons can give misleading nearest-face normals; candidate counts and
+  pre-existing interior samples remain in the report. This finite sampling is not a continuous collision proof.
+- Front, three-quarter, arm, leg and rear-shoulder PNGs were inspected against original and previously generated
+  geometry. The previous shoulder spikes/ribbons are absent and the rings remain tubular. Pre-existing body
+  occlusion remains visible; this solver does not repair the accessory's original fit.
+- The live Hoodie is tested from its MCB-stored original mesh and pose on a transform-only copied avatar.
+  Zero Hoodie components are classified as closed tubes. With the feature enabled/disabled, all output vertices
+  and shape frames agree within 0.001 mm. A rear-triceps clipping spot is visible and unchanged; no claim is made
+  that this accessory fix resolves the existing Hoodie clearance limitation.
+
+The isolated replay must preserve `assetRenderer` as a descendant of its copied `targetAvatar`. A standalone
+copy changes ReFit's intentional staging policy and is not an equivalent MCB regression test.
+
+### Performance
+
+Paired engine-only trials in off/on/on/off order, without rendering, file saves or scene application:
+
+| Requested shapes | Previous policy | Tube preservation |
+| --- | ---: | ---: |
+| 1 | 4.05-4.18 s | 4.22-4.47 s |
+| 7 (MCB's available body/face selection) | 10.58-10.88 s | 10.97-11.10 s |
+
+The single-shape muscle delta exactly matches its result in the seven-shape batch. This is a quality fix with
+a modest additional cost, not a general speedup. Closed-tube topology/centerline analysis is shared across
+shapes within a run; no native binary or GPU dependency was added.
+
+### Reproduction
+
+The public regression remains part of `ReFitDeterministicTestRunner.RunOrThrow()` / `RunBatchMode()`.
+`ReFitTubeTests.RunOrThrow()` runs it separately without private assets. In the configured private scene, call:
+
+```csharp
+Orbiters.ReFit.Editor.Tests.ReFitAccessoryValidation.RunGlowsticks();
+Orbiters.ReFit.Editor.Tests.ReFitAccessoryValidation.RunHoodie();
+Orbiters.ReFit.Editor.Tests.ReFitAccessoryValidation.BenchmarkGlowsticks();
+```
+
+These explicit private entry points require MCB, the named local accessories and graphics support. They copy
+transforms/mesh references rather than instantiating arbitrary avatar behaviours. The default suite does not
+depend on these private entry points. Source assets, bones and live blendshape weights are not replaced.
+
+## 2026-09-05: Architecture and Performance
 
 Validated in Unity 2022.3.22f1 through MCP, without desktop input. No live user avatar was refitted or reset.
 Private assets were instantiated as disposable test objects. Output images/geometry remain local under `Temp`.

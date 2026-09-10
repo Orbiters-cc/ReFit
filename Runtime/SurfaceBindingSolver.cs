@@ -40,7 +40,7 @@ namespace Orbiters.ReFit
         /// </summary>
         public static SurfaceBinding[] ComputeGroupBindings(
             MeshSnapshot asset, MeshSnapshot body, SurfaceBvh bvh, ReFitSettings settings,
-            BodyRegion[] assetGroupRegions, BodyRegion[] bodyTriRegions, ReFitReport report)
+            BodyRegion[] assetGroupRegions, BodyRegion[] bodyTriRegions, ReFitReport report, bool[] tubularGroups = null)
         {
             int groupCount = asset.GroupCount;
             var bindings = new SurfaceBinding[groupCount];
@@ -58,7 +58,8 @@ namespace Orbiters.ReFit
                 var region = useRegion ? assetGroupRegions[g] : BodyRegion.Unknown;
 
                 var hit = ClosestPointWithFallback(
-                    p, body, bvh, queryRange, region, bodyTriRegions, n, cosMaxAngle, useNormal, useRegion,
+                    p, body, bvh, queryRange, region, bodyTriRegions, n, cosMaxAngle,
+                    useNormal && !(tubularGroups != null && tubularGroups[g]), useRegion,
                     out bool usedRelaxedFallback);
 
                 if (hit.found)

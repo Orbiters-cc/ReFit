@@ -237,6 +237,7 @@ namespace Orbiters.ReFit
             public bool sourceIsTarget;
 
             public MeshSnapshot asset;
+            public ReFitTubeField tubes;
             public MeshSnapshot sourceBody;   // null when not wantMesh; == targetBasis when source == target
             public MeshSnapshot targetBasis;
             public SurfaceBvh stagedSourceBvh;
@@ -918,6 +919,7 @@ namespace Orbiters.ReFit
             var targetBasis = state.targetBasis;
             int groupCount = asset.GroupCount;
             int vertexCount = asset.localVertices.Length;
+            state.tubes = ReFitTubeField.Build(asset, settings.preserveClosedTubes);
             state.openBoundaryWeights =
                 CloneMetadataWeights(state.targetSpaceMetadata?.openBoundaryWeights, groupCount) ??
                 BuildOpenBoundaryWeights(asset);
@@ -935,7 +937,7 @@ namespace Orbiters.ReFit
             var firstBvh = state.wantMesh ? bvhSource : bvhTarget;
             var firstTriRegions = state.wantMesh ? state.sourceTriRegions : state.targetTriRegions;
             var bindings = SurfaceBindingSolver.ComputeGroupBindings(
-                asset, firstSnap, firstBvh, settings, state.assetGroupRegions, firstTriRegions, state.Report);
+                asset, firstSnap, firstBvh, settings, state.assetGroupRegions, firstTriRegions, state.Report, state.tubes.groups);
 
             // Chain onto the target surface
             var targetBindings = bindings;
@@ -982,6 +984,15 @@ namespace Orbiters.ReFit
                 CloneMetadataWeights(state.targetSpaceMetadata?.upperBodyHemWeights, groupCount) ??
                 BuildUpperBodyHemWeights(state);
 
+            // Tubes have their own centerline contact constraints; independent surface pushes collapse them.
+            if (clearanceProfile != null)
+                for (int g = 0; g < groupCount; g++)
+                    if (state.tubes.groups[g] && clearanceProfile.eligible[g])
+                    {
+                        clearanceProfile.eligible[g] = false;
+                        clearanceProfile.eligibleGroups--;
+                    }
+
             // ---- Mesh deformation field --------------------------------------------------
             Vector3[] primaryGroupDeltas = null;
             var transferBindings = targetBindings;
@@ -1025,6 +1036,7 @@ namespace Orbiters.ReFit
                     settings,
                     BuildClearanceContext(state, targetBasis, targetBindings, false));
                 AddClearanceStats(state, clearanceStats, "primary refit");
+                state.tubes.Apply(asset, targetBasis, bvhTarget, null, null, primaryGroupDeltas, settings, state.Report, "primary refit");
 
                 state.primaryLocalDeltas = ToLocalDeltas(state, primaryGroupDeltas, true);
                 if (settings.recalculateNormalDeltas)
@@ -1106,6 +1118,8 @@ namespace Orbiters.ReFit
                         settings,
                         BuildClearanceContext(state, targetBasis, transferBindings, true));
                     AddClearanceStats(state, clearanceStats, $"transferred '{shape.sourceName}'");
+                    state.tubes.Apply(asset, targetBasis, bvhTarget, worldShapeDelta, primaryGroupDeltas, groupDeltas,
+                        settings, state.Report, $"transferred '{shape.sourceName}'");
 
                     shape.localDeltas = ToLocalDeltas(state, groupDeltas, false);
                     if (settings.recalculateNormalDeltas)
@@ -1432,6 +1446,7 @@ namespace Orbiters.ReFit
             {
                 int size = componentSizes[component];
                 eligibleComponents[component] = size >= DetachedCoherenceMinGroups &&
+                                                !state.tubes.groups[componentGroups[component][0]] &&
                                                 size < largestComponentSize &&
                                                 size <= receiverSizeLimit &&
                                                 componentBounds[component].valid;
@@ -2248,7 +2263,7 @@ namespace Orbiters.ReFit
                 var binding = SurfaceBindingSolver.BindPoint(
                     queryPoint, targetBasis, bvhTarget, range,
                     region, settings.filterByBoneRegion ? state.targetTriRegions : null,
-                    asset.worldNormals[rep], cosMax, settings.filterByNormal);
+                    asset.worldNormals[rep], cosMax, settings.filterByNormal && !state.tubes.groups[g]);
 
                 if (!binding.valid && fallbackBindings != null && g < fallbackBindings.Length)
                     binding = fallbackBindings[g];
@@ -2339,6 +2354,9 @@ namespace Orbiters.ReFit
                     point.note = "unbound";
                 else if (source.usedRelaxedFallback || target.usedRelaxedFallback)
                     point.note = "relaxed fallback";
+                if (state.tubes.groups[g])
+                    point.note = "closed tube: nearest surface with configured region policy; tube face normal is not a skin-facing constraint; centerline field" +
+                                 (string.IsNullOrEmpty(point.note) ? "" : "; " + point.note);
 
                 points[g] = point;
             }

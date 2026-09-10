@@ -60,6 +60,28 @@ both tools share the same persisted environment selection.
 - Failed armature application rolls back scene changes and does not save a partial result. Optional prefab
   saving can still produce a warning while retaining a valid mesh result.
 
+## Closed tubular accessories
+
+Advanced **Preserve closed tubes** is enabled by default, including requests created by MCB. It recognizes
+closed, approximately planar tubular rings from their welded topology and geometry, regardless of their names
+or the relative sizes of disconnected components. Open sleeves and the Hoodie continue to use cloth fitting.
+
+On detected rings, inward-facing tube normals no longer force projections onto a distant body surface. ReFit
+fits a smooth periodic centerline and transports the original cross-sectional offsets, rather than pushing
+individual tube faces independently. Body-shape clearance acts on this shared centerline. This keeps thin rings
+from turning into spikes or flat ribbons. Primary and transferred-shape smoothing settings remain independent.
+
+This is not a general rigid-accessory or collision solver. Strongly nonplanar loops and arbitrary props use the
+existing surface workflow. Pre-existing intersections between rings or with the body are not automatically
+repaired. A `tube-contact-unresolved` warning means sampled contacts remain more than 1 mm short and require
+inspection. Debug projection labels identify the tube binding policy; the logged contact residual is not a
+full collision test. API callers can set `settings.preserveClosedTubes = false` for a control comparison.
+Severe tube strain (over 8x edge stretch), collapsed faces or folds relative to the transported local frame
+produce `tube-geometry-invalid`; unsuccessful results are not applied or saved by the service.
+
+Regenerate existing ReFit results to use the new geometry. Saved meshes and MCB version snapshots are not
+rewritten automatically. See [validation records](Documentation~/VALIDATION.md) for test coverage and limits.
+
 ## Public API (for tools such as MCB)
 
 ```csharp

@@ -49,7 +49,9 @@ namespace Orbiters.ReFit
         [Range(0f, 1f)] public float transferredBlendshapeSmoothingStrength = DefaultTransferredBlendshapeSmoothingStrength;
         /// <summary>Preserve small detached accessory components when a transferred body blendshape only affects part of the component.</summary>
         public bool stabilizeDetachedTransferredComponents = true;
-        /// <summary>Reject body surface candidates whose normal disagrees with the asset vertex normal by more than <see cref="maxNormalAngle"/> degrees.</summary>
+        /// <summary>Detect closed tubular rings and preserve their cross-sections with a coherent centerline field.</summary>
+        public bool preserveClosedTubes = true;
+        /// <summary>Reject body surface candidates whose normal disagrees with the asset vertex normal by more than <see cref="maxNormalAngle"/> degrees. Detected closed tubes use their own correspondence policy.</summary>
         public bool filterByNormal = true;
         /// <summary>Maximum angle (degrees) between asset vertex normal and body face normal for a binding to be accepted.</summary>
         public float maxNormalAngle = 80f;

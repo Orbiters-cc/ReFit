@@ -59,7 +59,8 @@ namespace Orbiters.ReFit
 
         public static string BindingSettings(ReFitSettings settings)
         {
-            var hash = Hash128.Compute("ReFit-binding-1");
+            var hash = Hash128.Compute("ReFit-binding-2");
+            hash.Append(settings.preserveClosedTubes ? 1 : 0);
             hash.Append(settings.maxProjectionDistance);
             hash.Append(settings.falloffStartDistance);
             hash.Append(settings.filterByNormal ? 1 : 0);

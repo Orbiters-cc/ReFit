@@ -1,5 +1,24 @@
 # ReFit Agent Instructions
 
+## Geometry Regression Evidence
+
+- A disposable replay must preserve the request's semantic hierarchy. In MCB, keep the copied accessory under
+  its copied target avatar. Detaching it changes `assetInTargetSpace` and the staging/pose path; matching world
+  transforms alone does not make that test equivalent. Verify the staged relationship before comparing outputs.
+- Test the original accessory, not its previously generated mesh. Restore recorded input state on disposable
+  transform/renderer copies only; do not reset the live user's avatar to simplify a test.
+- For thin closed accessories, inspect final triangles after all corrections at multiple blendshape weights.
+  Track cross-section thickness, edge stretch, collapsed/reversed faces and within-component self-intersections.
+  Distinguish a tube folding into itself from intersections between rings already overlapping in the input.
+- Nearest-face signed distance can be misleading on collapsed or internal avatar surfaces. Inspect the actual
+  triangles behind outliers and use an independent volume or exterior-surface check before labeling them new
+  penetrations. Record excluded/pre-existing candidates; never make an outlier disappear by relaxing a threshold.
+- Inspect offscreen Unity-camera PNGs of the exact original, previous output and new output from front, side/
+  three-quarter and relevant close-up/rear views. Passing aggregates are not a substitute. Never use desktop
+  clicks or screen control without explicit user permission.
+- Scope the change to the geometry class that failed, and compare a representative unaffected garment with
+  the new policy enabled and disabled. Report existing visible clipping even when the numerical outputs match.
+
 ## Armature Replacement Analysis
 
 When investigating ReFit armature replacement, do not accept renderer-local bone counts as proof that the armature is correct. A result can have all renderer bones under the clothing object and still be wrong if it copied a full target avatar skeleton beside the original clothing skeleton instead of merging the two.

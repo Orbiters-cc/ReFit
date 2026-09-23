@@ -127,7 +127,7 @@ namespace Orbiters.ReFit
         [Range(0f, 1f)] public float clearanceOpenBoundaryCorrectionScale = 0.08f;
         /// <summary>Scale applied to transferred clearance correction when the body binding used a relaxed or low-normal match.</summary>
         [Range(0f, 1f)] public float clearanceLowConfidenceCorrectionScale = 0.35f;
-        /// <summary>Scale applied to upper-body garment hem following and inward tightening on lower-body classified groups.</summary>
+        /// <summary>Scale applied to source-to-target fitting/transfer and clearance limits near upper-body hems. Direct same-avatar shape motion is not damped.</summary>
         [Range(0f, 1f)] public float upperBodyGarmentHemFollowScale = 0.25f;
         /// <summary>Auto uses only the asset renderer/mesh name, never names of avatar ancestors.</summary>
         public ReFitGarmentKind garmentKind = ReFitGarmentKind.Auto;

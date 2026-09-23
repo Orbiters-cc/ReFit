@@ -81,7 +81,9 @@ namespace Orbiters.ReFit
             geometry.replaceArmature = false;
             geometry.transferWeights = false;
             geometry.proportionWarningThreshold = 0f;
-            return Hash128.Compute(JsonUtility.ToJson(geometry)).ToString();
+            // Same-avatar transfers now preserve full authored motion at upper-body hems.
+            // Keep binding provenance reusable, but never reuse an older damped output field.
+            return Hash128.Compute("ReFit-transfer-2:" + JsonUtility.ToJson(geometry)).ToString();
         }
     }
 }

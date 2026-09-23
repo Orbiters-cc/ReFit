@@ -119,6 +119,9 @@ namespace Orbiters.ReFit.Editor.Tests
                     "Transferred blendshape keeps clothing outside shaped skin",
                     TransferredBlendshape_PreservesSignedSkinClearance);
                 RunCase(failures,
+                    "Transferred Belly follows lower torso in all axes and mesh orientations",
+                    TransferredBelly_FollowsLowerTorsoInAllAxes);
+                RunCase(failures,
                     "Clearance correction adaptively tightens expanded areas",
                     ClearanceCorrection_AdaptivelyTightensExpandedAreas);
                 RunCase(failures,

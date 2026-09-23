@@ -1087,7 +1087,10 @@ namespace Orbiters.ReFit
                     DeltaField.Smooth(groupDeltas, asset.groupAdjacency,
                         settings.transferredBlendshapeSmoothingIterations,
                         settings.transferredBlendshapeSmoothingStrength);
-                    ApplyUpperBodyHemDamping(groupDeltas, state.upperBodyHemWeights, settings);
+                    // Hem restraint stabilizes source-to-target proportion fitting. An asset already
+                    // on the target must receive the complete authored shape displacement instead.
+                    if (!state.sourceIsTarget)
+                        ApplyUpperBodyHemDamping(groupDeltas, state.upperBodyHemWeights, settings);
                     ApplyDetachedTransferredComponentCoherence(state, primaryGroupDeltas, groupDeltas, shape.sourceName);
                     shape.rawLocalDeltas = ToLocalDeltas(state, groupDeltas, false);
 

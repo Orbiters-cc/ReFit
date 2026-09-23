@@ -118,6 +118,9 @@ namespace Orbiters.ReFit.Editor
             var title = new Label("ReFit");
             title.AddToClassList("refit-title");
             brand.Add(title);
+            var betaBadge = new Label("beta");
+            betaBadge.AddToClassList("refit-beta-badge");
+            brand.Add(betaBadge);
             header.Add(brand);
             root.Add(header);
 

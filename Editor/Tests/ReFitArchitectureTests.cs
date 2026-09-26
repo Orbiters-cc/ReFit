@@ -13,6 +13,8 @@ namespace Orbiters.ReFit.Editor.Tests
     {
         private static void RunArchitectureChecks(List<string> failures)
         {
+            RunCase(failures, "Standalone multi-selection and batch geometry match individual transfers", RunMultiBlendshapeTestsOrThrow);
+            RunCase(failures, "Compact picker and content-sized window layout", ReFitWindowLayoutTests.RunOrThrow);
             RunCase(failures, "BVH matches brute force with concurrent and reentrant queries", Bvh_MatchesBruteForce);
             RunCase(failures, "API snapshots mutable request options", Request_OptionsAreSnapshots);
             RunCase(failures, "MCB coroutine contract applies multiple shapes through the public service", Service_McbContractAppliesMultipleShapes);

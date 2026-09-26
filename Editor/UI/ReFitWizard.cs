@@ -66,7 +66,7 @@ namespace Orbiters.ReFit.Editor
         private GameObject assetFileObject;
         private GameObject targetAvatar;
         private GameObject sourceAvatar;
-        private string blendshape;
+        private readonly List<string> blendshapes = new List<string>();
         private ReFitMode mode = ReFitMode.MeshToMesh;
         private ReFitSettings settings = new ReFitSettings();
         private ReFitReport validateReport;
@@ -98,7 +98,7 @@ namespace Orbiters.ReFit.Editor
         {
             var window = GetWindow<ReFitWizard>();
             window.titleContent = new GUIContent("ReFit");
-            window.minSize = new Vector2(620f, 560f);
+            window.minSize = new Vector2(MinimumWidth, MinimumHeight);
             window.Show();
         }
 
@@ -154,6 +154,7 @@ namespace Orbiters.ReFit.Editor
             content.horizontalScrollerVisibility = ScrollerVisibility.Hidden;
             body.Add(content);
             body.Add(CreateFooterCredit());
+            ConfigureContentSizing();
 
             commissionPoll?.Pause();
             commissionPoll = root.schedule.Execute(PollCommissions).Every(2000);
@@ -193,7 +194,7 @@ namespace Orbiters.ReFit.Editor
             ReFitGravityPreviewService.ClearPreview(gravityPreview);
             current = Step.AssetLocation;
             myAvatar = null; asset = null; assetFileObject = null;
-            targetAvatar = null; sourceAvatar = null; blendshape = null;
+            targetAvatar = null; sourceAvatar = null; blendshapes.Clear();
             mode = ReFitMode.MeshToMesh;
             ResetTightnessChoice();
             validateReport = null; lastResult = null;
@@ -207,6 +208,7 @@ namespace Orbiters.ReFit.Editor
 
         private void OnDisable()
         {
+            contentSizeUpdate?.Pause();
             commissionPoll?.Pause();
             commissionGeneration++;
             commissionListLoading = false;
@@ -425,8 +427,8 @@ namespace Orbiters.ReFit.Editor
             cards.Add(Card("The asset was made for another avatar base",
                 "Your avatar is a different or modified base; fit the asset to its body",
                 () => { mode = ReFitMode.MeshToMesh; Go(Step.SourceInput); }));
-            cards.Add(Card("Make it fit a blendshape",
-                "Follow a body blendshape of your avatar (it already fits the base body)",
+            cards.Add(Card("Make it fit blendshapes",
+                "Follow one or more body blendshapes (it already fits the base body)",
                 () => Go(Step.BlendshapeSelect)));
         }
 
@@ -449,68 +451,40 @@ namespace Orbiters.ReFit.Editor
 
         private void BuildBlendshapeSelect()
         {
-            Question("Which blendshape should the asset follow ?");
+            Question("Which blendshapes should the asset follow ?");
             var body = AutoDetectBody(targetAvatar, asset);
             if (body == null || body.sharedMesh == null)
             {
+                blendshapes.Clear();
                 Help("No body renderer with blendshapes was found on the target avatar.");
                 return;
             }
-            Help($"Blendshapes of '{body.name}'.");
+            Help($"Select one or more blendshapes of '{body.name}'. Each becomes a separate shape on the asset in one ReFit run.");
 
             var names = new List<string>();
             for (int i = 0; i < body.sharedMesh.blendShapeCount; i++) names.Add(body.sharedMesh.GetBlendShapeName(i));
             if (names.Count == 0)
             {
+                blendshapes.Clear();
                 Help("The target body has no blendshapes.");
                 return;
             }
-            if (!names.Contains(blendshape)) blendshape = null;
-            var search = new ToolbarSearchField { name = "refit-blendshape-search" };
-            search.AddToClassList("refit-shape-search");
-            search.tooltip = "Search body blendshapes";
-            content.Add(search);
-            var selected = new Label(blendshape ?? "Select a blendshape");
-            selected.AddToClassList("refit-shape-selected");
-            var suggestions = new VisualElement();
-            suggestions.AddToClassList("refit-shape-suggestions");
-            content.Add(suggestions);
-            content.Add(selected);
+            Button next = null;
+            content.Add(new ReFitBlendshapePicker(names, blendshapes,
+                () => next?.SetEnabled(blendshapes.Count > 0)));
 
             Help("Optional: if the asset was also made for another avatar base, set it below to re-fit the mesh at the same time.");
             var sourceField = new ObjectField("Source avatar base (optional)") { objectType = typeof(GameObject), allowSceneObjects = true, value = sourceAvatar };
             sourceField.AddToClassList("refit-field");
             content.Add(sourceField);
 
-            var next = Primary("Next", () =>
+            next = Primary("Next", () =>
             {
                 sourceAvatar = (GameObject)sourceField.value;
                 mode = sourceAvatar != null ? ReFitMode.MeshAndBlendshape : ReFitMode.Blendshape;
                 Go(Step.Tightness);
             });
-            next.SetEnabled(!string.IsNullOrEmpty(blendshape));
-            void RebuildSuggestions()
-            {
-                suggestions.Clear();
-                var matches = ReFitBlendshapeHistory.Suggestions(names, ReFitBlendshapeHistory.Read(), search.value);
-                foreach (string match in matches)
-                {
-                    var button = new Button(() =>
-                    {
-                        blendshape = match;
-                        selected.text = match;
-                        next.SetEnabled(true);
-                        RebuildSuggestions();
-                    }) { text = match, tooltip = match };
-                    button.AddToClassList("refit-shape-suggestion");
-                    button.EnableInClassList("refit-shape-suggestion--selected", match == blendshape);
-                    suggestions.Add(button);
-                }
-                if (matches.Count == 0)
-                    suggestions.Add(new Label(string.IsNullOrWhiteSpace(search.value) ? "No recent blendshapes on this body." : "No matching blendshapes."));
-            }
-            search.RegisterValueChangedCallback(_ => RebuildSuggestions());
-            RebuildSuggestions();
+            next.SetEnabled(blendshapes.Count > 0);
         }
 
         private void BuildAssetFileInput()
@@ -573,8 +547,8 @@ namespace Orbiters.ReFit.Editor
             cards.Add(Card("It was made for another avatar base",
                 "Fit its mesh onto the destination avatar's body",
                 () => { mode = ReFitMode.MeshToMesh; Go(Step.SourceInput); }));
-            cards.Add(Card("Make it fit a blendshape",
-                "It already fits this avatar; follow one of its body blendshapes",
+            cards.Add(Card("Make it fit blendshapes",
+                "It already fits this avatar; follow one or more of its body blendshapes",
                 () => Go(Step.BlendshapeSelect)));
         }
 
@@ -664,7 +638,7 @@ namespace Orbiters.ReFit.Editor
             SummaryRow("Mode", ModeLabel());
             if (mode != ReFitMode.Blendshape) SummaryRow("Made for", sourceAvatar != null ? sourceAvatar.name : "-");
             SummaryRow("Fit to", targetAvatar != null ? targetAvatar.name : "-");
-            if (mode != ReFitMode.MeshToMesh) SummaryRow("Blendshape", blendshape ?? "-");
+            if (mode != ReFitMode.MeshToMesh) SummaryRow($"Blendshapes ({blendshapes.Count})", string.Join(", ", blendshapes));
             SummaryRow("Tightness", clearanceTightnessKnown
                 ? $"{Mathf.RoundToInt(clearanceTightnessPreset * 100f)}%"
                 : "Custom");
@@ -1331,7 +1305,7 @@ namespace Orbiters.ReFit.Editor
                 assetRenderer = asset,
                 sourceAvatar = mode == ReFitMode.Blendshape ? null : sourceAvatar,
                 targetAvatar = targetAvatar,
-                targetBlendshape = mode == ReFitMode.MeshToMesh ? null : blendshape,
+                targetBlendshapes = mode == ReFitMode.MeshToMesh ? null : new List<string>(blendshapes),
                 settings = requestSettings
             };
         }
@@ -1716,7 +1690,7 @@ namespace Orbiters.ReFit.Editor
                     assetName = asset != null ? asset.name : string.Empty,
                     sourceAvatar = sourceAvatar != null ? sourceAvatar.name : string.Empty,
                     targetAvatar = targetAvatar != null ? targetAvatar.name : string.Empty,
-                    blendshape = blendshape ?? string.Empty,
+                    blendshape = mode == ReFitMode.MeshToMesh ? string.Empty : string.Join(", ", blendshapes),
                     mode = mode.ToString()
                 }
             };
@@ -2058,8 +2032,8 @@ namespace Orbiters.ReFit.Editor
             switch (mode)
             {
                 case ReFitMode.MeshToMesh: return "Fit the mesh to another body";
-                case ReFitMode.Blendshape: return "Follow a body blendshape";
-                case ReFitMode.MeshAndBlendshape: return "Fit the mesh + follow a body blendshape";
+                case ReFitMode.Blendshape: return "Follow body blendshapes";
+                case ReFitMode.MeshAndBlendshape: return "Fit the mesh + follow body blendshapes";
                 default: return mode.ToString();
             }
         }

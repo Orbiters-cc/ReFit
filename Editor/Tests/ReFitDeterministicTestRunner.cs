@@ -2754,7 +2754,8 @@ namespace Orbiters.ReFit.Editor.Tests
                     SetPrivateField(window, "asset", fixture.sourceSpaceAccessory.renderer);
                     SetPrivateField(window, "sourceAvatar", fixture.source.root);
                     SetPrivateField(window, "targetAvatar", fixture.target.root);
-                    SetPrivateField(window, "blendshape", BodyShapeName);
+                    ((List<string>)typeof(ReFitWizard).GetField("blendshapes", BindingFlags.Instance | BindingFlags.NonPublic)
+                        .GetValue(window)).Add(BodyShapeName);
                     SetPrivateField(window, "settings", CreateDeterministicSettings(true));
 
                     var method = typeof(ReFitWizard).GetMethod("BuildRequest",

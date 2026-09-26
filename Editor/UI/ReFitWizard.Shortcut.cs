@@ -12,7 +12,7 @@ namespace Orbiters.ReFit.Editor
             var window = GetWindow<ReFitWizard>();
             if (window.isExecuting) return;
             window.titleContent = new GUIContent("ReFit");
-            window.minSize = new Vector2(620, 560);
+            window.minSize = new Vector2(MinimumWidth, MinimumHeight);
             window.ConfigureAccessory(accessory);
             window.Show();
         }

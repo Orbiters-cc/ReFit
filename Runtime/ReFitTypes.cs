@@ -51,7 +51,9 @@ namespace Orbiters.ReFit
         public bool stabilizeDetachedTransferredComponents = true;
         /// <summary>Detect closed tubular rings and preserve their cross-sections with a coherent centerline field.</summary>
         public bool preserveClosedTubes = true;
-        /// <summary>Reject body surface candidates whose normal disagrees with the asset vertex normal by more than <see cref="maxNormalAngle"/> degrees. Detected closed tubes use their own correspondence policy.</summary>
+        /// <summary>Keep lower-body cloth over dense body surfaces between garment vertices, including inward-facing hems.</summary>
+        public bool preserveLowerBodyCoverage = true;
+        /// <summary>Reject body surface candidates whose normal disagrees with the asset vertex normal by more than <see cref="maxNormalAngle"/> degrees. Detected closed tubes and lower-body cloth use their own correspondence policy.</summary>
         public bool filterByNormal = true;
         /// <summary>Maximum angle (degrees) between asset vertex normal and body face normal for a binding to be accepted.</summary>
         public float maxNormalAngle = 80f;

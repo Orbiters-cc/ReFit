@@ -59,8 +59,9 @@ namespace Orbiters.ReFit
 
         public static string BindingSettings(ReFitSettings settings)
         {
-            var hash = Hash128.Compute("ReFit-binding-2");
+            var hash = Hash128.Compute("ReFit-binding-3");
             hash.Append(settings.preserveClosedTubes ? 1 : 0);
+            hash.Append(settings.preserveLowerBodyCoverage ? 1 : 0);
             hash.Append(settings.maxProjectionDistance);
             hash.Append(settings.falloffStartDistance);
             hash.Append(settings.filterByNormal ? 1 : 0);
@@ -81,9 +82,8 @@ namespace Orbiters.ReFit
             geometry.replaceArmature = false;
             geometry.transferWeights = false;
             geometry.proportionWarningThreshold = 0f;
-            // Same-avatar transfers now preserve full authored motion at upper-body hems.
-            // Keep binding provenance reusable, but never reuse an older damped output field.
-            return Hash128.Compute("ReFit-transfer-2:" + JsonUtility.ToJson(geometry)).ToString();
+            // Algorithm revisions must not reuse fields generated before surface coverage correction.
+            return Hash128.Compute("ReFit-transfer-3:" + JsonUtility.ToJson(geometry)).ToString();
         }
     }
 }

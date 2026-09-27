@@ -122,6 +122,9 @@ namespace Orbiters.ReFit.Editor.Tests
                     "Transferred Belly follows lower torso in all axes and mesh orientations",
                     TransferredBelly_FollowsLowerTorsoInAllAxes);
                 RunCase(failures,
+                    "Lower-body cloth covers dense body peaks between its vertices",
+                    ReFitSurfaceCoverageTests.RunOrThrow);
+                RunCase(failures,
                     "Clearance correction adaptively tightens expanded areas",
                     ClearanceCorrection_AdaptivelyTightensExpandedAreas);
                 RunCase(failures,

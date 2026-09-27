@@ -47,6 +47,9 @@ namespace Orbiters.ReFit
             float queryRange = Mathf.Max(settings.maxProjectionDistance * 2f, 0.01f);
             float cosMaxAngle = Mathf.Cos(settings.maxNormalAngle * Mathf.Deg2Rad);
             bool useNormal = settings.filterByNormal;
+            // A lower-body garment can contain an inward-facing lining and hard-edged hems.
+            // Their shading normals must not send them to the far side of the same leg.
+            bool lowerBodyCloth = settings.preserveLowerBodyCoverage && ReFitSurfaceCoverage.IsLowerBodyCloth(asset, assetGroupRegions, tubularGroups);
             bool useRegion = settings.filterByBoneRegion && assetGroupRegions != null && bodyTriRegions != null;
 
             int invalid = 0;
@@ -59,7 +62,7 @@ namespace Orbiters.ReFit
 
                 var hit = ClosestPointWithFallback(
                     p, body, bvh, queryRange, region, bodyTriRegions, n, cosMaxAngle,
-                    useNormal && !(tubularGroups != null && tubularGroups[g]), useRegion,
+                    useNormal && !lowerBodyCloth && !(tubularGroups != null && tubularGroups[g]), useRegion,
                     out bool usedRelaxedFallback);
 
                 if (hit.found)

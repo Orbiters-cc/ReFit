@@ -1059,6 +1059,10 @@ namespace Orbiters.ReFit
                     clearanceProfile,
                     primaryGroupDeltas);
 
+            var coverage = state.shapes.Count > 0
+                ? ReFitSurfaceCoverage.Build(asset, targetBasis, primaryGroupDeltas,
+                    state.assetGroupRegions, state.tubes.groups, settings) : null;
+
             // ---- Blendshape transfer fields ----------------------------------------------
             if (state.shapes.Count > 0)
             {
@@ -1109,6 +1113,7 @@ namespace Orbiters.ReFit
                         continue;
                     }
 
+                    var coverageRawDeltas = coverage != null ? (Vector3[])groupDeltas.Clone() : null;
                     var clearanceStats = ReFitClearanceCorrection.Apply(
                         asset,
                         targetBasis,
@@ -1123,6 +1128,7 @@ namespace Orbiters.ReFit
                     AddClearanceStats(state, clearanceStats, $"transferred '{shape.sourceName}'");
                     state.tubes.Apply(asset, targetBasis, bvhTarget, worldShapeDelta, primaryGroupDeltas, groupDeltas,
                         settings, state.Report, $"transferred '{shape.sourceName}'");
+                    coverage?.Apply(targetBasis, worldShapeDelta, groupDeltas, coverageRawDeltas, settings, state.Report, shape.sourceName);
 
                     shape.localDeltas = ToLocalDeltas(state, groupDeltas, false);
                     if (settings.recalculateNormalDeltas)
@@ -2254,6 +2260,8 @@ namespace Orbiters.ReFit
             var bindings = new SurfaceBinding[groupCount];
             float cosMax = Mathf.Cos(settings.maxNormalAngle * Mathf.Deg2Rad);
             float range = Mathf.Max(settings.maxProjectionDistance * 2f, 0.05f);
+            bool lowerBodyCloth = settings.preserveLowerBodyCoverage &&
+                ReFitSurfaceCoverage.IsLowerBodyCloth(asset, state.assetGroupRegions, state.tubes.groups);
 
             Parallel.For(0, groupCount, g =>
             {
@@ -2266,7 +2274,7 @@ namespace Orbiters.ReFit
                 var binding = SurfaceBindingSolver.BindPoint(
                     queryPoint, targetBasis, bvhTarget, range,
                     region, settings.filterByBoneRegion ? state.targetTriRegions : null,
-                    asset.worldNormals[rep], cosMax, settings.filterByNormal && !state.tubes.groups[g]);
+                    asset.worldNormals[rep], cosMax, settings.filterByNormal && !lowerBodyCloth && !state.tubes.groups[g]);
 
                 if (!binding.valid && fallbackBindings != null && g < fallbackBindings.Length)
                     binding = fallbackBindings[g];
@@ -2298,6 +2306,8 @@ namespace Orbiters.ReFit
             int captureCount = max > 0 ? Mathf.Min(max, groupCount) : groupCount;
             var points = new ReFitProjectionDebugPoint[captureCount];
             var weightDebug = state.weightDebug;
+            bool lowerBodyCloth = state.settings.preserveLowerBodyCoverage &&
+                ReFitSurfaceCoverage.IsLowerBodyCloth(asset, state.assetGroupRegions, state.tubes.groups);
 
             for (int g = 0; g < captureCount; g++)
             {
@@ -2359,6 +2369,9 @@ namespace Orbiters.ReFit
                     point.note = "relaxed fallback";
                 if (state.tubes.groups[g])
                     point.note = "closed tube: nearest surface with configured region policy; tube face normal is not a skin-facing constraint; centerline field" +
+                                 (string.IsNullOrEmpty(point.note) ? "" : "; " + point.note);
+                else if (lowerBodyCloth)
+                    point.note = "lower-body cloth: nearest surface with configured region policy; lining and hem normals do not reject the nearby leg" +
                                  (string.IsNullOrEmpty(point.note) ? "" : "; " + point.note);
 
                 points[g] = point;

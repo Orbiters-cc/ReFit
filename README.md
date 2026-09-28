@@ -176,7 +176,8 @@ Developer entry points (Unity MCP can invoke these directly without changing sel
   available shapes, not necessarily four whole-body deformations.
 - `ReFitDeterministicTestRunner.AuditHoodie()`: dump every debug hierarchy and per-bone influence totals/bounds,
   plus four local offscreen JPEGs. Requires graphics support; does not upload or alter the user's avatar.
-- `ReFitStandaloneCompilation.Run()`: compile main sources excluding other Orbiters/project assemblies;
+- `ReFitStandaloneCompilation.Run()`: compile main sources excluding other Orbiters/project assemblies (except the
+  `Orbiters.Toolkit` dependency);
   asynchronous result is in `Temp/ReFitTests/standalone/result.txt`.
 
 These types are under `Orbiters.ReFit.Editor.Tests`. Benchmark/audit outputs contain private geometry or images:
@@ -193,6 +194,7 @@ projection.
 ## Requirements
 
 - Unity 2022.3+
+- Orbiters Toolkit 0.3.x (shared bone name matching)
 - No dependency on the VRChat SDK (humanoid `Animator` rigs recommended for best results)
 - XRay Gizmos is optional. Its adapter adds projection/island toggles when installed; the engine and wizard
   compile without it. MCB authentication/environment integration is optional too.

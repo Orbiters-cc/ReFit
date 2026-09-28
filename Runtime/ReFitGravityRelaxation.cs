@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
+using Orbiters.Toolkit.Armature;
 using UnityEngine;
 
 namespace Orbiters.ReFit
@@ -520,7 +521,7 @@ namespace Orbiters.ReFit
                     continue;
                 }
 
-                if (HumanoidBoneMapper.TryInferHumanoidBone(bone, out var human))
+                if (BoneNames.TryInferHumanoid(bone.name, out var human))
                     result[i] = HumanoidBoneMapper.RegionOf(human);
             }
             return result;

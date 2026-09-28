@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using Orbiters.Toolkit.Armature;
 using UnityEngine;
 
 namespace Orbiters.ReFit
@@ -74,7 +75,7 @@ namespace Orbiters.ReFit
                 var direct = ResolveDirect(assetOrSourceBone);
                 if (direct != null) return direct;
 
-                if (HumanoidBoneMapper.TryInferHumanoidBone(assetOrSourceBone, out var explicitHuman) &&
+                if (BoneNames.TryInferHumanoid(assetOrSourceBone.name, out var explicitHuman) &&
                     explicitHuman == HumanBodyBones.UpperChest &&
                     !targetHumanIndex.ContainsKey(HumanBodyBones.UpperChest))
                     return null;
@@ -89,21 +90,21 @@ namespace Orbiters.ReFit
             {
                 if (assetOrSourceBone == null) return null;
                 if (IsArmatureContainerBone(assetOrSourceBone)) return null;
-                if (targetNameIndex.TryGetValue(ReFitUtility.NormalizeName(assetOrSourceBone.name), out var byName))
+                if (targetNameIndex.TryGetValue(BoneNames.Normalize(assetOrSourceBone.name), out var byName))
                     return byName;
-                if (HumanoidBoneMapper.TryInferHumanoidBone(assetOrSourceBone, out var namedHuman) &&
+                if (BoneNames.TryInferHumanoid(assetOrSourceBone.name, out var namedHuman) &&
                     HumanoidBoneMapper.TryGetHumanoidEquivalent(targetHumanIndex, namedHuman, out var namedTarget))
                     return namedTarget;
 
                 if (!stage.assetOnSourceAvatar && stage.assetBoneToSource.TryGetValue(assetOrSourceBone, out var mapped) &&
                     mapped != null)
                 {
-                    if (targetNameIndex.TryGetValue(ReFitUtility.NormalizeName(mapped.name), out var mappedByName))
+                    if (targetNameIndex.TryGetValue(BoneNames.Normalize(mapped.name), out var mappedByName))
                         return mappedByName;
                     if (sourceHumanOf.TryGetValue(mapped, out var human) &&
                         HumanoidBoneMapper.TryGetHumanoidEquivalent(targetHumanIndex, human, out var tgt))
                         return tgt;
-                    if (HumanoidBoneMapper.TryInferHumanoidBone(mapped, out human) &&
+                    if (BoneNames.TryInferHumanoid(mapped.name, out human) &&
                         HumanoidBoneMapper.TryGetHumanoidEquivalent(targetHumanIndex, human, out tgt))
                         return tgt;
                 }
@@ -153,12 +154,7 @@ namespace Orbiters.ReFit
                 return null;
             }
 
-            bool IsArmatureContainerBone(Transform bone)
-            {
-                if (bone == null) return false;
-                var key = ReFitUtility.NormalizeName(bone.name);
-                return key == "armature" || key == "skeleton" || key == "rig";
-            }
+            bool IsArmatureContainerBone(Transform bone) => bone != null && BoneNames.IsArmatureContainer(bone.name);
 
             // 2) resolve every asset bone
             int assetBoneCount = asset.bones != null ? asset.bones.Length : 0;
@@ -402,7 +398,7 @@ namespace Orbiters.ReFit
         private static Transform FindPreferredTailChild(Transform bone, HashSet<Transform> excluded)
         {
             if (bone == null) return null;
-            HumanoidBoneMapper.TryInferHumanoidBone(bone, out var boneHuman);
+            BoneNames.TryInferHumanoid(bone.name, out var boneHuman);
 
             var directExpected = FindDirectExpectedTailChild(bone, excluded, boneHuman);
             if (directExpected != null)
@@ -458,7 +454,7 @@ namespace Orbiters.ReFit
         private static int TailChildScore(HumanBodyBones parentHuman, Vector3 parentPosition, Transform child, int depth)
         {
             int score = Mathf.Max(0, 50 - depth);
-            if (HumanoidBoneMapper.TryInferHumanoidBone(child, out var childHuman) &&
+            if (BoneNames.TryInferHumanoid(child.name, out var childHuman) &&
                 IsExpectedLeafChild(parentHuman, childHuman))
                 score += 2000;
             score += Mathf.RoundToInt(Vector3.Distance(parentPosition, child.position) * 100f);
@@ -474,7 +470,7 @@ namespace Orbiters.ReFit
             {
                 var child = bone.GetChild(i);
                 if (IsExcludedTailCandidate(child, excluded)) continue;
-                if (!HumanoidBoneMapper.TryInferHumanoidBone(child, out var childHuman)) continue;
+                if (!BoneNames.TryInferHumanoid(child.name, out var childHuman)) continue;
                 if (!IsExpectedLeafChild(parentHuman, childHuman)) continue;
 
                 float distance = Vector3.Distance(bone.position, child.position);

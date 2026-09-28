@@ -1,7 +1,9 @@
 {
   "name": "orbiters.refit",
   "rootNamespace": "Orbiters.ReFit",
-  "references": [],
+  "references": [
+    "Orbiters.Toolkit"
+  ],
   "includePlatforms": [],
   "excludePlatforms": [],
   "allowUnsafeCode": false,

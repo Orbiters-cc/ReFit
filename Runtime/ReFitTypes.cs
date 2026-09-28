@@ -687,7 +687,7 @@ namespace Orbiters.ReFit
             return cur;
         }
 
-        /// <summary>Lower-cases and strips separators so "Upper_Leg.L" and "UpperLegL" compare equal.</summary>
+        /// <summary>Lower-cases and strips separators (":" included) of free text for keyword searches ("Body Mesh" = "bodymesh"). Bone names use <c>BoneNames.Normalize</c>.</summary>
         public static string NormalizeName(string name)
         {
             if (string.IsNullOrEmpty(name)) return string.Empty;

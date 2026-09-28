@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using UnityEditor;
+using Orbiters.Toolkit.Armature;
 using UnityEngine;
 
 namespace Orbiters.ReFit.Editor
@@ -962,7 +963,7 @@ namespace Orbiters.ReFit.Editor
             {
                 if (bone == null || bone == newArmatureRoot)
                     continue;
-                if (!HumanoidBoneMapper.TryInferHumanoidBone(bone, out var humanBone))
+                if (!BoneNames.TryInferHumanoid(bone.name, out var humanBone))
                     continue;
                 if (!targetHumanIndex.TryGetValue(humanBone, out var targetBone) || targetBone == null)
                     continue;
@@ -1175,8 +1176,8 @@ namespace Orbiters.ReFit.Editor
                 var proxy = kv.Value;
                 if (source == null || proxy == null) continue;
 
-                AddUnique(materializedByName, ReFitUtility.NormalizeName(source.name), proxy);
-                if (HumanoidBoneMapper.TryInferHumanoidBone(source, out var humanBone))
+                AddUnique(materializedByName, BoneNames.Normalize(source.name), proxy);
+                if (BoneNames.TryInferHumanoid(source.name, out var humanBone))
                     AddUnique(materializedByHumanBone, humanBone, proxy);
             }
         }
@@ -1233,14 +1234,14 @@ namespace Orbiters.ReFit.Editor
             var parent = source != null ? source.parent : null;
             while (parent != null)
             {
-                if (HumanoidBoneMapper.TryInferHumanoidBone(parent, out var humanBone) &&
+                if (BoneNames.TryInferHumanoid(parent.name, out var humanBone) &&
                     materializedByHumanBone != null &&
                     materializedByHumanBone.TryGetValue(humanBone, out var humanParent) &&
                     humanParent != null)
                     return humanParent;
 
                 if (materializedByName != null &&
-                    materializedByName.TryGetValue(ReFitUtility.NormalizeName(parent.name), out var namedParent) &&
+                    materializedByName.TryGetValue(BoneNames.Normalize(parent.name), out var namedParent) &&
                     namedParent != null)
                     return namedParent;
 
@@ -2320,10 +2321,10 @@ namespace Orbiters.ReFit.Editor
         private static string SemanticDuplicateKey(Transform transform)
         {
             if (transform == null) return null;
-            var key = ReFitUtility.NormalizeName(transform.name);
+            var key = BoneNames.Normalize(transform.name);
             if (string.IsNullOrEmpty(key)) return null;
             if (IsArmatureContainerTransform(transform)) return key;
-            return HumanoidBoneMapper.TryInferHumanoidBone(transform, out _) ? key : null;
+            return BoneNames.TryInferHumanoid(transform.name, out _) ? key : null;
         }
 
         private static Transform ChooseDuplicateBranchToKeep(List<Transform> branches, Transform rootBone,
@@ -2420,12 +2421,8 @@ namespace Orbiters.ReFit.Editor
             return false;
         }
 
-        private static bool IsArmatureContainerTransform(Transform transform)
-        {
-            if (transform == null) return false;
-            var key = ReFitUtility.NormalizeName(transform.name);
-            return key == "armature" || key == "skeleton" || key == "rig" || key.StartsWith("armature");
-        }
+        private static bool IsArmatureContainerTransform(Transform transform) =>
+            transform != null && BoneNames.IsArmatureContainer(transform.name);
 
         private static bool IsTransientDebugObject(Transform transform)
         {
@@ -2615,19 +2612,14 @@ namespace Orbiters.ReFit.Editor
             }
         }
 
-        private static bool LooksLikeArmatureTransform(Transform t)
-        {
-            if (t == null) return false;
-            var key = ReFitUtility.NormalizeName(t.name);
-            return key == "armature" || key == "skeleton" || key == "rig" ||
-                   HumanoidBoneMapper.TryInferHumanoidBone(t, out _);
-        }
+        private static bool LooksLikeArmatureTransform(Transform t) =>
+            t != null && (BoneNames.IsArmatureContainer(t.name) || BoneNames.TryInferHumanoid(t.name, out _));
 
         private static bool ContainsHumanoidBoneName(Transform root)
         {
             if (root == null) return false;
             foreach (var child in root.GetComponentsInChildren<Transform>(true))
-                if (child != root && HumanoidBoneMapper.TryInferHumanoidBone(child, out _))
+                if (child != root && BoneNames.TryInferHumanoid(child.name, out _))
                     return true;
             return false;
         }

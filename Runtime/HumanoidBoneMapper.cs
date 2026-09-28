@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using Orbiters.Toolkit.Armature;
 using UnityEngine;
 
 namespace Orbiters.ReFit
@@ -16,8 +17,8 @@ namespace Orbiters.ReFit
     }
 
     /// <summary>
-    /// Maps avatar skeletons: humanoid bones via the Animator definition (with a name-based fallback),
-    /// arbitrary bone name matching between hierarchies, and classification of bones into coarse body regions.
+    /// Maps avatar skeletons: humanoid bones via the Animator definition (with the Toolkit's name-based inference as
+    /// fallback), bone name matching between hierarchies, and classification of bones into coarse body regions.
     /// </summary>
     public static class HumanoidBoneMapper
     {
@@ -42,8 +43,7 @@ namespace Orbiters.ReFit
 
             report?.Warn("no-humanoid-rig",
                 $"'{avatarRoot.name}' has no humanoid Animator avatar. Falling back to bone-name matching; results may be less reliable.");
-            FallbackNameMap(avatarRoot.transform, map, excludedRoot);
-            return map;
+            return BuildHumanoidBoneIndex(avatarRoot.transform, null, excludedRoot);
         }
 
         /// <summary>Finds the humanoid Animator of an avatar root, if any.</summary>
@@ -59,20 +59,24 @@ namespace Orbiters.ReFit
         }
 
         /// <summary>
-        /// Builds a normalized-name -> Transform index of every transform under <paramref name="root"/>.
-        /// Ambiguous names keep the first occurrence. Humanoid aliases are also indexed, so equivalent
-        /// names like "Left arm", "upper_arm.L" and "LeftUpperArm" resolve to the same transform.
+        /// Builds a normalized-name (<see cref="BoneNames.Normalize"/>) -> Transform index of every transform under
+        /// <paramref name="root"/>. Ambiguous names keep the first occurrence. Equivalent humanoid names ("Left arm",
+        /// "upper_arm.L") are resolved through <see cref="BuildHumanoidBoneIndex"/>.
         /// </summary>
         public static Dictionary<string, Transform> BuildNameIndex(Transform root, Transform excludedRoot = null)
         {
-            var index = BuildExactNameIndex(root, excludedRoot);
-            var humanIndex = BuildHumanoidBoneIndex(root, null, excludedRoot);
-            foreach (var kv in humanIndex)
-                AddHumanAliases(index, kv.Key, kv.Value);
+            var index = new Dictionary<string, Transform>();
+            if (root == null) return index;
+            foreach (var t in root.GetComponentsInChildren<Transform>(true))
+            {
+                if (IsExcluded(t, excludedRoot)) continue;
+                var key = BoneNames.Normalize(t.name);
+                if (key.Length > 0 && !index.ContainsKey(key)) index[key] = t;
+            }
             return index;
         }
 
-        /// <summary>Builds a humanoid-bone -> Transform index using Animator data when supplied and name aliases otherwise.</summary>
+        /// <summary>Builds a humanoid-bone -> Transform index from <paramref name="seed"/> (Animator data) first, then from bone names (<see cref="BoneNames.TryInferHumanoid"/>, first in hierarchy order).</summary>
         public static Dictionary<HumanBodyBones, Transform> BuildHumanoidBoneIndex(Transform root,
             Dictionary<HumanBodyBones, Transform> seed = null, Transform excludedRoot = null)
         {
@@ -87,37 +91,10 @@ namespace Orbiters.ReFit
             foreach (var t in root.GetComponentsInChildren<Transform>(true))
             {
                 if (IsExcluded(t, excludedRoot)) continue;
-                if (TryInferHumanoidBone(t, out var bone) && !index.ContainsKey(bone))
+                if (BoneNames.TryInferHumanoid(t.name, out var bone) && !index.ContainsKey(bone))
                     index[bone] = t;
             }
             return index;
-        }
-
-        /// <summary>Infers the humanoid bone represented by a transform name, if the name is recognizable.</summary>
-        public static bool TryInferHumanoidBone(Transform transform, out HumanBodyBones bone)
-        {
-            bone = HumanBodyBones.LastBone;
-            return transform != null && TryInferHumanoidBone(transform.name, out bone);
-        }
-
-        /// <summary>Infers the humanoid bone represented by a name, if the name is recognizable.</summary>
-        public static bool TryInferHumanoidBone(string name, out HumanBodyBones bone)
-        {
-            bone = HumanBodyBones.LastBone;
-            var key = ReFitUtility.NormalizeName(name);
-            if (key.Length == 0) return false;
-            foreach (var entry in FallbackPatterns)
-            {
-                foreach (var pattern in entry.patterns)
-                {
-                    if (key == pattern)
-                    {
-                        bone = entry.bone;
-                        return true;
-                    }
-                }
-            }
-            return false;
         }
 
         /// <summary>Finds a target transform for a humanoid bone, falling back to closely related bones when absent.</summary>
@@ -136,20 +113,6 @@ namespace Orbiters.ReFit
             return false;
         }
 
-        private static Dictionary<string, Transform> BuildExactNameIndex(Transform root, Transform excludedRoot = null)
-        {
-            var index = new Dictionary<string, Transform>();
-            if (root == null) return index;
-            foreach (var t in root.GetComponentsInChildren<Transform>(true))
-            {
-                if (IsExcluded(t, excludedRoot)) continue;
-                var key = ReFitUtility.NormalizeName(t.name);
-                if (key.Length == 0) continue;
-                if (!index.ContainsKey(key)) index[key] = t;
-            }
-            return index;
-        }
-
         /// <summary>
         /// Matches the bones of <paramref name="bones"/> into the hierarchy below <paramref name="otherRoot"/> by normalized name.
         /// Unmatched bones map to null.
@@ -162,8 +125,8 @@ namespace Orbiters.ReFit
             foreach (var bone in bones)
             {
                 if (bone == null || result.ContainsKey(bone)) continue;
-                if (!index.TryGetValue(ReFitUtility.NormalizeName(bone.name), out var match) &&
-                    TryInferHumanoidBone(bone, out var human) &&
+                if (!index.TryGetValue(BoneNames.Normalize(bone.name), out var match) &&
+                    BoneNames.TryInferHumanoid(bone.name, out var human) &&
                     TryGetHumanoidEquivalent(humanIndex, human, out var humanMatch))
                     match = humanMatch;
                 result[bone] = match;
@@ -230,48 +193,7 @@ namespace Orbiters.ReFit
             return false;
         }
 
-        // ------------------------------------------------------------------
-        // Name-based humanoid fallback (used only for non-humanoid rigs)
-        // ------------------------------------------------------------------
-
-        private static readonly (HumanBodyBones bone, string[] patterns)[] FallbackPatterns =
-        {
-            (HumanBodyBones.Hips, new[] { "hips", "hip", "pelvis" }),
-            (HumanBodyBones.Spine, new[] { "spine", "spine1", "spine01", "waist" }),
-            (HumanBodyBones.Chest, new[] { "chest", "torso", "ribcage", "spine2", "spine02" }),
-            (HumanBodyBones.UpperChest, new[] { "upperchest", "chestup", "upchest", "chestupper", "spine3", "spine03" }),
-            (HumanBodyBones.Neck, new[] { "neck" }),
-            (HumanBodyBones.Head, new[] { "head" }),
-            (HumanBodyBones.Jaw, new[] { "jaw", "mandible" }),
-            (HumanBodyBones.LeftUpperLeg, new[] { "leftupperleg", "upperlegl", "lupperleg", "leftleg", "thighl", "lthigh", "legl" }),
-            (HumanBodyBones.RightUpperLeg, new[] { "rightupperleg", "upperlegr", "rupperleg", "rightleg", "thighr", "rthigh", "legr" }),
-            (HumanBodyBones.LeftLowerLeg, new[] { "leftlowerleg", "lowerlegl", "llowerleg", "leftknee", "kneel", "shinl", "calfl" }),
-            (HumanBodyBones.RightLowerLeg, new[] { "rightlowerleg", "lowerlegr", "rlowerleg", "rightknee", "kneer", "shinr", "calfr" }),
-            (HumanBodyBones.LeftFoot, new[] { "leftfoot", "footl", "lfoot", "leftankle", "anklel" }),
-            (HumanBodyBones.RightFoot, new[] { "rightfoot", "footr", "rfoot", "rightankle", "ankler" }),
-            (HumanBodyBones.LeftToes, new[] { "lefttoes", "toesl", "ltoes", "lefttoe", "toel" }),
-            (HumanBodyBones.RightToes, new[] { "righttoes", "toesr", "rtoes", "righttoe", "toer" }),
-            (HumanBodyBones.LeftShoulder, new[] { "leftshoulder", "shoulderl", "lshoulder", "leftclavicle", "claviclel", "lclavicle" }),
-            (HumanBodyBones.RightShoulder, new[] { "rightshoulder", "shoulderr", "rshoulder", "rightclavicle", "clavicler", "rclavicle" }),
-            (HumanBodyBones.LeftUpperArm, new[] { "leftupperarm", "upperarml", "lupperarm", "leftarm", "larm", "arml" }),
-            (HumanBodyBones.RightUpperArm, new[] { "rightupperarm", "upperarmr", "rupperarm", "rightarm", "rarm", "armr" }),
-            (HumanBodyBones.LeftLowerArm, new[] { "leftlowerarm", "lowerarml", "llowerarm", "leftelbow", "elbowl", "forearml", "lforearm" }),
-            (HumanBodyBones.RightLowerArm, new[] { "rightlowerarm", "lowerarmr", "rlowerarm", "rightelbow", "elbowr", "forearmr", "rforearm" }),
-            (HumanBodyBones.LeftHand, new[] { "lefthand", "handl", "lhand", "leftwrist", "wristl" }),
-            (HumanBodyBones.RightHand, new[] { "righthand", "handr", "rhand", "rightwrist", "wristr" }),
-        };
-
-        private static void AddHumanAliases(Dictionary<string, Transform> index, HumanBodyBones bone, Transform t)
-        {
-            foreach (var entry in FallbackPatterns)
-            {
-                if (entry.bone != bone) continue;
-                foreach (var pattern in entry.patterns)
-                    if (!index.ContainsKey(pattern)) index[pattern] = t;
-                return;
-            }
-        }
-
+        // ReFit policy: where a humanoid bone the clothing has is missing on the target, the bone it may stand in for.
         private static IEnumerable<HumanBodyBones> RelatedBones(HumanBodyBones bone)
         {
             switch (bone)
@@ -303,18 +225,6 @@ namespace Orbiters.ReFit
                 case HumanBodyBones.RightToes:
                     yield return HumanBodyBones.RightFoot;
                     break;
-            }
-        }
-
-        private static void FallbackNameMap(Transform root, Dictionary<HumanBodyBones, Transform> map, Transform excludedRoot = null)
-        {
-            var index = BuildExactNameIndex(root, excludedRoot);
-            foreach (var (bone, patterns) in FallbackPatterns)
-            {
-                foreach (var p in patterns)
-                {
-                    if (index.TryGetValue(p, out var t)) { map[bone] = t; break; }
-                }
             }
         }
 

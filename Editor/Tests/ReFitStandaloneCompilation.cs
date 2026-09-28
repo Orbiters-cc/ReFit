@@ -10,7 +10,7 @@ namespace Orbiters.ReFit.Editor.Tests
     {
         private static AssemblyBuilder activeBuild;
 
-        /// <summary>Compiles ReFit without any Orbiters or project assemblies. Results are written under Temp.</summary>
+        /// <summary>Compiles ReFit without any Orbiters or project assemblies except its Orbiters.Toolkit dependency. Results are written under Temp.</summary>
         public static void Run()
         {
             if (activeBuild != null) throw new InvalidOperationException("Standalone compilation is already running.");
@@ -26,7 +26,8 @@ namespace Orbiters.ReFit.Editor.Tests
                 additionalReferences = Directory.GetFiles(Path.GetDirectoryName(typeof(UnityEditor.EditorWindow).Assembly.Location), "*.dll")
             };
             builder.excludeReferences = builder.defaultReferences.Where(p =>
-                Path.GetFileNameWithoutExtension(p).StartsWith("orbiters.", StringComparison.OrdinalIgnoreCase) ||
+                Path.GetFileNameWithoutExtension(p).StartsWith("orbiters.", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(Path.GetFileNameWithoutExtension(p), "Orbiters.Toolkit", StringComparison.OrdinalIgnoreCase) ||
                 Path.GetFileNameWithoutExtension(p).StartsWith("Assembly-CSharp", StringComparison.OrdinalIgnoreCase)).ToArray();
             File.WriteAllLines(Path.Combine(output, "excluded-references.txt"), builder.excludeReferences);
             File.WriteAllText(Path.Combine(output, "result.txt"), "RUNNING");

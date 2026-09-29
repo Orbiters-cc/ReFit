@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using System.Threading.Tasks;
+using Orbiters.Toolkit.Meshes;
 using UnityEngine;
 
 namespace Orbiters.ReFit
@@ -67,14 +68,15 @@ namespace Orbiters.ReFit
             // --- local positions with blendshapes applied -------------------------------------
             snap.localVertices = mesh.vertices;
             var baseNormals = mesh.normals;
-            Vector3[] lowerFrame = null, upperFrame = null;
+            BlendShapeEvaluation.Scratch scratch = null;
+            bool clamp = BlendShapeEvaluation.ClampWeights;
             for (int s = 0; s < mesh.blendShapeCount; s++)
             {
                 float w = smr.GetBlendShapeWeight(s);
                 if (shapeWeightOverrides01 != null && shapeWeightOverrides01.TryGetValue(s, out var o)) w = o * 100f;
                 if (Mathf.Abs(w) < 1e-2f) continue;
-                if (lowerFrame == null) { lowerFrame = new Vector3[vertexCount]; upperFrame = new Vector3[vertexCount]; }
-                AddBlendShape(mesh, s, w, snap.localVertices, lowerFrame, upperFrame);
+                scratch ??= new BlendShapeEvaluation.Scratch(vertexCount);
+                BlendShapeEvaluation.Add(mesh, s, w, clamp, snap.localVertices, null, scratch);
             }
 
             // --- per-vertex skinning matrices --------------------------------------------------
@@ -142,34 +144,6 @@ namespace Orbiters.ReFit
 
             if (buildTopology) snap.BuildTopology();
             return snap;
-        }
-
-        /// <summary>
-        /// Adds blendshape <paramref name="shape"/> at slider <paramref name="weight"/> (100 = full) to <paramref name="vertices"/>
-        /// the way Unity renders it: linear from the base mesh to the first frame, then between neighbouring frames,
-        /// clamped to [0, last frame weight]. <paramref name="lowerFrame"/>/<paramref name="upperFrame"/> are vertex-count scratch arrays.
-        /// </summary>
-        public static void AddBlendShape(Mesh mesh, int shape, float weight, Vector3[] vertices,
-            Vector3[] lowerFrame, Vector3[] upperFrame)
-        {
-            int last = mesh.GetBlendShapeFrameCount(shape) - 1;
-            if (last < 0) return;
-            weight = Mathf.Clamp(weight, 0f, mesh.GetBlendShapeFrameWeight(shape, last));
-            if (weight <= 0f) return;
-
-            int upper = 0;
-            while (upper < last && weight > mesh.GetBlendShapeFrameWeight(shape, upper)) upper++;
-            float upperWeight = mesh.GetBlendShapeFrameWeight(shape, upper);
-            float lowerWeight = upper > 0 ? mesh.GetBlendShapeFrameWeight(shape, upper - 1) : 0f;
-            float t = upperWeight > lowerWeight ? (weight - lowerWeight) / (upperWeight - lowerWeight) : 1f;
-            mesh.GetBlendShapeFrameVertices(shape, upper, upperFrame, null, null);
-            if (upper == 0)
-            {
-                for (int i = 0; i < vertices.Length; i++) vertices[i] += upperFrame[i] * t;
-                return;
-            }
-            mesh.GetBlendShapeFrameVertices(shape, upper - 1, lowerFrame, null, null);
-            for (int i = 0; i < vertices.Length; i++) vertices[i] += Vector3.LerpUnclamped(lowerFrame[i], upperFrame[i], t);
         }
 
         private static void AccumulateBone(ref Matrix4x4 m, ref float total, Matrix4x4[] mats, bool[] ok, int index, float w)

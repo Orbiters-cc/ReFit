@@ -502,8 +502,8 @@ namespace Orbiters.ReFit
             var names = new List<string>();
             var overrides = new Dictionary<int, float>();
             var accumulated = new Vector3[mesh.vertexCount];
-            var lowerFrame = new Vector3[mesh.vertexCount];
-            var upperFrame = new Vector3[mesh.vertexCount];
+            var scratch = new Orbiters.Toolkit.Meshes.BlendShapeEvaluation.Scratch(mesh.vertexCount);
+            bool clamp = Orbiters.Toolkit.Meshes.BlendShapeEvaluation.ClampWeights;
             for (int s = 0; s < mesh.blendShapeCount; s++)
             {
                 float weight = renderer.GetBlendShapeWeight(s);
@@ -517,7 +517,7 @@ namespace Orbiters.ReFit
                 if (mesh.GetBlendShapeFrameCount(s) == 0)
                     continue;
 
-                MeshSnapshot.AddBlendShape(mesh, s, weight, accumulated, lowerFrame, upperFrame);
+                Orbiters.Toolkit.Meshes.BlendShapeEvaluation.Add(mesh, s, weight, clamp, accumulated, null, scratch);
 
                 overrides[s] = 0f;
                 names.Add(shapeName);

@@ -9,7 +9,7 @@
   "dependencies": {},
   "gitDependencies": {},
   "vpmDependencies": {
-    "orbiters.toolkit": ">=0.3.0 <0.4.0"
+    "orbiters.toolkit": ">=0.3.1 <0.4.0"
   },
   "author": {
     "name": "blackorbit",

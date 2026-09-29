@@ -998,6 +998,12 @@ namespace Orbiters.ReFit.Editor
                 tooltip = "Automatically detect closed tubular rings and preserve their thickness while fitting. Other meshes keep surface fitting." };
             tubes.RegisterValueChangedCallback(e => settings.preserveClosedTubes = e.newValue);
             parent.Add(tubes);
+#if REFIT_VRCHAT_AVATARS
+            var rigid = new Toggle("Keep rigid pieces on the body (beta)") { value = settings.keepRigidPiecesOnBody,
+                tooltip = "Buttons, studs, buckles and other pieces a refit cannot bend follow the body's blendshapes when the avatar is built (Orbiters Follow Body Blendshapes)." };
+            rigid.RegisterValueChangedCallback(e => settings.keepRigidPiecesOnBody = e.newValue);
+            parent.Add(rigid);
+#endif
 
             AddFloatFieldWithReset(parent, "Upper-body hem follow scale", 0f, 1f,
                 settings.upperBodyGarmentHemFollowScale,

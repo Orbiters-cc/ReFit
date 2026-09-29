@@ -1,4 +1,5 @@
 using System.Collections.Generic;
+using System.Linq;
 using UnityEditor;
 using UnityEditor.SceneManagement;
 using Orbiters.Toolkit.Armature;
@@ -733,6 +734,10 @@ namespace Orbiters.ReFit.Editor
                     Undo.RecordObject(generated, "ReFit provenance");
                     generated.data.assetIdentity = ReFitCacheIdentity.Renderer(renderer, true);
                 }
+#if REFIT_VRCHAT_AVATARS
+                if (request.settings != null && request.settings.keepRigidPiecesOnBody)
+                    KeepRigidPiecesOnBody(assetInstanceRoot != null ? assetInstanceRoot.gameObject : renderer.gameObject, request.targetBodyRenderer, report);
+#endif
                 Undo.CollapseUndoOperations(undoGroup);
                 originalState?.SealCreated();
                 committed = true;
@@ -750,6 +755,23 @@ namespace Orbiters.ReFit.Editor
                 }
             }
         }
+
+#if REFIT_VRCHAT_AVATARS
+        // Rigid pieces cannot be refitted: with Toolkit's Follow Body Blendshapes they move with the skin under them at build.
+        private static void KeepRigidPiecesOnBody(GameObject root, SkinnedMeshRenderer body, ReFitReport report)
+        {
+            if (root == null) return;
+            bool rigid = root.GetComponentsInChildren<Renderer>(true).Any(r => r is MeshRenderer ||
+                (r is SkinnedMeshRenderer skinned && skinned.bones.Where(b => b != null).Distinct().Count() <= 2));
+            if (!rigid) return;
+            var follow = root.GetComponent<Orbiters.Toolkit.VRChat.OrbitersSurfaceFollow>();
+            if (follow == null) follow = Undo.AddComponent<Orbiters.Toolkit.VRChat.OrbitersSurfaceFollow>(root);
+            else Undo.RecordObject(follow, "ReFit");
+            follow.scope = Orbiters.Toolkit.VRChat.OrbitersSurfaceFollow.Scope.ThisObject;
+            if (body != null) follow.body = body;
+            report.Info("rigid-pieces-follow", "Rigid pieces of '" + root.name + "' will follow the body's blendshapes when the avatar is built (beta).");
+        }
+#endif
 
         private static void ApplyGeneratedMetadata(SkinnedMeshRenderer renderer, ReFitGeneratedAssetMetadataData data)
         {

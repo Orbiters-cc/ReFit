@@ -82,6 +82,13 @@ produce `tube-geometry-invalid`; unsuccessful results are not applied or saved b
 Regenerate existing ReFit results to use the new geometry. Saved meshes and MCB version snapshots are not
 rewritten automatically. See [validation records](Documentation~/VALIDATION.md) for test coverage and limits.
 
+## Rigid pieces (beta)
+
+Buttons, studs, buckles and other rigid pieces (plain meshes, or meshes on one or two bones) cannot be bent by a
+refit. With Advanced **Keep rigid pieces on the body (beta)** (`settings.keepRigidPiecesOnBody`), applying a refit adds
+Toolkit's **Follow Body Blendshapes** to the refitted asset when it has such pieces: at upload and in Play Mode they move
+and tilt with the skin under them as the body's blendshapes change. The refitted clothing itself is not affected.
+
 ## Public API (for tools such as MCB)
 
 ```csharp

@@ -51,6 +51,11 @@ namespace Orbiters.ReFit
         public bool stabilizeDetachedTransferredComponents = true;
         /// <summary>Detect closed tubular rings and preserve their cross-sections with a coherent centerline field.</summary>
         public bool preserveClosedTubes = true;
+        /// <summary>
+        /// Beta. Rigid pieces of the asset (buttons, studs, buckles: plain meshes or meshes on one or two bones), which a
+        /// refit cannot bend, follow the body's blendshapes when the avatar is built (Toolkit's Follow Body Blendshapes).
+        /// </summary>
+        public bool keepRigidPiecesOnBody;
         /// <summary>Keep lower-body cloth over dense body surfaces between garment vertices, including inward-facing hems.</summary>
         public bool preserveLowerBodyCoverage = true;
         /// <summary>Reject body surface candidates whose normal disagrees with the asset vertex normal by more than <see cref="maxNormalAngle"/> degrees. Detected closed tubes and lower-body cloth use their own correspondence policy.</summary>

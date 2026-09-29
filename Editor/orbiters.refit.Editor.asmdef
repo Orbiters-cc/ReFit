@@ -3,7 +3,8 @@
   "rootNamespace": "Orbiters.ReFit.Editor",
   "references": [
     "orbiters.refit",
-    "Orbiters.Toolkit"
+    "Orbiters.Toolkit",
+    "Orbiters.Toolkit.VRChat"
   ],
   "includePlatforms": [
     "Editor"
@@ -14,6 +15,12 @@
   "overrideReferences": false,
   "precompiledReferences": [],
   "defineConstraints": [],
-  "versionDefines": [],
+  "versionDefines": [
+    {
+      "name": "com.vrchat.avatars",
+      "expression": "3.7.0",
+      "define": "REFIT_VRCHAT_AVATARS"
+    }
+  ],
   "noEngineReferences": false
 }

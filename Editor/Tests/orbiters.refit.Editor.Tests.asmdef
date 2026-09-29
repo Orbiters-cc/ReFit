@@ -1,0 +1,25 @@
+{
+  "name": "orbiters.refit.Editor.Tests",
+  "rootNamespace": "Orbiters.ReFit.Editor.Tests",
+  "references": [
+    "orbiters.refit",
+    "orbiters.refit.Editor",
+    "Orbiters.Toolkit"
+  ],
+  "includePlatforms": [
+    "Editor"
+  ],
+  "excludePlatforms": [],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": false,
+  "defineConstraints": [
+    "UNITY_INCLUDE_TESTS"
+  ],
+  "versionDefines": [],
+  "noEngineReferences": false,
+  "optionalUnityReferences": [
+    "TestAssemblies"
+  ]
+}

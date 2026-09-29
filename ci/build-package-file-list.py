@@ -11,6 +11,10 @@ def to_posix(path):
     return path.as_posix()
 
 
+def is_test_path(relative):
+    return relative.parts[:2] == ("Editor", "Tests")
+
+
 def collect_package_files(root):
     files = set()
 
@@ -23,7 +27,8 @@ def collect_package_files(root):
         package_root_path = root / package_root
         if package_root_path.is_dir() and not package_root_path.is_symlink():
             for path in package_root_path.rglob("*"):
-                if path.is_file() and not path.is_symlink() and path.suffix.lower() != ".meta":
+                # Editor/Tests holds the development test runners: they only compile with the Unity Test Framework.
+                if path.is_file() and not path.is_symlink() and path.suffix.lower() != ".meta" and not is_test_path(path.relative_to(root)):
                     files.add(to_posix(path.relative_to(root)))
 
     return sorted(files, key=str.lower)

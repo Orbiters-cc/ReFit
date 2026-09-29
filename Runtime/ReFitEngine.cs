@@ -216,9 +216,16 @@ namespace Orbiters.ReFit
             public string sourceName;
             public int shapeIndex;
             public float mirrorWeight;
+            /// <summary>The body shape's frames, each transferred on its own so in-between frames keep their geometry.</summary>
+            public List<ShapeFrame> frames = new List<ShapeFrame>();
+        }
+
+        private class ShapeFrame
+        {
+            public float weight;
             /// <summary>Mesh-local frame deltas on the target body (captured on the main thread).</summary>
-            public Vector3[] frameDeltas;
-            public string frameIdentity;
+            public Vector3[] deltas;
+            public string identity;
             // background results
             public Vector3[] rawLocalDeltas;
             public Vector3[] localDeltas;
@@ -419,10 +426,18 @@ namespace Orbiters.ReFit
                 var bodyMesh = stage.targetBody.sharedMesh;
                 foreach (var shape in state.shapes)
                 {
-                    shape.frameDeltas = new Vector3[vertexCount];
-                    int frame = bodyMesh.GetBlendShapeFrameCount(shape.shapeIndex) - 1;
-                    bodyMesh.GetBlendShapeFrameVertices(shape.shapeIndex, frame, shape.frameDeltas, null, null);
-                    shape.frameIdentity = ReFitCacheIdentity.Shape(shape.frameDeltas);
+                    int frameCount = bodyMesh.GetBlendShapeFrameCount(shape.shapeIndex);
+                    for (int f = 0; f < frameCount; f++)
+                    {
+                        var deltas = new Vector3[vertexCount];
+                        bodyMesh.GetBlendShapeFrameVertices(shape.shapeIndex, f, deltas, null, null);
+                        shape.frames.Add(new ShapeFrame
+                        {
+                            weight = bodyMesh.GetBlendShapeFrameWeight(shape.shapeIndex, f),
+                            deltas = deltas,
+                            identity = ReFitCacheIdentity.Shape(deltas)
+                        });
+                    }
                 }
 
                 // Regions
@@ -487,25 +502,22 @@ namespace Orbiters.ReFit
             var names = new List<string>();
             var overrides = new Dictionary<int, float>();
             var accumulated = new Vector3[mesh.vertexCount];
-            var frameDeltas = new Vector3[mesh.vertexCount];
+            var lowerFrame = new Vector3[mesh.vertexCount];
+            var upperFrame = new Vector3[mesh.vertexCount];
             for (int s = 0; s < mesh.blendShapeCount; s++)
             {
-                float weight = renderer.GetBlendShapeWeight(s) / 100f;
-                if (Mathf.Abs(weight) <= 1e-4f)
+                float weight = renderer.GetBlendShapeWeight(s);
+                if (Mathf.Abs(weight) <= 1e-2f)
                     continue;
 
                 string shapeName = mesh.GetBlendShapeName(s);
                 if (!IsTargetSpaceBaseBlendshapeName(shapeName, requestedTargetShapes, settings, metadataPrimaryShapeName))
                     continue;
 
-                int frame = mesh.GetBlendShapeFrameCount(s) - 1;
-                if (frame < 0)
+                if (mesh.GetBlendShapeFrameCount(s) == 0)
                     continue;
 
-                Array.Clear(frameDeltas, 0, frameDeltas.Length);
-                mesh.GetBlendShapeFrameVertices(s, frame, frameDeltas, null, null);
-                for (int i = 0; i < accumulated.Length; i++)
-                    accumulated[i] += frameDeltas[i] * weight;
+                MeshSnapshot.AddBlendShape(mesh, s, weight, accumulated, lowerFrame, upperFrame);
 
                 overrides[s] = 0f;
                 names.Add(shapeName);
@@ -1073,67 +1085,70 @@ namespace Orbiters.ReFit
                     var shape = state.shapes[s];
                     SetBackgroundProgress(state, 0.5f + 0.35f * s / state.shapes.Count, $"Transferring '{shape.sourceName}'");
 
-                    var worldShapeDelta = new Vector3[bodyVerts];
-                    Parallel.For(0, bodyVerts, i =>
-                        worldShapeDelta[i] = TargetShapeDeltaToWorld(state, targetBasis, i, shape.frameDeltas[i]));
-
-                    var groupDeltas = new Vector3[groupCount];
-                    Parallel.For(0, groupCount, g =>
+                    foreach (var frame in shape.frames)
                     {
-                        if (!transferBindings[g].valid) { groupDeltas[g] = Vector3.zero; return; }
-                        int t = transferBindings[g].triangle * 3;
-                        var bary = transferBindings[g].bary;
-                        var d = worldShapeDelta[targetBasis.triangles[t]] * bary.x
-                              + worldShapeDelta[targetBasis.triangles[t + 1]] * bary.y
-                              + worldShapeDelta[targetBasis.triangles[t + 2]] * bary.z;
-                        groupDeltas[g] = d * falloff[g];
-                    });
-                    DeltaField.Smooth(groupDeltas, asset.groupAdjacency,
-                        settings.transferredBlendshapeSmoothingIterations,
-                        settings.transferredBlendshapeSmoothingStrength);
-                    // Hem restraint stabilizes source-to-target proportion fitting. An asset already
-                    // on the target must receive the complete authored shape displacement instead.
-                    if (!state.sourceIsTarget)
-                        ApplyUpperBodyHemDamping(groupDeltas, state.upperBodyHemWeights, settings);
-                    ApplyDetachedTransferredComponentCoherence(state, primaryGroupDeltas, groupDeltas, shape.sourceName);
-                    shape.rawLocalDeltas = ToLocalDeltas(state, groupDeltas, false);
+                        var worldShapeDelta = new Vector3[bodyVerts];
+                        Parallel.For(0, bodyVerts, i =>
+                            worldShapeDelta[i] = TargetShapeDeltaToWorld(state, targetBasis, i, frame.deltas[i]));
 
-                    var cachedLocalDeltas = FindCachedTransferredLocalDeltas(
-                        state.targetSpaceMetadata,
-                        shape.sourceName,
-                        vertexCount, shape.frameIdentity, state.settingsIdentity);
-                    if (cachedLocalDeltas != null)
-                    {
-                        shape.localDeltas = cachedLocalDeltas;
-                        state.Report.Info("target-space-cached-transferred-shape",
-                            $"Reused the previously generated tightness-corrected transfer for '{shape.sourceName}'.");
+                        var groupDeltas = new Vector3[groupCount];
+                        Parallel.For(0, groupCount, g =>
+                        {
+                            if (!transferBindings[g].valid) { groupDeltas[g] = Vector3.zero; return; }
+                            int t = transferBindings[g].triangle * 3;
+                            var bary = transferBindings[g].bary;
+                            var d = worldShapeDelta[targetBasis.triangles[t]] * bary.x
+                                  + worldShapeDelta[targetBasis.triangles[t + 1]] * bary.y
+                                  + worldShapeDelta[targetBasis.triangles[t + 2]] * bary.z;
+                            groupDeltas[g] = d * falloff[g];
+                        });
+                        DeltaField.Smooth(groupDeltas, asset.groupAdjacency,
+                            settings.transferredBlendshapeSmoothingIterations,
+                            settings.transferredBlendshapeSmoothingStrength);
+                        // Hem restraint stabilizes source-to-target proportion fitting. An asset already
+                        // on the target must receive the complete authored shape displacement instead.
+                        if (!state.sourceIsTarget)
+                            ApplyUpperBodyHemDamping(groupDeltas, state.upperBodyHemWeights, settings);
+                        ApplyDetachedTransferredComponentCoherence(state, primaryGroupDeltas, groupDeltas, shape.sourceName);
+                        frame.rawLocalDeltas = ToLocalDeltas(state, groupDeltas, false);
+
+                        var cachedLocalDeltas = FindCachedTransferredLocalDeltas(
+                            state.targetSpaceMetadata,
+                            shape.sourceName,
+                            vertexCount, frame.identity, state.settingsIdentity);
+                        if (cachedLocalDeltas != null)
+                        {
+                            frame.localDeltas = cachedLocalDeltas;
+                            state.Report.Info("target-space-cached-transferred-shape",
+                                $"Reused the previously generated tightness-corrected transfer for '{shape.sourceName}'.");
+                            if (settings.recalculateNormalDeltas)
+                                frame.normalDeltas = NormalDeltas(asset, frame.localDeltas, state.primaryLocalDeltas);
+                            frame.deltas = null;
+                            continue;
+                        }
+
+                        var coverageRawDeltas = coverage != null ? (Vector3[])groupDeltas.Clone() : null;
+                        var clearanceStats = ReFitClearanceCorrection.Apply(
+                            asset,
+                            targetBasis,
+                            transferBindings,
+                            clearanceProfile,
+                            primaryGroupDeltas,
+                            groupDeltas,
+                            worldShapeDelta,
+                            falloff,
+                            settings,
+                            BuildClearanceContext(state, targetBasis, transferBindings, true));
+                        AddClearanceStats(state, clearanceStats, $"transferred '{shape.sourceName}'");
+                        state.tubes.Apply(asset, targetBasis, bvhTarget, worldShapeDelta, primaryGroupDeltas, groupDeltas,
+                            settings, state.Report, $"transferred '{shape.sourceName}'");
+                        coverage?.Apply(targetBasis, worldShapeDelta, groupDeltas, coverageRawDeltas, settings, state.Report, shape.sourceName);
+
+                        frame.localDeltas = ToLocalDeltas(state, groupDeltas, false);
                         if (settings.recalculateNormalDeltas)
-                            shape.normalDeltas = NormalDeltas(asset, shape.localDeltas, state.primaryLocalDeltas);
-                        shape.frameDeltas = null;
-                        continue;
+                            frame.normalDeltas = NormalDeltas(asset, frame.localDeltas, state.primaryLocalDeltas);
+                        frame.deltas = null; // free
                     }
-
-                    var coverageRawDeltas = coverage != null ? (Vector3[])groupDeltas.Clone() : null;
-                    var clearanceStats = ReFitClearanceCorrection.Apply(
-                        asset,
-                        targetBasis,
-                        transferBindings,
-                        clearanceProfile,
-                        primaryGroupDeltas,
-                        groupDeltas,
-                        worldShapeDelta,
-                        falloff,
-                        settings,
-                        BuildClearanceContext(state, targetBasis, transferBindings, true));
-                    AddClearanceStats(state, clearanceStats, $"transferred '{shape.sourceName}'");
-                    state.tubes.Apply(asset, targetBasis, bvhTarget, worldShapeDelta, primaryGroupDeltas, groupDeltas,
-                        settings, state.Report, $"transferred '{shape.sourceName}'");
-                    coverage?.Apply(targetBasis, worldShapeDelta, groupDeltas, coverageRawDeltas, settings, state.Report, shape.sourceName);
-
-                    shape.localDeltas = ToLocalDeltas(state, groupDeltas, false);
-                    if (settings.recalculateNormalDeltas)
-                        shape.normalDeltas = NormalDeltas(asset, shape.localDeltas, state.primaryLocalDeltas);
-                    shape.frameDeltas = null; // free
                 }
             }
 
@@ -2456,8 +2471,7 @@ namespace Orbiters.ReFit
                 comp.secondarySourceShapeNames = new string[state.shapes.Count];
                 comp.secondaryMirrorWeights = new float[state.shapes.Count];
                 comp.debugSecondaryRawLocalDeltas = new Vector3[state.shapes.Count][];
-                if (comp.generatedMetadata != null)
-                    comp.generatedMetadata.transferredShapes = new ReFitGeneratedTransferredShapeMetadata[state.shapes.Count];
+                var transferredShapes = new List<ReFitGeneratedTransferredShapeMetadata>();
                 for (int s = 0; s < state.shapes.Count; s++)
                 {
                     var shape = state.shapes[s];
@@ -2465,24 +2479,27 @@ namespace Orbiters.ReFit
                         ? $"{settings.blendshapeName}_{shape.sourceName}"
                         : shape.sourceName;
                     var name = UniqueShapeName(newMesh, desired);
-                    newMesh.AddBlendShapeFrame(name, 100f, shape.localDeltas, shape.normalDeltas, null);
+                    // Same frame weights as the body shape: the mirrored slider value then interpolates identically.
+                    foreach (var frame in shape.frames)
+                    {
+                        newMesh.AddBlendShapeFrame(name, frame.weight, frame.localDeltas, frame.normalDeltas, null);
+                        transferredShapes.Add(new ReFitGeneratedTransferredShapeMetadata
+                        {
+                            frameIdentity = frame.identity,
+                            generatedName = name,
+                            sourceName = shape.sourceName,
+                            localDeltas = frame.localDeltas != null
+                                ? (Vector3[])frame.localDeltas.Clone()
+                                : null
+                        });
+                    }
                     comp.secondarySourceShapeNames[s] = shape.sourceName;
                     comp.secondaryShapeNames[s] = name;
                     comp.secondaryMirrorWeights[s] = shape.mirrorWeight;
-                    comp.debugSecondaryRawLocalDeltas[s] = shape.rawLocalDeltas;
-                    if (comp.generatedMetadata?.transferredShapes != null)
-                    {
-                        comp.generatedMetadata.transferredShapes[s] = new ReFitGeneratedTransferredShapeMetadata
-                        {
-                            frameIdentity = shape.frameIdentity,
-                            generatedName = name,
-                            sourceName = shape.sourceName,
-                            localDeltas = shape.localDeltas != null
-                                ? (Vector3[])shape.localDeltas.Clone()
-                                : null
-                        };
-                    }
+                    comp.debugSecondaryRawLocalDeltas[s] = shape.frames[shape.frames.Count - 1].rawLocalDeltas;
                 }
+                if (comp.generatedMetadata != null)
+                    comp.generatedMetadata.transferredShapes = transferredShapes.ToArray();
             }
 
             if (state.replace)

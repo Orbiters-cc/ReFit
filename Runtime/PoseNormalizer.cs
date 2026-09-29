@@ -447,7 +447,8 @@ namespace Orbiters.ReFit
             return FindCommonRoot(smr);
         }
 
-        private static bool ContainsAllBones(Transform candidate, SkinnedMeshRenderer smr)
+        /// <summary>True when the renderer, its root bone and every skin bone are inside <paramref name="candidate"/>.</summary>
+        public static bool ContainsAllBones(Transform candidate, SkinnedMeshRenderer smr)
         {
             if (!smr.transform.IsChildOf(candidate)) return false;
             if (smr.rootBone != null && !smr.rootBone.IsChildOf(candidate)) return false;

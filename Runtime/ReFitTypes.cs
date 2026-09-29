@@ -569,9 +569,15 @@ namespace Orbiters.ReFit
         }
     }
 
-    /// <summary>Scene component carrying binding metadata from a mesh refit to later blendshape-only passes.</summary>
+    /// <summary>
+    /// Scene component carrying binding metadata from a mesh refit to later blendshape-only passes.
+    /// Editor-only for the VRChat SDK (IEditorOnly, from its always-referenced base assembly), which strips it from builds.
+    /// </summary>
     [DisallowMultipleComponent]
     public class ReFitGeneratedAssetMetadata : MonoBehaviour
+#if REFIT_VRCHAT
+        , VRC.SDKBase.IEditorOnly
+#endif
     {
         public ReFitGeneratedAssetMetadataData data;
     }

@@ -176,6 +176,21 @@ namespace Orbiters.ReFit.Editor.Tests
                     "Armature replacement restore restores original asset parentage",
                     ArmatureReplacement_RestoreRestoresOriginalAssetParentage);
                 RunCase(failures,
+                    "Armature replacement reset restores removed bones, references and removes the rebuilt rig",
+                    ArmatureReplacement_ResetRestoresRemovedRigAndReferences);
+                RunCase(failures,
+                    "Generated metadata is editor-only for the VRChat SDK",
+                    GeneratedMetadata_IsEditorOnlyForVRChat);
+                RunCase(failures,
+                    "Blendshape snapshots interpolate frames as Unity does",
+                    BlendShapeFrames_SnapshotMatchesUnity);
+                RunCase(failures,
+                    "Transferred blendshape keeps the body shape's frames and weights",
+                    TransferredBlendshape_KeepsBodyFrames);
+                RunCase(failures,
+                    "Standalone prefab export never saves the avatar",
+                    SavePrefab_NeverSavesTheAvatar);
+                RunCase(failures,
                     "Armature replacement rebinds serialized component bone references",
                     ArmatureReplacement_RebindsSerializedComponentBoneReferences);
                 RunCase(failures,

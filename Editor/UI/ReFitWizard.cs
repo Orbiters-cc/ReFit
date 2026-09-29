@@ -274,10 +274,7 @@ namespace Orbiters.ReFit.Editor
             for (int i = SessionLog.Count - 1; i >= 0; i--)
             {
                 var entry = SessionLog[i];
-                bool active = entry.sceneRenderer != null && entry.refitMesh != null &&
-                              entry.sceneRenderer.sharedMesh == entry.refitMesh;
-                bool resettable = entry.originalRendererState != null || entry.originalMesh != null;
-                if (active && resettable && !mcbRendererIds.Contains(entry.sceneRenderer.GetInstanceID()))
+                if (IsActive(entry) && !mcbRendererIds.Contains(entry.sceneRenderer.GetInstanceID()))
                     activeSessionEntries.Add(entry);
             }
 
@@ -293,7 +290,11 @@ namespace Orbiters.ReFit.Editor
                 var captured = asset;
                 AddRefittedAssetRow(captured.DisplayName, captured.renderer, () =>
                 {
-                    if (MCBIntegrationService.TryResetRefittedAsset(captured)) Render();
+                    // A refit from this session also undoes its armature replacement; MCB then drops its record.
+                    var sessionEntry = SessionLog.FindLast(e => e?.originalRendererState != null &&
+                                                                e.sceneRenderer == captured.renderer && IsActive(e));
+                    sessionEntry?.originalRendererState.Restore(sessionEntry.sceneRenderer, "ReFit revert");
+                    if (MCBIntegrationService.TryResetRefittedAsset(captured) || sessionEntry != null) Render();
                 });
             }
 
@@ -336,6 +337,10 @@ namespace Orbiters.ReFit.Editor
 
             content.Add(row);
         }
+
+        private static bool IsActive(RefitLogEntry entry) =>
+            entry.sceneRenderer != null && entry.refitMesh != null && entry.sceneRenderer.sharedMesh == entry.refitMesh &&
+            (entry.originalRendererState != null || entry.originalMesh != null);
 
         private void RevertEntry(RefitLogEntry entry)
         {

@@ -122,7 +122,7 @@ namespace Orbiters.ReFit.Editor
                 result.secondarySourceShapeNames = computation.secondarySourceShapeNames;
                 result.meshAssetPath = ReFitAssetPipeline.SaveMesh(computation.mesh, subfolder, result.report);
                 if (request.settings.savePrefab)
-                    result.prefabAssetPath = ReFitAssetPipeline.TrySavePrefab(computation, result.sceneRenderer, subfolder, result.report);
+                    result.prefabAssetPath = ReFitAssetPipeline.TrySavePrefab(request, computation, result.sceneRenderer, subfolder, result.report);
                 debug?.Finish();
                 Undo.FlushUndoRecordObjects();
                 Undo.CollapseUndoOperations(undoGroup);
@@ -144,6 +144,7 @@ namespace Orbiters.ReFit.Editor
                 result.sceneRenderer = null;
                 result.meshAssetPath = null;
                 result.prefabAssetPath = null;
+                result.originalRendererState?.DiscardRemoved();
                 result.originalRendererState = null;
             }
             // A caller's progress handler is not part of committing geometry.

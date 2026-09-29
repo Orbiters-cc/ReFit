@@ -1,7 +1,9 @@
 using System.Collections.Generic;
 using UnityEditor;
+using UnityEditor.SceneManagement;
 using Orbiters.Toolkit.Armature;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 
 namespace Orbiters.ReFit.Editor
 {
@@ -69,6 +71,35 @@ namespace Orbiters.ReFit.Editor
         private float[] blendShapeWeights;
         private bool hadGeneratedMetadata;
         private ReFitGeneratedAssetMetadataData generatedMetadata;
+        // Armature replacement journal, for Restore: the rig ReFit built, the references it rebound and the
+        // objects it removed (kept as inactive copies in a preview scene for this editor session).
+        private readonly List<GameObject> createdObjects = new List<GameObject>();
+        private readonly HashSet<int> createdTransformIds = new HashSet<int>();
+        private readonly List<PropertyState> propertyStates = new List<PropertyState>();
+        private readonly List<RemovedObject> removedObjects = new List<RemovedObject>();
+        private static Scene backupScene;
+        private static Transform backupRoot;
+
+        private class PropertyState
+        {
+            public Component target;
+            public int targetOwnerId;
+            public int targetIndex;
+            public string propertyPath;
+            public object value;
+            public int referenceId;
+            public string referencePath;
+        }
+
+        private class RemovedObject
+        {
+            public GameObject copy;
+            public Transform parent;
+            public string parentPath;
+            public int siblingIndex;
+            public string name;
+            public int[] transformIds;
+        }
 
         private class TransformState
         {
@@ -133,18 +164,18 @@ namespace Orbiters.ReFit.Editor
 
             var root = snapshotRoot != null ? snapshotRoot : renderer.transform.root;
             var statesByPath = BuildStateMap(transformStates);
+            // Original instance id -> restored copy of an object the armature replacement removed.
+            var restored = new Dictionary<int, Transform>();
+            RemoveCreatedObjects(undoName);
             RestoreSnapshotRoot(undoName);
+            RestoreRemovedObjects(root, statesByPath, restored, undoName);
             for (int i = 0; i < transformStates.Count; i++)
             {
                 var state = transformStates[i];
-                var transform = state.transform != null
-                    ? state.transform
-                    : ResolveOrCreateTransform(root, state.path, statesByPath, undoName);
+                var transform = Resolve(state.transform, state.path, root, statesByPath, restored, undoName);
                 if (transform == null) continue;
 
-                var expectedParent = state.parent != null
-                    ? state.parent
-                    : ResolveOrCreateTransform(root, state.parentPath, statesByPath, undoName);
+                var expectedParent = Resolve(state.parent, state.parentPath, root, statesByPath, restored, undoName);
                 if (expectedParent != null && transform.parent != expectedParent)
                     Undo.SetTransformParent(transform, expectedParent, undoName);
 
@@ -166,23 +197,197 @@ namespace Orbiters.ReFit.Editor
                 var restoredBones = new Transform[bonePaths.Length];
                 for (int i = 0; i < restoredBones.Length; i++)
                 {
-                    restoredBones[i] = bones != null && i < bones.Length && bones[i] != null
-                        ? bones[i]
-                        : ResolveOrCreateTransform(root, bonePaths[i], statesByPath, undoName);
+                    restoredBones[i] = Resolve(bones != null && i < bones.Length ? bones[i] : null, bonePaths[i],
+                        root, statesByPath, restored, undoName);
                 }
                 renderer.bones = restoredBones;
             }
 
-            renderer.rootBone = rootBone != null
-                ? rootBone
-                : ResolveOrCreateTransform(root, rootBonePath, statesByPath, undoName);
+            renderer.rootBone = Resolve(rootBone, rootBonePath, root, statesByPath, restored, undoName);
             renderer.updateWhenOffscreen = updateWhenOffscreen;
             renderer.localBounds = localBounds;
             RestoreBlendShapeWeights(renderer);
             RestoreGeneratedMetadata(renderer, undoName);
             EditorUtility.SetDirty(renderer);
             PrefabUtility.RecordPrefabInstancePropertyModifications(renderer);
+            RestoreProperties(root, restored);
             return true;
+        }
+
+        /// <summary>Records an object the armature replacement created (the rebuilt rig) so Restore removes it.</summary>
+        internal void RecordCreated(GameObject created)
+        {
+            if (created != null) createdObjects.Add(created);
+        }
+
+        /// <summary>Marks the end of the transaction: objects added under the rig after this are not ReFit's.</summary>
+        internal void SealCreated()
+        {
+            foreach (var created in createdObjects)
+                if (created != null)
+                    foreach (var t in created.GetComponentsInChildren<Transform>(true))
+                        createdTransformIds.Add(t.GetInstanceID());
+        }
+
+        /// <summary>Records a serialized value about to be changed on a component outside the rebuilt rig.</summary>
+        internal void RecordProperty(SerializedProperty property)
+        {
+            var target = property.serializedObject.targetObject as Component;
+            if (target == null) return;
+            var value = property.boxedValue;
+            var reference = value is GameObject go ? go.transform : value as Transform;
+            propertyStates.Add(new PropertyState
+            {
+                target = target,
+                targetOwnerId = target.transform.GetInstanceID(),
+                targetIndex = System.Array.IndexOf(target.GetComponents<Component>(), target),
+                propertyPath = property.propertyPath,
+                value = value,
+                referenceId = reference != null ? reference.GetInstanceID() : 0,
+                referencePath = GetPath(snapshotRoot, reference)
+            });
+        }
+
+        /// <summary>Records a transform about to be moved out of a container that will be removed.</summary>
+        internal void RecordMoved(Transform moved)
+        {
+            if (moved == null) return;
+            foreach (var state in transformStates)
+                if (state.transform == moved) return;
+            transformStates.Add(new TransformState
+            {
+                transform = moved,
+                path = GetPath(snapshotRoot, moved),
+                parent = moved.parent,
+                parentPath = GetPath(snapshotRoot, moved.parent),
+                siblingIndex = moved.GetSiblingIndex(),
+                localPosition = moved.localPosition,
+                localRotation = moved.localRotation,
+                localScale = moved.localScale
+            });
+        }
+
+        /// <summary>Keeps an inactive copy of an object about to be destroyed, components included, so Restore can bring it back.</summary>
+        internal void RecordRemoved(GameObject removed)
+        {
+            if (removed == null) return;
+            var transforms = removed.GetComponentsInChildren<Transform>(true);
+            var ids = new int[transforms.Length];
+            for (int i = 0; i < ids.Length; i++) ids[i] = transforms[i].GetInstanceID();
+            var parent = removed.transform.parent;
+            removedObjects.Add(new RemovedObject
+            {
+                copy = Object.Instantiate(removed, BackupRoot(), false),
+                parent = parent,
+                parentPath = GetPath(snapshotRoot, parent),
+                siblingIndex = removed.transform.GetSiblingIndex(),
+                name = removed.name,
+                transformIds = ids
+            });
+        }
+
+        /// <summary>Drops the removed-object copies of a transaction that was rolled back.</summary>
+        internal void DiscardRemoved()
+        {
+            foreach (var removed in removedObjects)
+                if (removed.copy != null) Object.DestroyImmediate(removed.copy);
+            removedObjects.Clear();
+        }
+
+        private static Transform BackupRoot()
+        {
+            if (backupRoot != null) return backupRoot;
+            backupScene = EditorSceneManager.NewPreviewScene();
+            var root = new GameObject("ReFit reset backups");
+            root.SetActive(false);
+            SceneManager.MoveGameObjectToScene(root, backupScene);
+            backupRoot = root.transform;
+            AssemblyReloadEvents.beforeAssemblyReload += CloseBackupScene;
+            return backupRoot;
+        }
+
+        private static void CloseBackupScene()
+        {
+            AssemblyReloadEvents.beforeAssemblyReload -= CloseBackupScene;
+            if (backupScene.IsValid()) EditorSceneManager.ClosePreviewScene(backupScene);
+            backupRoot = null;
+        }
+
+        private void RemoveCreatedObjects(string undoName)
+        {
+            foreach (var created in createdObjects)
+            {
+                if (created == null) continue;
+                // Anything parented under the rig since the refit is moved out instead of deleted.
+                foreach (var t in created.GetComponentsInChildren<Transform>(true))
+                    if (createdTransformIds.Count > 0 && !createdTransformIds.Contains(t.GetInstanceID()) &&
+                        createdTransformIds.Contains(t.parent.GetInstanceID()))
+                        Undo.SetTransformParent(t, created.transform.parent, undoName);
+                Undo.DestroyObjectImmediate(created);
+            }
+        }
+
+        private void RestoreRemovedObjects(Transform root, Dictionary<string, TransformState> statesByPath,
+            Dictionary<int, Transform> restored, string undoName)
+        {
+            for (int i = removedObjects.Count - 1; i >= 0; i--)
+            {
+                var removed = removedObjects[i];
+                if (removed.copy == null) continue;
+                var parent = Resolve(removed.parent, removed.parentPath, root, statesByPath, restored, undoName);
+                if (parent == null) continue;
+
+                var instance = Object.Instantiate(removed.copy, parent, false);
+                instance.name = removed.name;
+                Undo.RegisterCreatedObjectUndo(instance, undoName);
+                if (removed.siblingIndex < parent.childCount) instance.transform.SetSiblingIndex(removed.siblingIndex);
+                var transforms = instance.GetComponentsInChildren<Transform>(true);
+                for (int t = 0; t < transforms.Length && t < removed.transformIds.Length; t++)
+                    restored[removed.transformIds[t]] = transforms[t];
+            }
+        }
+
+        private void RestoreProperties(Transform root, Dictionary<int, Transform> restored)
+        {
+            for (int i = propertyStates.Count - 1; i >= 0; i--)
+            {
+                var state = propertyStates[i];
+                var target = state.target != null ? state.target : RestoredComponent(state, restored);
+                if (target == null) continue;
+
+                var value = state.value;
+                if (state.referenceId != 0 && !(value is Object alive && alive != null))
+                {
+                    var transform = restored.TryGetValue(state.referenceId, out var copy) ? copy
+                        : state.referencePath == null ? null
+                        : state.referencePath.Length == 0 ? root : root.Find(state.referencePath);
+                    if (transform == null) continue;
+                    value = value is GameObject ? transform.gameObject : (Object)transform;
+                }
+
+                var serialized = new SerializedObject(target);
+                var property = serialized.FindProperty(state.propertyPath);
+                if (property == null) continue;
+                property.boxedValue = value;
+                serialized.ApplyModifiedProperties();
+                PrefabUtility.RecordPrefabInstancePropertyModifications(target);
+            }
+        }
+
+        private static Component RestoredComponent(PropertyState state, Dictionary<int, Transform> restored)
+        {
+            if (!restored.TryGetValue(state.targetOwnerId, out var owner)) return null;
+            var components = owner.GetComponents<Component>();
+            return state.targetIndex >= 0 && state.targetIndex < components.Length ? components[state.targetIndex] : null;
+        }
+
+        /// <summary>The live original, else its restored copy, else the transform at its captured path (created when missing).</summary>
+        private static Transform Resolve(Transform original, string path, Transform root,
+            Dictionary<string, TransformState> statesByPath, Dictionary<int, Transform> restored, string undoName)
+        {
+            if (original != null) return original;
+            if (!ReferenceEquals(original, null) && restored.TryGetValue(original.GetInstanceID(), out var copy)) return copy;
+            return ResolveOrCreateTransform(root, path, statesByPath, undoName);
         }
 
         private void RestoreSnapshotRoot(string undoName)
@@ -388,6 +593,9 @@ namespace Orbiters.ReFit.Editor
         /// <summary>Root folder for generated assets.</summary>
         public const string OutputRoot = "Assets/ReFit";
 
+        /// <summary>State of the scene application in progress; armature replacement journals its changes into it for Reset.</summary>
+        private static ReFitRendererState resetJournal;
+
         /// <summary>Saves the mesh under <see cref="OutputRoot"/>/<paramref name="subfolder"/> and returns its path.</summary>
         public static string SaveMesh(Mesh mesh, string subfolder, ReFitReport report)
         {
@@ -453,6 +661,7 @@ namespace Orbiters.ReFit.Editor
                 Undo.RecordObject(renderer, "ReFit");
                 comp.appliedOriginalMesh = renderer.sharedMesh;
                 originalState = ReFitRendererState.Capture(renderer);
+                resetJournal = originalState;
                 CaptureGeneratedMeshPreviewWithOriginalSkinning(debug, renderer, comp);
                 renderer.sharedMesh = comp.mesh;
                 if (!comp.armatureReplaced)
@@ -525,15 +734,18 @@ namespace Orbiters.ReFit.Editor
                     generated.data.assetIdentity = ReFitCacheIdentity.Renderer(renderer, true);
                 }
                 Undo.CollapseUndoOperations(undoGroup);
+                originalState?.SealCreated();
                 committed = true;
                 return renderer;
             }
             finally
             {
+                resetJournal = null;
                 if (!committed)
                 {
                     Undo.FlushUndoRecordObjects();
                     Undo.RevertAllDownToGroup(undoGroup);
+                    originalState?.DiscardRemoved();
                     originalState = null;
                 }
             }
@@ -615,13 +827,14 @@ namespace Orbiters.ReFit.Editor
             {
                 string shapeName = source.GetBlendShapeName(s);
                 var overrideDeltas = OverrideForShape(comp, shapeName, primaryOverride, secondaryOverrides);
+                int frames = source.GetBlendShapeFrameCount(s);
                 if (overrideDeltas != null && overrideDeltas.Length == vertexCount)
                 {
-                    mesh.AddBlendShapeFrame(shapeName, 100f, overrideDeltas, null, null);
+                    // Raw fields are the full (last) frame of the generated shape.
+                    mesh.AddBlendShapeFrame(shapeName, source.GetBlendShapeFrameWeight(s, frames - 1), overrideDeltas, null, null);
                     continue;
                 }
 
-                int frames = source.GetBlendShapeFrameCount(s);
                 for (int f = 0; f < frames; f++)
                 {
                     source.GetBlendShapeFrameVertices(s, f, deltaVertices, deltaNormals, deltaTangents);
@@ -721,12 +934,26 @@ namespace Orbiters.ReFit.Editor
         /// armature was NOT replaced — a replaced armature references the target avatar's scene bones, which a
         /// standalone prefab cannot capture. Returns the path or null.
         /// </summary>
-        public static string TrySavePrefab(ReFitComputation comp, SkinnedMeshRenderer sceneRenderer, string subfolder, ReFitReport report)
+        public static string TrySavePrefab(ReFitRequest request, ReFitComputation comp, SkinnedMeshRenderer sceneRenderer,
+            string subfolder, ReFitReport report)
         {
             if (comp.armatureReplaced || sceneRenderer == null) return null;
             try
             {
-                var root = PoseNormalizer.FindCommonRoot(sceneRenderer);
+                // The asset's own object, never the avatar it is skinned to (a target prefab file was instantiated as a scene root).
+                var target = request?.targetAvatar;
+                if (target != null && EditorUtility.IsPersistent(target))
+                {
+                    var sceneRoot = sceneRenderer.transform.root.gameObject;
+                    target = PrefabUtility.GetCorrespondingObjectFromSource(sceneRoot) == request.targetAvatar ? sceneRoot : null;
+                }
+                var root = PoseNormalizer.FindAssetObjectRoot(sceneRenderer, request?.sourceAvatar, target);
+                if (root == null || IsAvatarRoot(root, request, target) || !PoseNormalizer.ContainsAllBones(root, sceneRenderer))
+                {
+                    report.Info("prefab-skipped",
+                        $"No standalone prefab was saved: '{sceneRenderer.name}' is skinned to bones outside its own object. The scene object and mesh asset are the deliverables.");
+                    return null;
+                }
                 if (root.GetComponentsInChildren<SkinnedMeshRenderer>(true).Length > 8) return null; // probably a whole avatar; don't prefab that
                 var folder = EnsureFolder(string.IsNullOrEmpty(subfolder) ? OutputRoot : $"{OutputRoot}/{Sanitize(subfolder)}");
                 var path = AssetDatabase.GenerateUniqueAssetPath($"{folder}/{Sanitize(root.name)}_ReFit.prefab");
@@ -876,6 +1103,7 @@ namespace Orbiters.ReFit.Editor
             if (!MakeRestructurable(assetInstanceRoot, report)) return false;
 
             var newArmatureRoot = CreateMaterializedArmature(assetInstanceRoot);
+            resetJournal?.RecordCreated(newArmatureRoot.gameObject);
             var bones = MaterializeBonePlan(comp, sourceBones, targetInstance, assetInstanceRoot, newArmatureRoot, report);
 
             // Assign the new skinning.
@@ -1528,6 +1756,7 @@ namespace Orbiters.ReFit.Editor
                     bool changed = false;
                     if (currentObject != replacement.gameObject)
                     {
+                        resetJournal?.RecordProperty(propBone);
                         propBone.objectReferenceValue = replacement.gameObject;
                         changed = true;
                     }
@@ -1646,6 +1875,7 @@ namespace Orbiters.ReFit.Editor
             var prop = parent?.FindPropertyRelative(name);
             if (prop == null || prop.propertyType != SerializedPropertyType.Boolean || prop.boolValue == value)
                 return false;
+            resetJournal?.RecordProperty(prop);
             prop.boolValue = value;
             return true;
         }
@@ -1656,6 +1886,7 @@ namespace Orbiters.ReFit.Editor
             if (prop == null || prop.propertyType != SerializedPropertyType.Float ||
                 Mathf.Approximately(prop.floatValue, value))
                 return false;
+            resetJournal?.RecordProperty(prop);
             prop.floatValue = value;
             return true;
         }
@@ -1665,6 +1896,7 @@ namespace Orbiters.ReFit.Editor
             var prop = parent?.FindPropertyRelative(name);
             if (prop == null || prop.propertyType != SerializedPropertyType.Integer || prop.intValue == value)
                 return false;
+            resetJournal?.RecordProperty(prop);
             prop.intValue = value;
             return true;
         }
@@ -1724,6 +1956,7 @@ namespace Orbiters.ReFit.Editor
                     Undo.RecordObject(component, "ReFit rebind component bone references");
                     undoRecorded = true;
                 }
+                resetJournal?.RecordProperty(iterator);
                 iterator.objectReferenceValue = replacementObject;
                 stats.propertiesRebound++;
                 changed = true;
@@ -2034,6 +2267,7 @@ namespace Orbiters.ReFit.Editor
             foreach (var root in roots)
             {
                 if (root == null) continue;
+                resetJournal?.RecordRemoved(root.gameObject);
                 Undo.DestroyObjectImmediate(root.gameObject);
                 removed++;
             }
@@ -2164,6 +2398,7 @@ namespace Orbiters.ReFit.Editor
                 foreach (var root in roots)
                 {
                     if (root == null) continue;
+                    resetJournal?.RecordRemoved(root.gameObject);
                     Undo.DestroyObjectImmediate(root.gameObject);
                     removed++;
                 }
@@ -2553,12 +2788,14 @@ namespace Orbiters.ReFit.Editor
                     var position = child.position;
                     var rotation = child.rotation;
                     var scale = child.lossyScale;
+                    resetJournal?.RecordMoved(child);
                     Undo.SetTransformParent(child, parent, "ReFit remove stale armature");
                     child.position = position;
                     child.rotation = rotation;
                     child.localScale = DivideScale(scale, child.parent != null ? child.parent.lossyScale : Vector3.one);
                 }
 
+                resetJournal?.RecordRemoved(candidate.gameObject);
                 Undo.DestroyObjectImmediate(candidate.gameObject);
                 removed++;
             }

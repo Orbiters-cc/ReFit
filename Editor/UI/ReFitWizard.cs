@@ -259,42 +259,42 @@ namespace Orbiters.ReFit.Editor
             BuildActiveCommissions();
         }
 
-        /// <summary>Lists active re-fitted assets from MCB's saved state and this standalone ReFit session.</summary>
+        /// <summary>Lists active re-fitted assets recorded with the Orbiters tools and from this ReFit session.</summary>
         private void BuildRefittedAssets()
         {
             SessionLog.RemoveAll(e => e == null || e.sceneRenderer == null);
-            var mcbAssets = MCBIntegrationService.GetRefittedAssets();
-            var mcbRendererIds = new HashSet<int>();
-            foreach (var asset in mcbAssets)
+            var recordedAssets = ReFitRecordIntegration.GetRefittedAssets();
+            var recordedRendererIds = new HashSet<int>();
+            foreach (var asset in recordedAssets)
             {
-                if (asset?.renderer != null) mcbRendererIds.Add(asset.renderer.GetInstanceID());
+                if (asset?.renderer != null) recordedRendererIds.Add(asset.renderer.GetInstanceID());
             }
 
             var activeSessionEntries = new List<RefitLogEntry>();
             for (int i = SessionLog.Count - 1; i >= 0; i--)
             {
                 var entry = SessionLog[i];
-                if (IsActive(entry) && !mcbRendererIds.Contains(entry.sceneRenderer.GetInstanceID()))
+                if (IsActive(entry) && !recordedRendererIds.Contains(entry.sceneRenderer.GetInstanceID()))
                     activeSessionEntries.Add(entry);
             }
 
-            if (mcbAssets.Count == 0 && activeSessionEntries.Count == 0) return;
+            if (recordedAssets.Count == 0 && activeSessionEntries.Count == 0) return;
 
             var section = new Label("Re-fitted assets");
             section.AddToClassList("refit-section");
             section.style.marginTop = 28;
             content.Add(section);
 
-            foreach (var asset in mcbAssets)
+            foreach (var asset in recordedAssets)
             {
                 var captured = asset;
                 AddRefittedAssetRow(captured.DisplayName, captured.renderer, () =>
                 {
-                    // A refit from this session also undoes its armature replacement; MCB then drops its record.
+                    // A refit from this session also undoes its armature replacement; the record is then only dropped.
                     var sessionEntry = SessionLog.FindLast(e => e?.originalRendererState != null &&
                                                                 e.sceneRenderer == captured.renderer && IsActive(e));
-                    sessionEntry?.originalRendererState.Restore(sessionEntry.sceneRenderer, "ReFit revert");
-                    if (MCBIntegrationService.TryResetRefittedAsset(captured) || sessionEntry != null) Render();
+                    bool restored = sessionEntry != null && sessionEntry.originalRendererState.Restore(sessionEntry.sceneRenderer, "ReFit revert");
+                    if (ReFitRecordIntegration.TryReset(captured, restored) || sessionEntry != null) Render();
                 });
             }
 
@@ -1249,21 +1249,21 @@ namespace Orbiters.ReFit.Editor
             content.Add(operation);
             BuildSettings(content);
 
-            if (MCBIntegrationService.IsAvailable)
+            if (ReFitRecordIntegration.IsAvailable)
             {
-                var mcbSection = new Label("MCB integration");
-                mcbSection.AddToClassList("refit-section");
-                mcbSection.style.marginTop = 18;
-                content.Add(mcbSection);
+                var recordSection = new Label("Orbiters tools");
+                recordSection.AddToClassList("refit-section");
+                recordSection.style.marginTop = 18;
+                content.Add(recordSection);
 
-                var mcbIntegration = new Toggle("Synchronize ReFit assets with MCB")
+                var recordResults = new Toggle("Link transferred blendshapes to the body")
                 {
-                    value = MCBIntegrationService.Enabled
+                    value = ReFitRecordIntegration.Enabled
                 };
-                mcbIntegration.AddToClassList("refit-field");
-                mcbIntegration.RegisterValueChangedCallback(e => MCBIntegrationService.Enabled = e.newValue);
-                content.Add(mcbIntegration);
-                Help("Registers standalone ReFit results with MCB so version changes and sliders synchronize transferred blendshapes, and the MCB ReFit frame can un-refit the asset. Enabled by default.");
+                recordResults.AddToClassList("refit-field");
+                recordResults.RegisterValueChangedCallback(e => ReFitRecordIntegration.Enabled = e.newValue);
+                content.Add(recordResults);
+                Help("Records each result on the refitted mesh: its transferred blendshapes follow every animation of the body's shapes when the avatar is built, MCB keeps it per custom base version, and MCB or My Avatar can restore the original mesh. Enabled by default.");
             }
 
             var debugSection = new Label("Debug");
@@ -1419,7 +1419,7 @@ namespace Orbiters.ReFit.Editor
             StopExecutionPump();
             if (lastResult != null && lastResult.success)
             {
-                MCBIntegrationService.TryRegisterStandaloneRefit(lastRequest, lastResult);
+                ReFitRecordIntegration.TryRegister(lastRequest, lastResult);
                 SessionLog.Add(new RefitLogEntry
                 {
                     assetName = asset != null ? asset.name : "asset",

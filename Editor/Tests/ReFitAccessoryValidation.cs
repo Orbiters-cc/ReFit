@@ -181,25 +181,24 @@ namespace Orbiters.ReFit.Editor.Tests
             input.sharedMesh = live.sharedMesh; input.sharedMaterials = live.sharedMaterials;
             input.bones = live.bones.Select(b => b == null ? null : map[b]).ToArray();
             input.rootBone = live.rootBone != null ? map[live.rootBone] : null;
-            var mcb = live.transform.root.GetComponentsInChildren<Component>(true).First(c => c != null && c.GetType().Name == "MyCustomBase");
-            var entries = (System.Collections.IEnumerable)mcb.GetType().GetField("appliedRefits").GetValue(mcb);
-            string path = AnimationUtility.CalculateTransformPath(live.transform, live.transform.root);
-            foreach (var entry in entries)
+#if REFIT_VRCHAT_AVATARS
+            // Start from the mesh as it was before its refit, as recorded on the renderer.
+            var record = live.GetComponent<Orbiters.Toolkit.VRChat.OrbitersRefit>();
+            if (record != null && record.Applied)
             {
-                var type = entry.GetType();
-                if ((string)type.GetField("rendererPath").GetValue(entry) != path) continue;
-                input.sharedMesh = (Mesh)type.GetField("originalMesh").GetValue(entry);
-                input.bones = ((IEnumerable<Transform>)type.GetField("originalBones").GetValue(entry)).Select(b => map[b]).ToArray();
-                input.rootBone = map[(Transform)type.GetField("originalRootBone").GetValue(entry)];
-                foreach (var state in (System.Collections.IEnumerable)type.GetField("originalTransformStates").GetValue(entry))
+                var original = record.original;
+                input.sharedMesh = original.mesh;
+                input.bones = original.bones.Select(b => b == null ? null : map[b]).ToArray();
+                input.rootBone = original.rootBone != null ? map[original.rootBone] : null;
+                foreach (var state in original.transforms)
                 {
-                    var t = state.GetType(); var copy = map[(Transform)t.GetField("transform").GetValue(state)];
-                    copy.localPosition = (Vector3)t.GetField("localPosition").GetValue(state);
-                    copy.localRotation = (Quaternion)t.GetField("localRotation").GetValue(state);
-                    copy.localScale = (Vector3)t.GetField("localScale").GetValue(state);
+                    if (state.transform == null || !map.TryGetValue(state.transform, out var copy)) continue;
+                    copy.localPosition = state.localPosition;
+                    copy.localRotation = state.localRotation;
+                    copy.localScale = state.localScale;
                 }
-                break;
             }
+#endif
             return root.gameObject;
         }
 
@@ -344,23 +343,22 @@ namespace Orbiters.ReFit.Editor.Tests
 
         private static ReFitRequest Request(SkinnedMeshRenderer renderer)
         {
-            const BindingFlags flags = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance;
-            var integration = AppDomain.CurrentDomain.GetAssemblies().Select(a => a.GetType("MCBReFitIntegration")).FirstOrDefault(t => t != null);
-            var mcb = renderer.transform.root.GetComponentsInChildren<Component>(true).FirstOrDefault(c => c != null && c.GetType().Name == "MyCustomBase");
-            if (integration == null || mcb == null) throw new InvalidOperationException("MCB configuration is required for this private test.");
-            var args = new object[] { mcb, null };
-            var source = integration.GetMethod("BuildSourceReference", flags).Invoke(null, args);
-            if (source == null) throw new InvalidOperationException("MCB source resolution failed: " + args[1]);
-            var type = source.GetType();
+#if REFIT_VRCHAT_AVATARS
+            // The avatar's custom base as MCB describes it to the Orbiters tools.
+            var info = Orbiters.Toolkit.Editor.Refit.CustomBases.Describe(renderer.transform.root);
+            if (info == null || !info.CanFit) throw new InvalidOperationException("MCB configuration is required for this private test.");
+            var original = info.ResolveOriginal();
+            if (original?.Body == null) throw new InvalidOperationException("MCB could not resolve the original base.");
             return new ReFitRequest
             {
                 mode = ReFitMode.MeshAndBlendshape, assetRenderer = renderer, targetAvatar = renderer.transform.root.gameObject,
-                sourceAvatar = (GameObject)type.GetField("sourceAvatar", flags).GetValue(source),
-                sourceBodyRenderer = (SkinnedMeshRenderer)type.GetField("sourceBody", flags).GetValue(source),
-                targetBodyRenderer = (SkinnedMeshRenderer)type.GetField("targetBody", flags).GetValue(source),
+                sourceAvatar = original.Avatar, sourceBodyRenderer = original.Body, targetBodyRenderer = info.Body,
                 targetBlendshapes = new List<string> { "orbit muscles" },
                 settings = new ReFitSettings { replaceArmature = false, transferWeights = false, savePrefab = false, prefixTransferredShapes = false }
             };
+#else
+            throw new InvalidOperationException("This private test needs a VRChat avatar project with MCB.");
+#endif
         }
 
         private static Mesh Bake(SkinnedMeshRenderer original, Mesh input, Dictionary<string, float> values)

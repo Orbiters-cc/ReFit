@@ -17,7 +17,7 @@ namespace Orbiters.ReFit.Editor.Tests
             Check(ReFitCommissionClient.NormalizeMediaUrl(external, api), external);
             Check(ReFitCommissionClient.NormalizeMediaUrl("/other/banner?v=2", api), "https://api.orbiters.cc/other/banner?v=2");
             Check(ReFitCommissionClient.NormalizeMediaUrl(null, api), null);
-            // Exercises the installed MCB bridge, or the standalone path when MCB is absent.
+            // Exercises the Orbiters server the tools are set to.
             string integrated = ReFitCommissionClient.NormalizeMediaUrl("/files/serve/banner?v=2");
             if (!integrated.Contains("v=2&format=png")) throw new Exception("Commission image bridge did not request PNG: " + integrated);
         }

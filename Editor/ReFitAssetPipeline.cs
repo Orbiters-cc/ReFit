@@ -567,6 +567,55 @@ namespace Orbiters.ReFit.Editor
             return parent;
         }
 
+#if REFIT_VRCHAT_AVATARS
+        /// <summary>
+        /// This state as the original of an Orbiters Toolkit refit record, with paths under <paramref name="avatarRoot"/>
+        /// (captured paths are under the scene root). Restoring it from the record does not rebuild a replaced armature;
+        /// <see cref="Restore"/> does.
+        /// </summary>
+        internal Orbiters.Toolkit.VRChat.RefitRendererState ToRecordState(Transform avatarRoot)
+        {
+            string PathOf(Transform transform, string capturedPath)
+            {
+                if (transform != null && avatarRoot != null && transform.IsChildOf(avatarRoot)) return GetPath(avatarRoot, transform);
+                if (capturedPath == null || avatarRoot == null || snapshotRoot == null) return null;
+                if (snapshotRoot == avatarRoot) return capturedPath;
+                string prefix = GetPath(snapshotRoot, avatarRoot);
+                if (prefix == null) return null;
+                if (capturedPath == prefix) return string.Empty;
+                return capturedPath.StartsWith(prefix + "/", System.StringComparison.Ordinal) ? capturedPath.Substring(prefix.Length + 1) : null;
+            }
+
+            var state = new Orbiters.Toolkit.VRChat.RefitRendererState
+            {
+                mesh = mesh, rootBoneCaptured = true, rootBone = rootBone, rootBonePath = PathOf(rootBone, rootBonePath),
+                rendererCaptured = true, updateWhenOffscreen = updateWhenOffscreen, localBounds = localBounds
+            };
+            int boneCount = System.Math.Max(bones?.Length ?? 0, bonePaths?.Length ?? 0);
+            for (int i = 0; i < boneCount; i++)
+            {
+                var bone = bones != null && i < bones.Length ? bones[i] : null;
+                state.bones.Add(bone);
+                state.bonePaths.Add(PathOf(bone, bonePaths != null && i < bonePaths.Length ? bonePaths[i] : null));
+            }
+            if (blendShapeNames != null) state.blendShapeNames.AddRange(blendShapeNames);
+            if (blendShapeWeights != null) state.blendShapeWeights.AddRange(blendShapeWeights);
+            foreach (var transformState in transformStates)
+            {
+                if (transformState == null) continue;
+                state.transforms.Add(new Orbiters.Toolkit.VRChat.RefitTransformState
+                {
+                    transform = transformState.transform,
+                    path = PathOf(transformState.transform, transformState.path),
+                    localPosition = transformState.localPosition,
+                    localRotation = transformState.localRotation,
+                    localScale = transformState.localScale
+                });
+            }
+            return state;
+        }
+#endif
+
         private static string GetPath(Transform root, Transform transform)
         {
             if (root == null || transform == null || !transform.IsChildOf(root)) return null;

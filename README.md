@@ -21,17 +21,17 @@ of guessing. This shortcut only configures the wizard; it does not change the sc
 
 The body blendshape step uses a search field with wrapping name suggestions. With no query, it shows the three
 most recently refitted blendshapes that exist on the selected body. Successful transfers from both the wizard
-and MCB update this local history; failed operations do not. Back and Settings are in the top banner.
+and the other Orbiters tools (MCB, My Avatar) update this local history; failed operations do not. Back and Settings are in the top banner.
 
 The main page lists active ReFit commissions below refitted assets, with creator, status and the website's
-progress bar. Sign in through MCB to load your requests. Clicking a row opens its website page. The first page
+progress bar. Sign in to your Orbiters account (in My Avatar or MCB) to load your requests. Clicking a row opens its website page. The first page
 refreshes every 30 seconds while this screen is visible; use **Load more** for older active requests and the
 refresh icon to return to the latest first page. Switching account or API environment clears the cached list.
 
 After processing, ReFit lists Orbiters creators who accept manual ReFit commissions, with their price range beside
 their name. Click an artist card to open a short-lived commission draft on Orbiters with that artist selected.
-When MCB authentication is
-available, the one-time handoff opens the matching Orbiters account; standalone users can sign in on the website.
+When you are signed in to your
+Orbiters account, the one-time handoff opens it; otherwise sign in on the website.
 Clicking a creator captures and uploads four private views (front, three-quarter, side and elevated) of the avatar
 wearing the refitted accessory. The primary refit shape is enabled on the captured copy; other shapes and the
 scene pose stay as currently displayed. Capture uses an offscreen preview and does not alter the live avatar.
@@ -44,9 +44,8 @@ Run `Orbiters.ReFit.Editor.Tests.ReFitCommissionCaptureTests.RunOrThrow()` throu
 `Tools > Orbiters > ReFit > Run Commission Capture Tests` for the isolated capture regression checks.
 These checks require an editor with graphics support, not a `-nographics` runner.
 
-The **Settings** page includes the same **Dev Environment** switch as MCB. Disabled uses
-`https://api.orbiters.cc/refit`; enabled uses the local API at `http://localhost:4100/refit`. When MCB is installed,
-both tools share the same persisted environment selection.
+The **Settings** page includes the **Dev Environment** switch shared by the Orbiters tools (Orbiters settings). Disabled
+uses `https://api.orbiters.cc/refit`; enabled uses the local API at `http://localhost:4100/refit`.
 
 ## What it produces
 
@@ -133,10 +132,13 @@ ReFit's preflight does not silently repair the live armature. The explicit
 `ReFitAssetPipeline.RepairSceneAssetArmature(request, report)` operation remains available to callers that own
 that repair and its undo workflow.
 
-MCB integration: when both packages are installed, MCB shows a **ReFit** frame in the avatar options (chip
-selection of the asset meshes + integrated progress button). It uses the default base body as model A, the applied
-custom version body as model B and the version's exposed blendshapes, tracks original meshes on the MyCustomBase
-component (restored on reset, surviving Unity restarts), and commits the generated files through Unit Git.
+Orbiters tools: ReFit registers itself with Orbiters Toolkit as its refit engine (`RefitEngine`), so MCB and My Avatar
+refit through Toolkit without referencing this package. MCB's **ReFit** frame in the avatar options fits the ticked
+meshes from the default base body (model A) to the applied custom version body (model B) with the version's
+blendshapes; My Avatar offers the same for each accessory on a custom base. Toolkit records each refit on its renderer
+(restored on reset, kept per custom base version by MCB) and, at build, makes every animation of a body blendshape
+also drive the shapes transferred from it. Wizard results are recorded the same way (**Settings** › **Link transferred
+blendshapes to the body**, on by default). Their fit tightness (`RefitPreferences`) is shared by MCB and My Avatar.
 
 The engine itself (`Orbiters.ReFit.ReFitEngine`, runtime assembly, no UnityEditor dependency) can be used directly
 when you want the computed mesh without asset saving or scene application.
@@ -204,4 +206,4 @@ projection.
 - Orbiters Toolkit 0.3.x (shared bone name matching)
 - No dependency on the VRChat SDK (humanoid `Animator` rigs recommended for best results)
 - XRay Gizmos is optional. Its adapter adds projection/island toggles when installed; the engine and wizard
-  compile without it. MCB authentication/environment integration is optional too.
+  compile without it. The Orbiters account and environment come from Orbiters Toolkit.

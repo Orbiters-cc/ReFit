@@ -19,6 +19,29 @@ namespace Orbiters.ReFit.Editor
         private int commissionGeneration;
         private double commissionLastFetch = double.NegativeInfinity;
 
+        /// <summary>Opens the result page of a refit made by another Orbiters tool, where the user can commission a creator.</summary>
+        public static void OpenForCommission(ReFitRequest request, ReFitResult result)
+        {
+            if (request == null || result == null) return;
+            var window = GetWindow<ReFitWizard>();
+            if (window.isExecuting) return;
+            window.titleContent = new GUIContent("ReFit");
+            window.minSize = new Vector2(MinimumWidth, MinimumHeight);
+            window.Restart();
+            window.asset = request.assetRenderer;
+            window.myAvatar = window.targetAvatar = request.targetAvatar;
+            window.sourceAvatar = request.sourceAvatar;
+            window.mode = request.mode;
+            window.settings = request.settings?.Clone() ?? new ReFitSettings();
+            if (request.targetBlendshapes != null) window.blendshapes.AddRange(request.targetBlendshapes);
+            window.lastRequest = request;
+            window.lastResult = result;
+            window.history.Push(Step.AssetLocation);
+            window.current = Step.Result;
+            window.Show();
+            window.Render();
+        }
+
         private void BuildActiveCommissions()
         {
             var section = new VisualElement { name = "refit-commission-section" };

@@ -4,7 +4,9 @@
   "references": [
     "orbiters.refit",
     "orbiters.refit.Editor",
-    "Orbiters.Toolkit"
+    "Orbiters.Toolkit",
+    "Orbiters.Toolkit.VRChat",
+    "Orbiters.Toolkit.Editor"
   ],
   "includePlatforms": [
     "Editor"
@@ -17,7 +19,13 @@
   "defineConstraints": [
     "UNITY_INCLUDE_TESTS"
   ],
-  "versionDefines": [],
+  "versionDefines": [
+    {
+      "name": "com.vrchat.avatars",
+      "expression": "3.7.0",
+      "define": "REFIT_VRCHAT_AVATARS"
+    }
+  ],
   "noEngineReferences": false,
   "optionalUnityReferences": [
     "TestAssemblies"

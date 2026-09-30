@@ -56,20 +56,20 @@ namespace Orbiters.ReFit.Editor
         [Serializable] internal sealed class CommissionPage { public Commission[] requests; public string nextCursor; }
 
         // This key is private process state only. Never persist or log the authentication token.
-        internal static string AccountScope => ApiUrl + "|" + MCBIntegrationService.TryGetWizardToken();
-        internal static bool HasAccount => !string.IsNullOrEmpty(MCBIntegrationService.TryGetWizardToken());
+        internal static string AccountScope => ApiUrl + "|" + Token;
+        internal static bool HasAccount => !string.IsNullOrEmpty(Token);
+
+        // The Orbiters account shared by the Orbiters tools (My Avatar, MCB).
+        private static string Token => AuthenticationService.GetAuth()?.token;
 
         internal static string CommissionUrl(string id) =>
-            (MCBIntegrationService.TryInvokeStaticString("MCBUtils", "getWebsiteUrl") ??
-                (IsDevEnvironment ? "http://localhost:3200" : "https://orbiters.cc")).TrimEnd('/') +
-            "/commissions/refit/" + Uri.EscapeDataString(id);
+            OrbitersEnvironment.WebsiteUrl.TrimEnd('/') + "/commissions/refit/" + Uri.EscapeDataString(id);
 
         internal static void FetchActiveCommissions(string cursor, Action<CommissionPage, string> completed)
         {
-            string token = MCBIntegrationService.TryGetWizardToken();
-            if (string.IsNullOrEmpty(token)) { completed(null, "Sign in through MCB to see your commissions."); return; }
-            string endpoint = MCBIntegrationService.TryInvokeStaticString("MCBUtils", "getApiUrl", "commissions") ??
-                new Uri(new Uri(ApiUrl + "/"), "../commissions").AbsoluteUri;
+            string token = Token;
+            if (string.IsNullOrEmpty(token)) { completed(null, "Sign in to your Orbiters account (in My Avatar or MCB) to see your commissions."); return; }
+            string endpoint = OrbitersEnvironment.ApiUrl("commissions");
             var request = UnityWebRequest.Get(endpoint.TrimEnd('/') + "/mine?scope=active" +
                 (string.IsNullOrEmpty(cursor) ? "" : "&cursor=" + Uri.EscapeDataString(cursor)));
             request.SetRequestHeader("Authorization", "Bearer " + token);
@@ -110,7 +110,6 @@ namespace Orbiters.ReFit.Editor
             public string error;
         }
 
-        private const string DevEnvironmentPrefKey = "ReFit_DevEnvironment";
         internal const string ProductionApiUrl = "https://api.orbiters.cc/refit";
         internal const string DevelopmentApiUrl = "http://localhost:4100/refit";
         private static readonly Dictionary<string, Texture2D> TextureCache = new Dictionary<string, Texture2D>();
@@ -118,18 +117,11 @@ namespace Orbiters.ReFit.Editor
         private static readonly Dictionary<string, List<Action<Texture2D>>> TextureWaiters =
             new Dictionary<string, List<Action<Texture2D>>>();
 
+        // The server selection shared by the Orbiters tools (Orbiters settings).
         internal static bool IsDevEnvironment
         {
-            get
-            {
-                bool? mcbValue = MCBIntegrationService.TryGetStaticBool("MCBUtils", "isDevEnvironment");
-                return mcbValue ?? EditorPrefs.GetBool(DevEnvironmentPrefKey, false);
-            }
-            set
-            {
-                EditorPrefs.SetBool(DevEnvironmentPrefKey, value);
-                MCBIntegrationService.TrySetStaticBool("MCBUtils", "isDevEnvironment", value);
-            }
+            get => OrbitersEnvironment.IsDevelopment;
+            set => OrbitersEnvironment.IsDevelopment = value;
         }
 
         internal static void FetchCreators(Action<ReFitCommissionCreator[], string> completed)
@@ -174,7 +166,7 @@ namespace Orbiters.ReFit.Editor
                 foreach (var photo in photos) form.Add(new MultipartFormFileSection("previews", photo.bytes, photo.name, "image/jpeg"));
             var request = UnityWebRequest.Post(ApiUrl + "/handoffs", form);
             request.timeout = 90;
-            string token = MCBIntegrationService.TryGetWizardToken();
+            string token = Token;
             if (!string.IsNullOrEmpty(token)) request.SetRequestHeader("Authorization", "Bearer " + token);
 
             Send(request, response =>
@@ -312,11 +304,10 @@ namespace Orbiters.ReFit.Editor
         internal static string NormalizeMediaUrl(string value)
         {
             if (string.IsNullOrWhiteSpace(value)) return null;
-            return MCBIntegrationService.TryInvokeStaticString("MCBUtils", "ResolveImageUrl", value)
-                ?? NormalizeMediaUrl(value, ApiUrl);
+            return NormalizeMediaUrl(value, ApiUrl);
         }
 
-        // Standalone ReFit has no MCB dependency. Keep image request policy in this shared client.
+        // Keep image request policy in this client: ReFit depends on no other tool.
         internal static string NormalizeMediaUrl(string value, string apiUrl)
         {
             if (string.IsNullOrWhiteSpace(value)) return null;
@@ -352,8 +343,7 @@ namespace Orbiters.ReFit.Editor
             return isDevEnvironment ? DevelopmentApiUrl : ProductionApiUrl;
         }
 
-        private static string ApiUrl =>
-            MCBIntegrationService.TryInvokeStaticString("MCBUtils", "getApiUrl", "refit") ?? FallbackApiUrl(IsDevEnvironment);
+        private static string ApiUrl => OrbitersEnvironment.ApiUrl("refit");
 
         private static void Send(UnityWebRequest request, Action<UnityWebRequest> completed)
         {

@@ -4,7 +4,9 @@
   "references": [
     "orbiters.refit",
     "Orbiters.Toolkit",
-    "Orbiters.Toolkit.VRChat"
+    "Orbiters.Toolkit.VRChat",
+    "Orbiters.Toolkit.Editor",
+    "Orbiters.Toolkit.Editor.VRChat"
   ],
   "includePlatforms": [
     "Editor"

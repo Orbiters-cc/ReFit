@@ -16,6 +16,62 @@ namespace Orbiters.ReFit.Editor.Tests
         public static void RunGlowsticks() => Run("Glowsticks Combined", "glowsticks");
         public static void RunHoodie() => Run("Hoodie", "hoodie");
 
+#if REFIT_VRCHAT_AVATARS
+        public static void RunCoverage(string rendererName = "Hoodie", bool allShapes = false)
+        {
+            var live = Resources.FindObjectsOfTypeAll<SkinnedMeshRenderer>().First(r =>
+                !EditorUtility.IsPersistent(r) && r.name == rendererName && r.transform.root.name == "MasculineCanine");
+            var request = Request(live);
+            var root = OriginalInput(live, request, out var input); request.assetRenderer = input;
+            var owned = new List<Mesh>(); var lines = new List<string>();
+            if (allShapes) request.targetBlendshapes = live.GetComponent<Orbiters.Toolkit.VRChat.OrbitersRefit>().shapes.Select(s => s.source).ToList();
+            Directory.CreateDirectory(Output);
+            try
+            {
+                if (!input.transform.IsChildOf(request.targetAvatar.transform)) throw new InvalidOperationException("Lost target hierarchy.");
+                ReFitSettingsPresets.ApplyTightness(request.settings, Orbiters.Toolkit.Editor.Refit.RefitPreferences.Tightness);
+                var weights = new Dictionary<string, float> { { "Hood up", 100 }, { "refit", 100 } };
+                var body = Bake(request.targetBodyRenderer, request.targetBodyRenderer.sharedMesh, new Dictionary<string, float>()); owned.Add(body);
+                var original = Bake(input, input.sharedMesh, weights); owned.Add(original);
+                var previous = Bake(live, live.sharedMesh, weights); owned.Add(previous);
+                Render("coverage-original", body, live.GetComponentInParent<Orbiters.Toolkit.VRChat.OrbitersAttachment>().body.sharedMaterials, original, live.sharedMaterials);
+                Render("coverage-previous", body, request.targetBodyRenderer.sharedMaterials, previous, live.sharedMaterials);
+                foreach (bool enabled in new[] { false, true })
+                {
+                    request.settings.coverDifferentBaseBody = enabled;
+                    var computation = new ReFitEngine().Run(request);
+                    if (!computation.success) throw new InvalidOperationException(string.Join("\n", computation.report.messages.Select(m => m.text)));
+                    owned.Add(computation.mesh);
+                    string label = enabled ? "coverage-new" : "coverage-normal";
+                    foreach (float value in new[] { 0f, 50f, 100f })
+                    {
+                        weights["orbit muscles"] = value;
+                        var cloth = Bake(input, computation.mesh, weights); owned.Add(cloth);
+                        var skin = Bake(request.targetBodyRenderer, request.targetBodyRenderer.sharedMesh, weights); owned.Add(skin);
+                        Render(label + "-" + value, skin, request.targetBodyRenderer.sharedMaterials, cloth, input.sharedMaterials);
+                        lines.Add(Quality(label + "-" + value, original, cloth));
+                    }
+                    foreach (var m in computation.report.messages.Where(m => m.code.Contains("coverage"))) lines.Add(m.text);
+                    var currentWeights = Enumerable.Range(0, live.sharedMesh.blendShapeCount)
+                        .ToDictionary(i => live.sharedMesh.GetBlendShapeName(i), live.GetBlendShapeWeight);
+                    var currentCloth = Bake(input, computation.mesh, currentWeights); owned.Add(currentCloth);
+                    var currentBody = Bake(request.targetBodyRenderer, request.targetBodyRenderer.sharedMesh, currentWeights); owned.Add(currentBody);
+                    Render(label + "-current", currentBody, request.targetBodyRenderer.sharedMaterials, currentCloth, input.sharedMaterials);
+                    lines.Add(Quality(label + "-current", original, currentCloth));
+                    lines.Add(label + "-current: " + ReFitShortsValidation.Measure(body, original, currentBody, currentCloth, true));
+                    UnityEditorInternal.InternalEditorUtility.SaveToSerializedFileAndForget(new Object[] { computation.mesh }, Output + "/" + label + ".asset", true);
+                }
+                File.WriteAllLines(Output + "/coverage.txt", lines);
+            }
+            finally
+            {
+                foreach (var mesh in owned) if (mesh != null) Object.DestroyImmediate(mesh);
+                Object.DestroyImmediate(root);
+                if (request.sourceAvatar != null && !EditorUtility.IsPersistent(request.sourceAvatar)) Object.DestroyImmediate(request.sourceAvatar);
+            }
+        }
+#endif
+
         public static void BenchmarkGlowsticks()
         {
             var live = Resources.FindObjectsOfTypeAll<SkinnedMeshRenderer>().First(r =>
@@ -168,6 +224,7 @@ namespace Orbiters.ReFit.Editor.Tests
             copiedBody.sharedMesh = targetBody.sharedMesh; copiedBody.sharedMaterials = targetBody.sharedMaterials;
             copiedBody.bones = targetBody.bones.Select(b => b == null ? null : map[b]).ToArray();
             copiedBody.rootBone = targetBody.rootBone != null ? map[targetBody.rootBone] : null;
+            for (int s = 0; s < targetBody.sharedMesh.blendShapeCount; s++) copiedBody.SetBlendShapeWeight(s, targetBody.GetBlendShapeWeight(s));
             var animator = request.targetAvatar.GetComponent<Animator>();
             if (animator != null)
             {
@@ -190,6 +247,11 @@ namespace Orbiters.ReFit.Editor.Tests
                 input.sharedMesh = original.mesh;
                 input.bones = original.bones.Select(b => b == null ? null : map[b]).ToArray();
                 input.rootBone = original.rootBone != null ? map[original.rootBone] : null;
+                for (int s = 0; s < original.blendShapeNames.Count; s++)
+                {
+                    int index = input.sharedMesh.GetBlendShapeIndex(original.blendShapeNames[s]);
+                    if (index >= 0) input.SetBlendShapeWeight(index, original.blendShapeWeights[s]);
+                }
                 foreach (var state in original.transforms)
                 {
                     if (state.transform == null || !map.TryGetValue(state.transform, out var copy)) continue;
@@ -401,6 +463,17 @@ namespace Orbiters.ReFit.Editor.Tests
                 if (Vector3.Dot(Vector3.Cross(a[y] - a[x], a[z] - a[x]), n) < 0) reversed++;
             }
             ratios.Sort();
+            if (label == "coverage-new-0")
+            {
+                var details = new List<string>();
+                for (int t = 0; t < triangles.Length; t += 3)
+                {
+                    int x = triangles[t], y = triangles[t + 1], z = triangles[t + 2];
+                    if (Vector3.Dot(Vector3.Cross(a[y] - a[x], a[z] - a[x]), Vector3.Cross(b[y] - b[x], b[z] - b[x])) < 0)
+                        details.Add($"triangle {t / 3}: center={(a[x] + a[y] + a[z]) / 3:F4}, correction={(b[x]-a[x]):F4}");
+                }
+                File.WriteAllLines(Output + "/coverage-reversals.txt", details);
+            }
             string summary = $"{label}: edgeP95={ratios[(int)(ratios.Count * .95)]:F3}, max={ratios.Last():F3}, trianglesOver2={over}, orientationReversals={reversed}, degenerate={degenerate}";
             // This private fixture grows substantially around the lower legs. Report every >2x edge,
             // but reject >3x spikes, collapsed faces and reversals throughout the slider range.
@@ -418,14 +491,14 @@ namespace Orbiters.ReFit.Editor.Tests
                 preview.camera.backgroundColor = new Color(.18f, .19f, .21f, 1);
                 preview.ambientColor = new Color(.65f, .65f, .65f);
                 preview.lights[0].intensity = 1.2f; preview.lights[1].intensity = .7f;
-                var centers = new[] { body.bounds.center, body.bounds.center, new Vector3(-.38f, 1.38f, 0), new Vector3(-.12f, .3f, 0), new Vector3(-.33f, 1.42f, 0) };
-                var directions = new[] { Vector3.forward, new Vector3(-1, .15f, 1).normalized, new Vector3(-1, .2f, 1).normalized, new Vector3(-1, .1f, -1).normalized, new Vector3(-1, .1f, -1).normalized };
-                var names = new[] { "front", "three-quarter", "arm", "leg", "rear-shoulder" };
+                var centers = new[] { body.bounds.center, body.bounds.center, new Vector3(-.38f, 1.38f, 0), new Vector3(-.12f, .3f, 0), new Vector3(-.33f, 1.42f, 0), new Vector3(0, 1.3f, 0), new Vector3(.33f, 1.42f, 0) };
+                var directions = new[] { Vector3.forward, new Vector3(-1, .15f, 1).normalized, new Vector3(-1, .2f, 1).normalized, new Vector3(-1, .1f, -1).normalized, new Vector3(-1, .1f, -1).normalized, Vector3.back, new Vector3(1, .1f, -1).normalized };
+                var names = new[] { "front", "three-quarter", "arm", "leg", "rear-shoulder", "back", "right-shoulder" };
                 for (int view = 0; view < names.Length; view++)
                 {
                     preview.camera.transform.position = centers[view] + directions[view] * 4;
                     preview.camera.transform.LookAt(centers[view], Vector3.up);
-                    preview.camera.orthographicSize = view < 2 ? body.bounds.extents.y * 1.08f : .29f;
+                    preview.camera.orthographicSize = view < 2 ? body.bounds.extents.y * 1.08f : view == 5 ? .55f : .29f;
                     preview.camera.nearClipPlane = .01f; preview.camera.farClipPlane = 20;
                     preview.lights[0].transform.rotation = preview.camera.transform.rotation * Quaternion.Euler(25, -30, 0);
                     preview.lights[1].transform.rotation = preview.camera.transform.rotation * Quaternion.Euler(0, 140, 0);

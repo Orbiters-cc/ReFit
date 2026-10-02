@@ -1050,6 +1050,8 @@ namespace Orbiters.ReFit
                 AddClearanceStats(state, clearanceStats, "primary refit");
                 state.tubes.Apply(asset, targetBasis, bvhTarget, null, null, primaryGroupDeltas, settings, state.Report, "primary refit");
 
+                ReFitSurfaceCoverage.RepairPrimary(asset, targetBasis, primaryGroupDeltas,
+                    state.assetGroupRegions, state.tubes.groups, settings, state.Report, state.targetTriRegions);
                 state.primaryLocalDeltas = ToLocalDeltas(state, primaryGroupDeltas, true);
                 if (settings.recalculateNormalDeltas)
                     state.primaryNormalDeltas = NormalDeltas(asset, state.primaryLocalDeltas, null);
@@ -1073,7 +1075,7 @@ namespace Orbiters.ReFit
 
             var coverage = state.shapes.Count > 0
                 ? ReFitSurfaceCoverage.Build(asset, targetBasis, primaryGroupDeltas,
-                    state.assetGroupRegions, state.tubes.groups, settings) : null;
+                    state.assetGroupRegions, state.tubes.groups, settings, state.targetTriRegions) : null;
 
             // ---- Blendshape transfer fields ----------------------------------------------
             if (state.shapes.Count > 0)

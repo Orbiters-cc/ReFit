@@ -58,6 +58,9 @@ namespace Orbiters.ReFit
         public bool keepRigidPiecesOnBody;
         /// <summary>Keep lower-body cloth over dense body surfaces between garment vertices, including inward-facing hems.</summary>
         public bool preserveLowerBodyCoverage = true;
+
+        /// <summary>Opt-in residual body coverage for clothing detected on a different avatar base.</summary>
+        public bool coverDifferentBaseBody;
         /// <summary>Reject body surface candidates whose normal disagrees with the asset vertex normal by more than <see cref="maxNormalAngle"/> degrees. Detected closed tubes and lower-body cloth use their own correspondence policy.</summary>
         public bool filterByNormal = true;
         /// <summary>Maximum angle (degrees) between asset vertex normal and body face normal for a binding to be accepted.</summary>

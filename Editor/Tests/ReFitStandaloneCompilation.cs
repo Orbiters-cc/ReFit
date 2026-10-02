@@ -27,7 +27,8 @@ namespace Orbiters.ReFit.Editor.Tests
             };
             builder.excludeReferences = builder.defaultReferences.Where(p =>
                 Path.GetFileNameWithoutExtension(p).StartsWith("orbiters.", StringComparison.OrdinalIgnoreCase) &&
-                !string.Equals(Path.GetFileNameWithoutExtension(p), "Orbiters.Toolkit", StringComparison.OrdinalIgnoreCase) ||
+                !string.Equals(Path.GetFileNameWithoutExtension(p), "Orbiters.Toolkit", StringComparison.OrdinalIgnoreCase) &&
+                !string.Equals(Path.GetFileNameWithoutExtension(p), "Orbiters.Toolkit.Editor", StringComparison.OrdinalIgnoreCase) ||
                 Path.GetFileNameWithoutExtension(p).StartsWith("Assembly-CSharp", StringComparison.OrdinalIgnoreCase)).ToArray();
             File.WriteAllLines(Path.Combine(output, "excluded-references.txt"), builder.excludeReferences);
             File.WriteAllText(Path.Combine(output, "result.txt"), "RUNNING");

@@ -35,6 +35,7 @@ namespace Orbiters.ReFit.Editor
         {
             var settings = new ReFitSettings { replaceArmature = false, transferWeights = false, prefixTransferredShapes = false, savePrefab = false };
             ReFitSettingsPresets.ApplyTightness(settings, job.Tightness);
+            settings.coverDifferentBaseBody = job.Mode == RefitMode.Fit && job.CoverDifferentBaseBody;
             bool fit = job.Mode == RefitMode.Fit;
             return new ReFitRequest
             {

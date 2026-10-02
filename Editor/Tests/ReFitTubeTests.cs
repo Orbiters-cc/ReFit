@@ -30,15 +30,30 @@ namespace Orbiters.ReFit.Editor.Tests
                 for (int i = 0; i < movement.Length; i++) { movement[i].y = 0; movement[i] = movement[i].normalized * .025f; }
                 body.sharedMesh.AddBlendShapeFrame("expand", 100, movement, null, null);
                 body.sharedMesh.AddBlendShapeFrame("expand copy", 100, movement, null, null);
-                computation = new ReFitEngine().Run(new ReFitRequest
+                var request = new ReFitRequest
                 {
                     mode = ReFitMode.MeshAndBlendshape, assetRenderer = renderer,
                     sourceAvatar = body.gameObject, sourceBodyRenderer = body,
                     targetAvatar = body.gameObject, targetBodyRenderer = body,
                     targetBlendshapes = new List<string> { "expand", "expand copy" },
                     settings = new ReFitSettings { replaceArmature = false, transferWeights = false, prefixTransferredShapes = false }
-                });
+                };
+                computation = new ReFitEngine().Run(request);
                 Require(computation.success, "Full tube engine fixture failed: " + string.Join("\n", computation.report.messages.ConvertAll(m => m.code + ": " + m.text)));
+                request.settings.coverDifferentBaseBody = true;
+                var covered = new ReFitEngine().Run(request);
+                try
+                {
+                    Require(covered.success, "Tube control with coverage enabled failed.");
+                    var a = new Vector3[computation.mesh.vertexCount]; var b = new Vector3[a.Length];
+                    for (int s = 0; s < computation.mesh.blendShapeCount; s++)
+                    {
+                        computation.mesh.GetBlendShapeFrameVertices(s, 0, a, null, null);
+                        covered.mesh.GetBlendShapeFrameVertices(s, 0, b, null, null);
+                        for (int i = 0; i < a.Length; i++) Require(a[i] == b[i], "Clothing coverage changed an excluded closed tube.");
+                    }
+                }
+                finally { if (covered.mesh != null) Object.DestroyImmediate(covered.mesh); }
                 var mesh = computation.mesh; var original = renderer.sharedMesh.vertices;
                 var primary = new Vector3[mesh.vertexCount]; var delta = new Vector3[mesh.vertexCount]; var second = new Vector3[mesh.vertexCount];
                 mesh.GetBlendShapeFrameVertices(mesh.GetBlendShapeIndex("refit"), 0, primary, null, null);

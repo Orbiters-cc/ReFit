@@ -11,7 +11,48 @@ namespace Orbiters.ReFit.Editor.Tests
         public static void RunOrThrow()
         {
             foreach (bool rotated in new[] { false, true }) CheckDensePeak(rotated);
+            CheckDifferentBasePeak();
             Debug.Log("[ReFit Coverage Tests] PASS: dense body peaks between cloth vertices, combined shapes, zero shape, rotated/scaled surfaces.");
+        }
+
+        private static void CheckDifferentBasePeak()
+        {
+            var root = new GameObject("__CrossBaseCoverage") { hideFlags = HideFlags.HideAndDontSave };
+            var meshes = new List<Mesh>();
+            try
+            {
+                var bone = new GameObject("LeftUpperArm").transform; bone.SetParent(root.transform, false);
+                var body = Grid(root.transform, bone, 33, 0, meshes);
+                var cloth = Grid(root.transform, bone, 7, .005f, meshes);
+                var vertices = body.sharedMesh.vertices;
+                for (int i = 0; i < vertices.Length; i++)
+                {
+                    var p = vertices[i];
+                    vertices[i].z += .025f * Mathf.Exp(-((p.x-.025f)*(p.x-.025f)+(p.y-.425f)*(p.y-.425f))/.00018f);
+                }
+                body.sharedMesh.vertices = vertices; body.sharedMesh.RecalculateNormals(); body.sharedMesh.RecalculateBounds();
+                var request = new ReFitRequest { mode = ReFitMode.MeshToMesh, sourceAvatar = root, sourceBodyRenderer = body,
+                    targetAvatar = root, targetBodyRenderer = body, assetRenderer = cloth,
+                    settings = new ReFitSettings { replaceArmature = false, transferWeights = false, savePrefab = false, coverDifferentBaseBody = true } };
+                var result = new ReFitEngine().Run(request);
+                try
+                {
+                    if (!result.success) throw new Exception("Different-base fit failed.");
+                    var delta = new Vector3[cloth.sharedMesh.vertexCount];
+                    result.mesh.GetBlendShapeFrameVertices(result.mesh.GetBlendShapeIndex("refit"), 0, delta, null, null);
+                    var surface = new MeshSnapshot { worldVertices = cloth.sharedMesh.vertices.Select((p,i)=>p+delta[i]).ToArray(), triangles = cloth.sharedMesh.triangles };
+                    var index = SurfaceBvh.Build(surface);
+                    for (int i = 0; i < vertices.Length; i++)
+                    {
+                        var hit = index.ClosestPoint(vertices[i], .1f);
+                        float gap = Vector3.Dot(hit.position-vertices[i], surface.FaceNormal(hit.triangle));
+                        if (gap < -.0001f) throw new Exception($"Initial cross-base peak remains inside cloth: {gap*1000:F3}mm at {i}.");
+                    }
+                    if (!cloth.sharedMesh.boneWeights.SequenceEqual(result.mesh.boneWeights)) throw new Exception("Coverage changed skinning.");
+                }
+                finally { if (result.mesh != null) Object.DestroyImmediate(result.mesh); }
+            }
+            finally { Object.DestroyImmediate(root); foreach (var mesh in meshes) Object.DestroyImmediate(mesh); }
         }
 
         private static void CheckDensePeak(bool rotated)

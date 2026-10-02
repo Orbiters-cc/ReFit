@@ -612,6 +612,8 @@ namespace Orbiters.ReFit.Editor
                     localScale = transformState.localScale
                 });
             }
+            // Same-named objects (two accessories called "Jacket") stay apart once the record keeps only paths.
+            Orbiters.Toolkit.Editor.VRChat.Refit.RefitRecords.CaptureSiblingOrdinals(avatarRoot, state);
             return state;
         }
 #endif

@@ -6,10 +6,14 @@ using UnityEngine.Rendering;
 
 namespace Orbiters.ReFit.Editor
 {
-    /// <summary>Editor-only preview and apply service for optional post-refit gravity blendshapes.</summary>
+    /// <summary>
+    /// Editor-only preview and apply service for optional post-refit gravity blendshapes. Experimental: off unless the user
+    /// switches it on in the Orbiters settings.
+    /// </summary>
     [InitializeOnLoad]
     internal static class ReFitGravityPreviewService
     {
+        public const string Feature = "refit.gravity";
         public const float MaximumGravityWeight = 100f;
         private const int MaxPreviewEdges = 12000;
         private static ReFitGravityPreview activePreview;
@@ -20,11 +24,20 @@ namespace Orbiters.ReFit.Editor
         static ReFitGravityPreviewService()
         {
             SceneView.duringSceneGui += OnSceneGui;
+            Orbiters.Toolkit.Editor.OrbitersFeatures.Register(new Orbiters.Toolkit.Editor.OrbitersFeature
+            {
+                Key = Feature, Product = "ReFit", Label = "Gravity blendshapes",
+                Description = "After a refit, offer blendshapes that let body clothing hang down with gravity, with a preview in the Scene view.",
+                Stage = Orbiters.Toolkit.Editor.FeatureStage.Experimental, Default = false,
+            });
         }
+
+        public static bool Enabled => Orbiters.Toolkit.Editor.OrbitersFeatures.IsEnabled(Feature);
 
         public static bool TryCreatePreview(ReFitResult result, ReFitRequest request, out ReFitGravityPreview preview)
         {
             preview = null;
+            if (!Enabled) return false;
             if (result == null || !result.success || result.sceneRenderer == null || request == null)
                 return false;
 
@@ -133,6 +146,8 @@ namespace Orbiters.ReFit.Editor
 
         private static void OnSceneGui(SceneView view)
         {
+            if (Event.current == null || Event.current.type != EventType.Repaint)
+                return;
             if (activePreview == null || activeRenderer == null || previewEdges == null)
                 return;
             if (activeRenderer.gameObject == null || !activeRenderer.gameObject.scene.IsValid())
@@ -148,22 +163,23 @@ namespace Orbiters.ReFit.Editor
 
             float weight = Mathf.Clamp01(activeWeight / 100f);
             var previousZTest = Handles.zTest;
-            var previousColor = Handles.color;
-            Handles.zTest = CompareFunction.Always;
-            Handles.color = new Color(0.08f, 0.95f, 1f, 0.62f);
-
-            for (int i = 0; i + 1 < previewEdges.Length; i += 2)
+            try
             {
-                int a = previewEdges[i];
-                int b = previewEdges[i + 1];
-                if (a < 0 || b < 0 || a >= vertices.Length || b >= vertices.Length)
-                    continue;
-                Handles.DrawLine(PreviewWorldPoint(a, vertices, skinMatrices, weight),
-                    PreviewWorldPoint(b, vertices, skinMatrices, weight));
+                using (new Handles.DrawingScope(new Color(0.08f, 0.95f, 1f, 0.62f), Matrix4x4.identity))
+                {
+                    Handles.zTest = CompareFunction.Always;
+                    for (int i = 0; i + 1 < previewEdges.Length; i += 2)
+                    {
+                        int a = previewEdges[i];
+                        int b = previewEdges[i + 1];
+                        if (a < 0 || b < 0 || a >= vertices.Length || b >= vertices.Length)
+                            continue;
+                        Handles.DrawLine(PreviewWorldPoint(a, vertices, skinMatrices, weight),
+                            PreviewWorldPoint(b, vertices, skinMatrices, weight));
+                    }
+                }
             }
-
-            Handles.color = previousColor;
-            Handles.zTest = previousZTest;
+            finally { Handles.zTest = previousZTest; }
         }
 
         private static Vector3 PreviewWorldPoint(int vertex, Vector3[] vertices, Matrix4x4[] skinMatrices, float weight)

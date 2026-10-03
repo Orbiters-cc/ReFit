@@ -1,5 +1,11 @@
 # ReFit
 
+## 0.5.3 — 2026-10-03
+
+- Improve residual body coverage and smoothing for supported cross-base garments, including separated-leg fitting for lower-body clothing.
+- Parallelize independent fitting work and cache reusable preparation without changing the source avatar.
+- Preserve the complete fitted pose in creator commission captures.
+
 Re-fit clothing and accessories made for a 3D model **A** so they fit a 3D model **B** — including bases that are
 derivatives of A with body modifications, and body blendshapes of B. The deformation is delivered as a
 non-destructive **"refit" blendshape** (set to 100 by default) on a duplicated mesh asset; the original asset files

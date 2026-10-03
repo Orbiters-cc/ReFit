@@ -106,6 +106,8 @@ namespace Orbiters.ReFit
                 if (!stage.assetOnSourceAvatar && stage.assetRenderer != null &&
                     BakeCurrentSkinPoseAsDefault(stage.assetRenderer, report))
                     stage.ownedAssetMesh = stage.assetRenderer.sharedMesh;
+                if (request.settings.coverDifferentBaseBody && !request.settings.replaceArmature && request.mode != ReFitMode.Blendshape)
+                    SeparateLegsForCoverage(stage, report);
                 return stage;
             }
             catch (Exception e)
@@ -114,6 +116,55 @@ namespace Orbiters.ReFit
                 stage.Dispose();
                 return null;
             }
+        }
+
+        private static void SeparateLegsForCoverage(NormalizedStage stage, ReFitReport report)
+        {
+            // Only garments actually skinned to both thighs need a temporary star pose. Bake the
+            // authored rest pose first; inverse skin matrices then return fitted deltas to that pose.
+            var assetBones = stage.assetRenderer.bones;
+            var assetMatching = HumanoidBoneMapper.MatchBonesByName(assetBones, stage.sourceRoot.transform);
+            var used = new HashSet<Transform>();
+            foreach (var weight in stage.assetRenderer.sharedMesh.boneWeights)
+            {
+                AddUsedBone(used, assetBones, weight.boneIndex0, weight.weight0);
+                AddUsedBone(used, assetBones, weight.boneIndex1, weight.weight1);
+                AddUsedBone(used, assetBones, weight.boneIndex2, weight.weight2);
+                AddUsedBone(used, assetBones, weight.boneIndex3, weight.weight3);
+            }
+            foreach (var kind in new[] { HumanBodyBones.LeftUpperLeg, HumanBodyBones.RightUpperLeg })
+            {
+                if (!stage.sourceHumanMap.TryGetValue(kind, out var source) || source == null ||
+                    !stage.targetHumanMap.TryGetValue(kind, out var target) || target == null) return;
+                bool matched = false;
+                foreach (var pair in assetMatching) if (used.Contains(pair.Key) && pair.Value == source) { matched = true; break; }
+                if (!matched) return;
+            }
+            var legs = new HashSet<Transform>();
+            foreach (var pair in new[] { stage.sourceHumanMap, stage.targetHumanMap })
+                foreach (var kind in new[] { HumanBodyBones.LeftUpperLeg, HumanBodyBones.RightUpperLeg })
+                    if (pair.TryGetValue(kind, out var leg) && leg != null) legs.Add(leg);
+            foreach (var renderer in stage.stagingRoot.GetComponentsInChildren<SkinnedMeshRenderer>(true))
+            {
+                var matching = HumanoidBoneMapper.MatchBonesByName(renderer.bones, stage.sourceRoot.transform);
+                foreach (var entry in matching)
+                    foreach (var kind in new[] { HumanBodyBones.LeftUpperLeg, HumanBodyBones.RightUpperLeg })
+                        if (entry.Key != null && stage.sourceHumanMap.TryGetValue(kind, out var source) && source == entry.Value)
+                            legs.Add(entry.Key);
+            }
+            var axis = stage.targetRoot.transform.forward;
+            foreach (var leg in legs)
+            {
+                float side = Vector3.Dot(leg.position - stage.targetRoot.transform.position, stage.targetRoot.transform.right) >= 0 ? 1 : -1;
+                leg.rotation = Quaternion.AngleAxis(side * 20f, axis) * leg.rotation;
+            }
+            stage.sourceSurface = null; stage.sourceSurfaceIndex = null;
+            report.Info("coverage-star-pose", "Separated both thighs by 20 degrees on temporary copies for cross-base coverage. The clothing keeps its authored pose and skin weights.");
+        }
+
+        private static void AddUsedBone(HashSet<Transform> used, Transform[] bones, int index, float weight)
+        {
+            if (weight > .001f && index >= 0 && index < bones.Length && bones[index] != null) used.Add(bones[index]);
         }
 
         // ------------------------------------------------------------------

@@ -80,7 +80,9 @@ namespace Orbiters.ReFit.Editor
                         if (filter != null && filter.sharedMesh != null) mesh = Object.Instantiate(filter.sharedMesh);
                     }
                     if (mesh == null) continue;
-                    var matrix = renderer.localToWorldMatrix;
+                    // BakeMesh already incorporates the fitted skeleton's scale. Applying the renderer's
+                    // scale again shrinks/enlarges clothing independently of the body.
+                    var matrix = CaptureMatrix(renderer);
                     parts.Add(new Part { mesh = mesh, matrix = matrix, materials = renderer.sharedMaterials });
                     foreach (var vertex in mesh.vertices)
                     {
@@ -144,5 +146,8 @@ namespace Orbiters.ReFit.Editor
                 foreach (var part in parts) Object.DestroyImmediate(part.mesh);
             }
         }
+
+        internal static Matrix4x4 CaptureMatrix(Renderer renderer) => renderer is SkinnedMeshRenderer skinned
+            ? Orbiters.Toolkit.Editor.SkinnedMeshBounds.BakedToWorld(skinned) : renderer.localToWorldMatrix;
     }
 }

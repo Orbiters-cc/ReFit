@@ -39,6 +39,23 @@ namespace Orbiters.ReFit.Editor.Tests
                 var renderer = accessory.AddComponent<SkinnedMeshRenderer>();
                 renderer.sharedMesh = mesh; renderer.sharedMaterial = material; renderer.bones = new[] { bone }; renderer.rootBone = bone;
                 renderer.SetBlendShapeWeight(0, 0);
+                // Fitted clothing under scaled, rotated ancestors: compare the production capture frame
+                // with independent skinning, not another BakeMesh invocation.
+                avatar.transform.SetPositionAndRotation(new Vector3(3, 1, -2), Quaternion.Euler(0, 25, 0));
+                avatar.transform.localScale = Vector3.one * 1.2f;
+                accessory.transform.localScale = Vector3.one * .7f;
+                bone.localPosition = new Vector3(.1f, .3f, 0);
+                bone.localRotation = Quaternion.Euler(12, 0, 35);
+                var baked = new Mesh();
+                try
+                {
+                    renderer.BakeMesh(baked);
+                    var expected = MeshSnapshot.Capture(renderer, false, null, null).worldVertices;
+                    var captureFrame = ReFitCommissionCapture.CaptureMatrix(renderer);
+                    Require(baked.vertices.Select((v, i) => Vector3.Distance(captureFrame.MultiplyPoint3x4(v), expected[i])).Max() < .00001f,
+                        "Capture must preserve fitted position, rotation and scale exactly once.");
+                }
+                finally { Object.DestroyImmediate(baked); }
                 var matrix = renderer.localToWorldMatrix;
                 var children = avatar.GetComponentsInChildren<Transform>().Length;
                 var photos = ReFitCommissionCapture.Capture(null, renderer, "refit");

@@ -172,6 +172,8 @@ namespace Orbiters.ReFit
         public SkinnedMeshRenderer sourceBodyRenderer;
         /// <summary>Optional override of the target avatar's main body renderer (auto-detected otherwise).</summary>
         public SkinnedMeshRenderer targetBodyRenderer;
+        /// <summary>Fitted inner garments to keep beneath this garment during different-base coverage repair.</summary>
+        public List<SkinnedMeshRenderer> coverageLayers = new List<SkinnedMeshRenderer>();
         /// <summary>Name of the blendshape on the target body to transfer (Blendshape / MeshAndBlendshape modes).</summary>
         public string targetBlendshape;
         /// <summary>
@@ -191,6 +193,7 @@ namespace Orbiters.ReFit
             var copy = (ReFitRequest)MemberwiseClone();
             copy.settings = settings?.Clone() ?? new ReFitSettings();
             copy.targetBlendshapes = targetBlendshapes != null ? new List<string>(targetBlendshapes) : null;
+            copy.coverageLayers = coverageLayers != null ? new List<SkinnedMeshRenderer>(coverageLayers) : new List<SkinnedMeshRenderer>();
             return copy;
         }
     }

@@ -6,6 +6,7 @@
     "orbiters.refit.Editor",
     "Orbiters.Toolkit",
     "Orbiters.Toolkit.VRChat",
+    "Orbiters.Toolkit.Editor.VRChat",
     "Orbiters.Toolkit.Editor"
   ],
   "includePlatforms": [

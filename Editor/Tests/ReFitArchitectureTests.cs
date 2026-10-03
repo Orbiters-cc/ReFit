@@ -16,6 +16,7 @@ namespace Orbiters.ReFit.Editor.Tests
             RunCase(failures, "Standalone multi-selection and batch geometry match individual transfers", RunMultiBlendshapeTestsOrThrow);
             RunCase(failures, "Compact picker and content-sized window layout", ReFitWindowLayoutTests.RunOrThrow);
             RunCase(failures, "BVH matches brute force with concurrent and reentrant queries", Bvh_MatchesBruteForce);
+            RunCase(failures, "Parallel shape frames preserve sequential geometry and frame order", ParallelShapes_MatchSequential);
             RunCase(failures, "API snapshots mutable request options", Request_OptionsAreSnapshots);
             RunCase(failures, "MCB coroutine contract applies multiple shapes through the public service", Service_McbContractAppliesMultipleShapes);
             RunCase(failures, "Service applies output without a completion callback", Service_NullCallbackStillApplies);
@@ -29,6 +30,50 @@ namespace Orbiters.ReFit.Editor.Tests
             RunCase(failures, "Avatar ancestor names do not change fitting", Garment_AncestorNameIsIrrelevant);
             RunCase(failures, "Public tightness presets match loose, middle and tight policy", Presets_HaveExpectedEndpoints);
             RunCase(failures, "FBX v2 inserted joint preserves the v1 result within 1mm", Fbx_InsertedJointDoesNotDistortSurface);
+        }
+
+        private static void ParallelShapes_MatchSequential()
+        {
+            using (var fixture = ReFitTestFixture.Create())
+            {
+                var request = BuildMeshAndBlendshapeRequest(fixture, fixture.sourceSpaceAccessory.renderer, true);
+                var body = fixture.target.renderer.sharedMesh;
+                var deltas = new Vector3[body.vertexCount];
+                body.GetBlendShapeFrameVertices(body.GetBlendShapeIndex(BodyShapeName), 0, deltas, null, null);
+                for (int i = 0; i < deltas.Length; i++) deltas[i] *= .5f;
+                body.AddBlendShapeFrame("ParallelFrame", 50f, deltas, null, null);
+                for (int i = 0; i < deltas.Length; i++) deltas[i] *= 2;
+                body.AddBlendShapeFrame("ParallelFrame", 100f, deltas, null, null);
+                request.targetBlendshapes = new List<string> { BodyShapeName, "ParallelFrame" };
+                request.settings.coverDifferentBaseBody = true;
+                var sequential = new ReFitEngine(1).Run(request);
+                var parallel = new ReFitEngine(4).Run(request);
+                try
+                {
+                    AssertTrue(sequential.success && parallel.success, "Parallel or sequential fit failed.");
+                    var a = sequential.mesh; var b = parallel.mesh;
+                    AssertTrue(a.blendShapeCount == b.blendShapeCount, "Shape count changed.");
+                    var da = new Vector3[a.vertexCount]; var db = new Vector3[b.vertexCount];
+                    for (int s = 0; s < a.blendShapeCount; s++)
+                    {
+                        AssertTrue(a.GetBlendShapeName(s) == b.GetBlendShapeName(s) &&
+                            a.GetBlendShapeFrameCount(s) == b.GetBlendShapeFrameCount(s), "Shape order changed.");
+                        for (int f = 0; f < a.GetBlendShapeFrameCount(s); f++)
+                        {
+                            AssertTrue(a.GetBlendShapeFrameWeight(s, f) == b.GetBlendShapeFrameWeight(s, f), "Frame weight changed.");
+                            a.GetBlendShapeFrameVertices(s, f, da, null, null);
+                            b.GetBlendShapeFrameVertices(s, f, db, null, null);
+                            for (int v = 0; v < da.Length; v++)
+                                AssertLessOrEqual((da[v] - db[v]).magnitude, 0f, "Parallel geometry differs.");
+                        }
+                    }
+                }
+                finally
+                {
+                    if (sequential.mesh != null) Object.DestroyImmediate(sequential.mesh);
+                    if (parallel.mesh != null) Object.DestroyImmediate(parallel.mesh);
+                }
+            }
         }
 
         private static void Bvh_MatchesBruteForce()

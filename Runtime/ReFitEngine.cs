@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using UnityEngine;
@@ -19,6 +20,16 @@ namespace Orbiters.ReFit
     /// </summary>
     public partial class ReFitEngine
     {
+        private readonly int shapeWorkers;
+
+        /// <summary>Limits concurrent blendshape frames; zero chooses a bounded CPU-based default.</summary>
+        public ReFitEngine() : this(0) { }
+
+        public ReFitEngine(int maxShapeWorkers)
+        {
+            shapeWorkers = maxShapeWorkers > 0 ? Math.Min(8, maxShapeWorkers)
+                : Math.Min(8, Math.Max(1, Environment.ProcessorCount / 2));
+        }
         private const int DetachedCoherenceMinGroups = 8;
         private const float DetachedCoherenceMinMotion = 0.006f;
         private const float DetachedCoherenceMaxP95EdgeRatio = 1.35f;
@@ -230,6 +241,7 @@ namespace Orbiters.ReFit
             public Vector3[] rawLocalDeltas;
             public Vector3[] localDeltas;
             public Vector3[] normalDeltas;
+            public readonly List<Vector3[]> layerDeltas = new List<Vector3[]>();
         }
 
         private class State
@@ -247,6 +259,7 @@ namespace Orbiters.ReFit
             public ReFitTubeField tubes;
             public MeshSnapshot sourceBody;   // null when not wantMesh; == targetBasis when source == target
             public MeshSnapshot targetBasis;
+            public readonly List<MeshSnapshot> coverageLayers = new List<MeshSnapshot>();
             public SurfaceBvh stagedSourceBvh;
             public SurfaceBvh targetBvh;
             public List<ShapeTask> shapes = new List<ShapeTask>();
@@ -288,6 +301,13 @@ namespace Orbiters.ReFit
             public readonly System.Diagnostics.Stopwatch phaseTimer = new System.Diagnostics.Stopwatch();
 
             public ReFitReport Report => comp.report;
+
+            public State ForShape()
+            {
+                var worker = (State)MemberwiseClone();
+                worker.comp = new ReFitComputation();
+                return worker;
+            }
         }
 
         private struct DetachedShapeArtifactMetrics
@@ -464,6 +484,7 @@ namespace Orbiters.ReFit
                         report.Warn("armature-replace-skipped", "Could not build the target bone plan; keeping the asset's original armature.");
                 }
                 state.comp.armatureReplaced = state.replace;
+                CaptureCoverageLayers(state, stage);
                 state.ownedTemplateMesh = stage.TakeAssetMesh();
             } // stage disposed: everything below works on captured arrays only
 
@@ -1052,6 +1073,9 @@ namespace Orbiters.ReFit
 
                 ReFitSurfaceCoverage.RepairPrimary(asset, targetBasis, primaryGroupDeltas,
                     state.assetGroupRegions, state.tubes.groups, settings, state.Report, state.targetTriRegions);
+                foreach (var layer in state.coverageLayers)
+                    ReFitSurfaceCoverage.RepairPrimary(asset, layer, primaryGroupDeltas,
+                        state.assetGroupRegions, state.tubes.groups, settings, state.Report, null);
                 state.primaryLocalDeltas = ToLocalDeltas(state, primaryGroupDeltas, true);
                 if (settings.recalculateNormalDeltas)
                     state.primaryNormalDeltas = NormalDeltas(asset, state.primaryLocalDeltas, null);
@@ -1076,22 +1100,47 @@ namespace Orbiters.ReFit
             var coverage = state.shapes.Count > 0
                 ? ReFitSurfaceCoverage.Build(asset, targetBasis, primaryGroupDeltas,
                     state.assetGroupRegions, state.tubes.groups, settings, state.targetTriRegions) : null;
+            var layerCoverage = new List<ReFitSurfaceCoverage>();
+            foreach (var layer in state.coverageLayers)
+                layerCoverage.Add(ReFitSurfaceCoverage.Build(asset, layer, primaryGroupDeltas,
+                    state.assetGroupRegions, state.tubes.groups, settings));
 
             // ---- Blendshape transfer fields ----------------------------------------------
             if (state.shapes.Count > 0)
             {
                 // World-space delta of each target body vertex for a shape: M(v) applied to the frame delta.
                 int bodyVerts = targetBasis.localVertices.Length;
-                for (int s = 0; s < state.shapes.Count; s++)
+                var work = state.shapes.SelectMany(shape => shape.frames.Select(frame => (shape, frame))).ToArray();
+                var outputs = new ReFitComputation[work.Length];
+                int completed = 0;
+                SetBackgroundProgress(state, 0.5f, $"Transferring blendshapes: 0/{work.Length}");
+                // Frames own their arrays. Shared snapshots, BVHs and coverage supports are read-only.
+                // Bound concurrent frames to avoid multiplying the temporary memory by the shape count.
+                Parallel.For(0, work.Length, new ParallelOptions
                 {
-                    var shape = state.shapes[s];
-                    SetBackgroundProgress(state, 0.5f + 0.35f * s / state.shapes.Count, $"Transferring '{shape.sourceName}'");
-
-                    foreach (var frame in shape.frames)
+                    MaxDegreeOfParallelism = shapeWorkers,
+                    CancellationToken = state.cancellationToken
+                }, index =>
+                {
+                    var shape = work[index].shape;
+                    var frame = work[index].frame;
+                    var worker = state.ForShape();
+                    outputs[index] = worker.comp;
+                    try { TransferFrame(); }
+                    finally
+                    {
+                        lock (outputs)
+                        {
+                            completed++;
+                            state.backgroundProgress = 0.5f + 0.35f * completed / work.Length;
+                            state.backgroundLabel = $"Transferred blendshapes: {completed}/{work.Length} / {shape.sourceName}";
+                        }
+                    }
+                    void TransferFrame()
                     {
                         var worldShapeDelta = new Vector3[bodyVerts];
                         Parallel.For(0, bodyVerts, i =>
-                            worldShapeDelta[i] = TargetShapeDeltaToWorld(state, targetBasis, i, frame.deltas[i]));
+                            worldShapeDelta[i] = TargetShapeDeltaToWorld(worker, targetBasis, i, frame.deltas[i]));
 
                         var groupDeltas = new Vector3[groupCount];
                         Parallel.For(0, groupCount, g =>
@@ -1109,24 +1158,24 @@ namespace Orbiters.ReFit
                             settings.transferredBlendshapeSmoothingStrength);
                         // Hem restraint stabilizes source-to-target proportion fitting. An asset already
                         // on the target must receive the complete authored shape displacement instead.
-                        if (!state.sourceIsTarget)
-                            ApplyUpperBodyHemDamping(groupDeltas, state.upperBodyHemWeights, settings);
-                        ApplyDetachedTransferredComponentCoherence(state, primaryGroupDeltas, groupDeltas, shape.sourceName);
-                        frame.rawLocalDeltas = ToLocalDeltas(state, groupDeltas, false);
+                        if (!worker.sourceIsTarget)
+                            ApplyUpperBodyHemDamping(groupDeltas, worker.upperBodyHemWeights, settings);
+                        ApplyDetachedTransferredComponentCoherence(worker, primaryGroupDeltas, groupDeltas, shape.sourceName);
+                        frame.rawLocalDeltas = ToLocalDeltas(worker, groupDeltas, false);
 
                         var cachedLocalDeltas = FindCachedTransferredLocalDeltas(
-                            state.targetSpaceMetadata,
+                            worker.targetSpaceMetadata,
                             shape.sourceName,
-                            vertexCount, frame.identity, state.settingsIdentity);
+                            vertexCount, frame.identity, worker.settingsIdentity);
                         if (cachedLocalDeltas != null)
                         {
                             frame.localDeltas = cachedLocalDeltas;
-                            state.Report.Info("target-space-cached-transferred-shape",
+                            worker.Report.Info("target-space-cached-transferred-shape",
                                 $"Reused the previously generated tightness-corrected transfer for '{shape.sourceName}'.");
                             if (settings.recalculateNormalDeltas)
-                                frame.normalDeltas = NormalDeltas(asset, frame.localDeltas, state.primaryLocalDeltas);
+                                frame.normalDeltas = NormalDeltas(asset, frame.localDeltas, worker.primaryLocalDeltas);
                             frame.deltas = null;
-                            continue;
+                            return;
                         }
 
                         var coverageRawDeltas = coverage != null ? (Vector3[])groupDeltas.Clone() : null;
@@ -1140,17 +1189,33 @@ namespace Orbiters.ReFit
                             worldShapeDelta,
                             falloff,
                             settings,
-                            BuildClearanceContext(state, targetBasis, transferBindings, true));
-                        AddClearanceStats(state, clearanceStats, $"transferred '{shape.sourceName}'");
-                        state.tubes.Apply(asset, targetBasis, bvhTarget, worldShapeDelta, primaryGroupDeltas, groupDeltas,
-                            settings, state.Report, $"transferred '{shape.sourceName}'");
-                        coverage?.Apply(targetBasis, worldShapeDelta, groupDeltas, coverageRawDeltas, settings, state.Report, shape.sourceName);
+                            BuildClearanceContext(worker, targetBasis, transferBindings, true));
+                        AddClearanceStats(worker, clearanceStats, $"transferred '{shape.sourceName}'");
+                        worker.tubes.Apply(asset, targetBasis, bvhTarget, worldShapeDelta, primaryGroupDeltas, groupDeltas,
+                            settings, worker.Report, $"transferred '{shape.sourceName}'");
+                        coverage?.Apply(targetBasis, worldShapeDelta, groupDeltas, coverageRawDeltas, settings, worker.Report, shape.sourceName);
+                        for (int layer = 0; layer < layerCoverage.Count; layer++)
+                            layerCoverage[layer]?.Apply(worker.coverageLayers[layer], frame.layerDeltas[layer], groupDeltas,
+                                coverageRawDeltas ?? (Vector3[])groupDeltas.Clone(), settings, worker.Report, shape.sourceName + " clothing layer");
 
-                        frame.localDeltas = ToLocalDeltas(state, groupDeltas, false);
+                        frame.localDeltas = ToLocalDeltas(worker, groupDeltas, false);
                         if (settings.recalculateNormalDeltas)
-                            frame.normalDeltas = NormalDeltas(asset, frame.localDeltas, state.primaryLocalDeltas);
+                            frame.normalDeltas = NormalDeltas(asset, frame.localDeltas, worker.primaryLocalDeltas);
                         frame.deltas = null; // free
                     }
+                });
+                // Merge diagnostics in input order, independent of worker completion order.
+                foreach (var output in outputs)
+                {
+                    state.Report.messages.AddRange(output.report.messages);
+                    if (output.clearanceCorrectionStats != null)
+                    {
+                        if (state.comp.clearanceCorrectionStats == null)
+                            state.comp.clearanceCorrectionStats = new ReFitClearanceCorrectionStats();
+                        state.comp.clearanceCorrectionStats.Add(output.clearanceCorrectionStats);
+                    }
+                    if (output.transferredIslandPropagationDebug != null)
+                        state.comp.transferredIslandPropagationDebug = output.transferredIslandPropagationDebug;
                 }
             }
 

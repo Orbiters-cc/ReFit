@@ -46,6 +46,7 @@ namespace Orbiters.ReFit.Editor
                 targetAvatar = job.Avatar,
                 targetBodyRenderer = job.Body,
                 targetBlendshapes = job.Shapes.ToList(),
+                coverageLayers = job.CoverageLayers.ToList(),
                 settings = settings,
             };
         }

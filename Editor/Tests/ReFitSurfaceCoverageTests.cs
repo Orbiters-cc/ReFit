@@ -12,7 +12,120 @@ namespace Orbiters.ReFit.Editor.Tests
         {
             foreach (bool rotated in new[] { false, true }) CheckDensePeak(rotated);
             CheckDifferentBasePeak();
+            CheckDeepPenetrationAndLayers();
+            CheckAdditiveRepairDoesNotRepeat();
+            CheckCoveragePoseIsTemporary();
             Debug.Log("[ReFit Coverage Tests] PASS: dense body peaks between cloth vertices, combined shapes, zero shape, rotated/scaled surfaces.");
+        }
+
+        private static void CheckCoveragePoseIsTemporary()
+        {
+            var root = new GameObject("__CoveragePose") { hideFlags = HideFlags.HideAndDontSave };
+            var meshes = new List<Mesh>();
+            try
+            {
+                var hips = new GameObject("Hips").transform; hips.SetParent(root.transform, false);
+                var left = new GameObject("LeftUpperLeg").transform; left.SetParent(hips, false); left.localPosition = Vector3.left * .08f;
+                var right = new GameObject("RightUpperLeg").transform; right.SetParent(hips, false); right.localPosition = Vector3.right * .08f;
+                var body = Grid(root.transform, left, 7, 0, meshes);
+                var cloth = Grid(root.transform, left, 7, .01f, meshes);
+                foreach (var renderer in new[] { body, cloth })
+                {
+                    renderer.bones = new[] { left, right };
+                    renderer.sharedMesh.bindposes = new[] { left.worldToLocalMatrix, right.worldToLocalMatrix };
+                    renderer.sharedMesh.boneWeights = renderer.sharedMesh.vertices.Select(p => new BoneWeight { boneIndex0 = p.x < 0 ? 0 : 1, weight0 = 1 }).ToArray();
+                }
+                var request = new ReFitRequest { mode = ReFitMode.MeshToMesh, assetRenderer = cloth,
+                    sourceAvatar = root, sourceBodyRenderer = body, targetAvatar = root, targetBodyRenderer = body,
+                    settings = new ReFitSettings { replaceArmature = false, transferWeights = false, coverDifferentBaseBody = true } };
+                foreach (bool enabled in new[] { false, true })
+                {
+                    request.settings.coverDifferentBaseBody = enabled;
+                    using (var stage = PoseNormalizer.CreateStage(request, new ReFitReport()))
+                    {
+                        if (stage == null) throw new Exception("Coverage pose fixture failed to stage.");
+                        foreach (var kind in new[] { HumanBodyBones.LeftUpperLeg, HumanBodyBones.RightUpperLeg })
+                        {
+                            float angle = Quaternion.Angle(Quaternion.identity, stage.targetHumanMap[kind].localRotation);
+                            if (Mathf.Abs(angle - (enabled ? 20f : 0f)) > .01f) throw new Exception("Coverage stance was not scoped to the staged lower-body fit.");
+                        }
+                    }
+                    if (left.localRotation != Quaternion.identity || right.localRotation != Quaternion.identity)
+                        throw new Exception("Coverage posing changed the original avatar.");
+                }
+            }
+            finally { Object.DestroyImmediate(root); foreach (var mesh in meshes) Object.DestroyImmediate(mesh); }
+        }
+
+        private static void CheckAdditiveRepairDoesNotRepeat()
+        {
+            var root = new GameObject("__CoverageAdditive") { hideFlags = HideFlags.HideAndDontSave };
+            var meshes = new List<Mesh>();
+            try
+            {
+                var bone = new GameObject("LeftUpperArm").transform; bone.SetParent(root.transform, false);
+                var body = Grid(root.transform, bone, 17, 0, meshes);
+                var cloth = Grid(root.transform, bone, 7, .005f, meshes);
+                var delta = Enumerable.Repeat(Vector3.forward * .00002f, body.sharedMesh.vertexCount).ToArray();
+                body.sharedMesh.AddBlendShapeFrame("Tiny", 100, delta, null, null);
+                var result = new ReFitEngine().Run(new ReFitRequest { mode = ReFitMode.Blendshape,
+                    assetRenderer = cloth, targetAvatar = root, targetBodyRenderer = body,
+                    targetBlendshapes = new List<string> { "Tiny" }, settings = new ReFitSettings {
+                        replaceArmature = false, transferWeights = false, savePrefab = false, coverDifferentBaseBody = true,
+                        prefixTransferredShapes = false } });
+                try
+                {
+                    if (!result.success) throw new Exception("Additive fixture failed.");
+                    var generated = new Vector3[cloth.sharedMesh.vertexCount];
+                    result.mesh.GetBlendShapeFrameVertices(result.mesh.GetBlendShapeIndex("Tiny"), 0, generated, null, null);
+                    if (generated.Any(d => d.magnitude > .0001f))
+                        throw new Exception("A tiny body shape repeated the base coverage repair.");
+                }
+                finally { if (result.mesh != null) Object.DestroyImmediate(result.mesh); }
+            }
+            finally { Object.DestroyImmediate(root); foreach (var mesh in meshes) Object.DestroyImmediate(mesh); }
+        }
+
+        private static void CheckDeepPenetrationAndLayers()
+        {
+            var root = new GameObject("__CoverageLayers") { hideFlags = HideFlags.HideAndDontSave };
+            var meshes = new List<Mesh>();
+            try
+            {
+                var bone = new GameObject("LeftUpperArm").transform; bone.SetParent(root.transform, false);
+                var body = Grid(root.transform, bone, 17, 0, meshes);
+                var inner = Grid(root.transform, bone, 17, .06f, meshes);
+                var outer = Grid(root.transform, bone, 7, .005f, meshes);
+                inner.name = "Shirt"; outer.name = "Jacket";
+                var bodyDelta = Enumerable.Repeat(Vector3.forward * .01f, body.sharedMesh.vertexCount).ToArray();
+                var innerDelta = Enumerable.Repeat(Vector3.forward * .02f, inner.sharedMesh.vertexCount).ToArray();
+                body.sharedMesh.AddBlendShapeFrame("Flex", 100, bodyDelta, null, null);
+                inner.sharedMesh.AddBlendShapeFrame("Flex", 100, innerDelta, null, null);
+                var request = new ReFitRequest { mode = ReFitMode.MeshAndBlendshape, assetRenderer = outer, sourceAvatar = root,
+                    sourceBodyRenderer = body, targetAvatar = root, targetBodyRenderer = body, coverageLayers = new List<SkinnedMeshRenderer> { inner },
+                    targetBlendshapes = new List<string> { "Flex" }, settings = new ReFitSettings { replaceArmature = false,
+                        transferWeights = false, savePrefab = false, coverDifferentBaseBody = true, prefixTransferredShapes = false } };
+                var result = new ReFitEngine().Run(request);
+                try
+                {
+                    if (!result.success) throw new Exception("Layer fixture failed.");
+                    var primary = new Vector3[outer.sharedMesh.vertexCount]; var flex = new Vector3[primary.Length];
+                    result.mesh.GetBlendShapeFrameVertices(result.mesh.GetBlendShapeIndex("refit"), 0, primary, null, null);
+                    result.mesh.GetBlendShapeFrameVertices(result.mesh.GetBlendShapeIndex("Flex"), 0, flex, null, null);
+                    foreach (float weight in new[] { 0f, .5f, 1f })
+                        for (int v = 0; v < primary.Length; v++)
+                        {
+                            var point = result.mesh.vertices[v] + primary[v] + flex[v] * weight;
+                            if (point.z < .06f + .02f * weight + .004f)
+                                throw new Exception($"Outer layer clips at weight {weight}, vertex {v}: {point.z}.");
+                            if (Mathf.Abs(point.x - outer.sharedMesh.vertices[v].x) > .00001f || Mathf.Abs(point.y - outer.sharedMesh.vertices[v].y) > .00001f)
+                                throw new Exception("Coverage extended the open hem tangentially.");
+                        }
+                    if (!result.mesh.boneWeights.SequenceEqual(outer.sharedMesh.boneWeights)) throw new Exception("Layer coverage changed skin weights.");
+                }
+                finally { if (result.mesh != null) Object.DestroyImmediate(result.mesh); }
+            }
+            finally { Object.DestroyImmediate(root); foreach (var mesh in meshes) Object.DestroyImmediate(mesh); }
         }
 
         private static void CheckDifferentBasePeak()

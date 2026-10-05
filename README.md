@@ -3,6 +3,8 @@
 ## 0.5.4 — 2026-10-05
 
 - Use the Orbiters Toolkit blendshape picker (requires Orbiters Toolkit 0.3.11).
+- Fix refit blendshapes that moved no vertex when the clothing sits under an avatar placed away from the scene origin: the fitting copy kept the clothing's local position as a world position, so it fitted nothing. The copy now stays where the clothing is, and avatar bones are no longer matched against the clothing copy's own bones.
+- Tests cover nested clothing on avatars moved, turned and scaled in the scene: the fitting copy keeps its world pose and a transfer gives the same result wherever the avatar stands.
 
 ## 0.5.3 — 2026-10-03
 

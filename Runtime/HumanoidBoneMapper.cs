@@ -117,10 +117,11 @@ namespace Orbiters.ReFit
         /// Matches the bones of <paramref name="bones"/> into the hierarchy below <paramref name="otherRoot"/> by normalized name.
         /// Unmatched bones map to null.
         /// </summary>
-        public static Dictionary<Transform, Transform> MatchBonesByName(IEnumerable<Transform> bones, Transform otherRoot)
+        public static Dictionary<Transform, Transform> MatchBonesByName(IEnumerable<Transform> bones, Transform otherRoot,
+            Transform excludedRoot = null)
         {
-            var index = BuildNameIndex(otherRoot);
-            var humanIndex = BuildHumanoidBoneIndex(otherRoot);
+            var index = BuildNameIndex(otherRoot, excludedRoot);
+            var humanIndex = BuildHumanoidBoneIndex(otherRoot, null, excludedRoot);
             var result = new Dictionary<Transform, Transform>();
             foreach (var bone in bones)
             {

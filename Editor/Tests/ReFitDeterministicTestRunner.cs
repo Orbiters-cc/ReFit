@@ -89,6 +89,7 @@ namespace Orbiters.ReFit.Editor.Tests
             try
             {
                 RunArchitectureChecks(failures);
+                RunPlacementChecks(failures);
                 RunCase(failures, "Closed tubular accessories preserve analytic expansion and thickness", ReFitTubeTests.RunOrThrow);
                 RunCase(failures, "Navigation, search, recents and commission rows", ReFitNavigationTests.RunOrThrow);
                 RunCase(failures,

@@ -123,7 +123,8 @@ namespace Orbiters.ReFit
             // Only garments actually skinned to both thighs need a temporary star pose. Bake the
             // authored rest pose first; inverse skin matrices then return fitted deltas to that pose.
             var assetBones = stage.assetRenderer.bones;
-            var assetMatching = HumanoidBoneMapper.MatchBonesByName(assetBones, stage.sourceRoot.transform);
+            var assetMatching = HumanoidBoneMapper.MatchBonesByName(assetBones, stage.sourceRoot.transform,
+                stage.sourceIsTarget ? stage.targetExcludedAssetRoot : null);
             var used = new HashSet<Transform>();
             foreach (var weight in stage.assetRenderer.sharedMesh.boneWeights)
             {
@@ -252,6 +253,11 @@ namespace Orbiters.ReFit
             var clone = UnityEngine.Object.Instantiate(original);
             clone.name = original.name;
             clone.hideFlags = HideFlags.HideAndDontSave;
+            // A copy of a nested object starts with its local transform as a world transform. Put it where the
+            // original is, so clothing nested under an avatar away from the world origin stays on that avatar.
+            var source = original.transform;
+            clone.transform.SetPositionAndRotation(source.position, source.rotation);
+            clone.transform.localScale = source.lossyScale;
             clone.transform.SetParent(parent, true);
             clone.SetActive(true);
 
@@ -772,7 +778,9 @@ namespace Orbiters.ReFit
             var assetTransforms = stage.assetStageRoot != null
                 ? stage.assetStageRoot.GetComponentsInChildren<Transform>(true)
                 : Array.Empty<Transform>();
-            stage.assetBoneToSource = HumanoidBoneMapper.MatchBonesByName(assetTransforms, stage.sourceRoot.transform);
+            // The asset's own copy inside the staged target is not the source skeleton.
+            stage.assetBoneToSource = HumanoidBoneMapper.MatchBonesByName(assetTransforms, stage.sourceRoot.transform,
+                stage.sourceIsTarget ? stage.targetExcludedAssetRoot : null);
 
             if (stage.assetInTargetSpace)
             {

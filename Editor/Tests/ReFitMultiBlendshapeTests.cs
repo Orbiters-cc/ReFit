@@ -77,8 +77,9 @@ namespace Orbiters.ReFit.Editor.Tests
                 var chip = picker.Q("orbiters-shape-selections").Query<Button>().ToList().First(b => (string)b.userData == "Belly");
                 Press(chip);
                 AssertTrue(!selection.Contains("Belly") && selection.Count == 45, "Removing a hidden selection failed.");
+                int beforeClear = changes;
                 Press(picker.Q<Button>("orbiters-shape-clear"));
-                AssertTrue(selection.Count == 0 && changes >= 7, "Clear did not publish the empty selection.");
+                AssertTrue(selection.Count == 0 && changes == beforeClear + 1, "Clear did not publish the empty selection.");
                 }
             finally
             {

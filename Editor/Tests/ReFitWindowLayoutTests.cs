@@ -57,10 +57,10 @@ namespace Orbiters.ReFit.Editor.Tests
                 var scroll = window.rootVisualElement.Q<ScrollView>(className: "refit-scroll");
                 SetHeight(document, window, 560);
                 Layout(document);
-                var buttons = window.rootVisualElement.Query<Button>(className: "refit-shape-row").ToList();
+                var buttons = window.rootVisualElement.Query<Button>(className: "orbiters-shape-row").ToList();
                 Check(buttons.Count == names.Length, "Compact picker lost available shapes.");
                 Check(buttons.GroupBy(b => Mathf.RoundToInt(b.layout.y)).Any(g => g.Count() > 1), "Shape buttons did not wrap side by side.");
-                var shapeScroll = window.rootVisualElement.Q<ScrollView>("refit-shape-scroll");
+                var shapeScroll = window.rootVisualElement.Q<ScrollView>("orbiters-shape-scroll");
                 Check(shapeScroll.contentContainer.layout.height > shapeScroll.contentViewport.layout.height,
                     "Large blendshape lists must scroll inside their own area.");
                 Check(shapeScroll.layout.height <= 221, "Blendshape area exceeds its height budget.");
@@ -81,9 +81,9 @@ namespace Orbiters.ReFit.Editor.Tests
                 var selection = (List<string>)type.GetField("blendshapes", InstanceFlags).GetValue(window);
                 selection.Clear(); selection.AddRange(names);
                 var picker = window.rootVisualElement.Q<ReFitBlendshapePicker>();
-                typeof(ReFitBlendshapePicker).GetMethod("RefreshSelection", InstanceFlags).Invoke(picker, null);
+                typeof(Orbiters.Toolkit.Editor.BlendshapePicker).GetMethod("RefreshSelection", InstanceFlags).Invoke(picker, null);
                 Layout(document);
-                var selectedScroll = window.rootVisualElement.Q<ScrollView>("refit-selection-scroll");
+                var selectedScroll = window.rootVisualElement.Q<ScrollView>("orbiters-selection-scroll");
                 Check(selectedScroll.layout.height <= 89, "Select all makes the page grow without limit.");
                 Check(selectedScroll.contentContainer.layout.height > selectedScroll.contentViewport.layout.height,
                     "All selected chips must remain reachable in their own scroll area.");
@@ -93,7 +93,7 @@ namespace Orbiters.ReFit.Editor.Tests
                 Check(scroll.contentContainer.layout.height <= scroll.contentViewport.layout.height + 1f,
                     "Selecting all 497 shapes introduces a page scrollbar.");
                 selection.Clear(); selection.AddRange(new[] { "Belly", "orbit muscles", "orbit face" });
-                typeof(ReFitBlendshapePicker).GetMethod("RefreshSelection", InstanceFlags).Invoke(picker, null);
+                typeof(Orbiters.Toolkit.Editor.BlendshapePicker).GetMethod("RefreshSelection", InstanceFlags).Invoke(picker, null);
                 Layout(document);
 
                 var search = window.rootVisualElement.Q<UnityEditor.UIElements.ToolbarSearchField>();
@@ -102,7 +102,7 @@ namespace Orbiters.ReFit.Editor.Tests
                 float filtered = ReFitWizard.CalculateMinimumHeight(needed, scroll.contentViewport.layout.height,
                     scroll.contentContainer.layout.height, 1200);
                 Check(filtered <= needed, "Filtering raised the required minimum height.");
-                Check(window.rootVisualElement.Q("refit-shape-selections").childCount == 3, "Filtering lost selected chips.");
+                Check(window.rootVisualElement.Q("orbiters-shape-selections").childCount == 3, "Filtering lost selected chips.");
 
                 var tall = new VisualElement(); tall.style.height = 2000;
                 scroll.Add(tall); Layout(document);

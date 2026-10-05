@@ -1,5 +1,9 @@
 # ReFit
 
+## 0.5.4 — 2026-10-05
+
+- Use the Orbiters Toolkit blendshape picker (requires Orbiters Toolkit 0.3.11).
+
 ## 0.5.3 — 2026-10-03
 
 - Improve residual body coverage and smoothing for supported cross-base garments, including separated-leg fitting for lower-body clothing.

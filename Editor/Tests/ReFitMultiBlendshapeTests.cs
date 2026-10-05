@@ -57,7 +57,7 @@ namespace Orbiters.ReFit.Editor.Tests
                 AssertTrue(selection.SequenceEqual(new[] { "Belly" }), "Stale or duplicate selection survived body refresh.");
                 var search = picker.Q<ToolbarSearchField>();
                 Search(search, " MUSC ");
-                var muscle = picker.Query<Button>(className: "refit-shape-row").ToList().Single();
+                var muscle = picker.Query<Button>(className: "orbiters-shape-row").ToList().Single();
                 Press(muscle);
                 AssertTrue(selection.SequenceEqual(new[] { "Belly", "Muscles" }), "Pointer-down did not add a second shape immediately.");
                 typeof(Clickable).GetMethod("Invoke", BindingFlags.Instance | BindingFlags.NonPublic)
@@ -67,17 +67,17 @@ namespace Orbiters.ReFit.Editor.Tests
                     .Invoke(muscle.clickable, new object[] { null });
                 AssertTrue(selection.SequenceEqual(new[] { "Belly" }), "Normal click fallback did not deselect.");
                 Search(search, "Flex");
-                AssertTrue(picker.Query<Button>(className: "refit-shape-row").ToList().Count == 45,
+                AssertTrue(picker.Query<Button>(className: "orbiters-shape-row").ToList().Count == 45,
                     "Matching shapes beyond the first 30 are inaccessible.");
-                Press(picker.Q<Button>("refit-shape-select-visible"));
+                Press(picker.Q<Button>("orbiters-shape-select-visible"));
                 AssertTrue(selection.Count == 46 && !selection.Contains("Muscles"), "Select all shown included hidden names or lost prior selection.");
                 Search(search, "no matches");
-                AssertTrue(selection.Count == 46 && !picker.Q<Button>("refit-shape-select-visible").enabledSelf,
+                AssertTrue(selection.Count == 46 && !picker.Q<Button>("orbiters-shape-select-visible").enabledSelf,
                     "Empty search results changed selection or left bulk selection enabled.");
-                var chip = picker.Q("refit-shape-selections").Query<Button>().ToList().First(b => (string)b.userData == "Belly");
+                var chip = picker.Q("orbiters-shape-selections").Query<Button>().ToList().First(b => (string)b.userData == "Belly");
                 Press(chip);
                 AssertTrue(!selection.Contains("Belly") && selection.Count == 45, "Removing a hidden selection failed.");
-                Press(picker.Q<Button>("refit-shape-clear"));
+                Press(picker.Q<Button>("orbiters-shape-clear"));
                 AssertTrue(selection.Count == 0 && changes >= 7, "Clear did not publish the empty selection.");
                 }
             finally

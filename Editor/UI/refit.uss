@@ -12,25 +12,6 @@
     flex-shrink: 0;
 }
 
-.refit-shape-search { width: auto; max-width: none; align-self: stretch; margin-top: 8px; margin-bottom: 10px; height: 34px; min-height: 34px; align-items: center; padding: 0 6px; background-image: none; background-color: #383838; border-width: 1px; border-color: #626262; border-radius: 5px; }
-.refit-shape-search .unity-text-field__input {
-    background-color: transparent; background-image: none; color: #eeeeee;
-    border-width: 0; border-radius: 4px;
-    padding: 5px 8px; min-height: 28px;
-}
-.refit-shape-search .unity-text-field__input:focus { background-color: #414141; }
-.refit-shape-suggestions { flex-direction: row; flex-wrap: wrap; min-width: 0; margin-bottom: 8px; }
-.refit-shape-suggestion { margin-right: 6px; margin-bottom: 6px; padding: 5px 9px; max-width: 100%; white-space: normal; border-radius: 5px; background-image: none; background-color: #494949; color: #eeeeee; border-width: 1px; border-color: #494949; }
-.refit-shape-suggestion:hover { background-color: #575757; border-color: #666666; }
-.refit-shape-suggestion:active { background-color: #626262; }
-.refit-shape-suggestion--selected { border-color: #00da6d; background-color: #234b37; }
-.refit-shape-selected { color: #eeeeee; white-space: normal; margin-bottom: 8px; }
-.refit-shape-toolbar { flex-direction: row; align-items: center; flex-wrap: wrap; margin-bottom: 8px; }
-.refit-shape-count { flex-grow: 1; color: #bbbbbb; margin-right: 8px; }
-.refit-shape-results { flex-direction: row; flex-wrap: wrap; flex-shrink: 0; min-width: 0; margin-bottom: 8px; }
-.refit-shape-scroll { max-height: 220px; flex-shrink: 0; margin-bottom: 8px; }
-.refit-selection-scroll { max-height: 88px; flex-shrink: 0; }
-.refit-shape-row { flex-shrink: 0; -unity-text-align: middle-left; transition-property: background-color, border-color; transition-duration: 0.12s; }
 .refit-page-content > * { flex-shrink: 0; }
 #refit-commission-section { width: 100%; max-width: 460px; align-self: center; margin-top: 24px; }
 .refit-commission-section-heading { flex-direction: row; align-items: center; justify-content: space-between; margin-bottom: 4px; }

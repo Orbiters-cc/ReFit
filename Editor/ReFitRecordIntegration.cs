@@ -51,6 +51,15 @@ namespace Orbiters.ReFit.Editor
                 .ToList();
 
         /// <summary>Forgets the refit; restores the original mesh unless <paramref name="restored"/> (ReFit restored it itself).</summary>
+        /// <summary>Puts a refitted mesh back to its original (its record removed), so a new refit does not stack on it.</summary>
+        public static bool TryRestore(SkinnedMeshRenderer renderer)
+        {
+            var record = renderer != null ? renderer.GetComponent<OrbitersRefit>() : null;
+            if (record == null || !record.Applied) return false;
+            RefitRecords.Remove(record, restore: true);
+            return true;
+        }
+
         public static bool TryReset(RefittedAsset asset, bool restored)
         {
             var record = asset?.renderer != null ? asset.renderer.GetComponent<OrbitersRefit>() : null;
@@ -83,6 +92,7 @@ namespace Orbiters.ReFit.Editor
         public static bool IsAvailable => false;
         public static IReadOnlyList<RefittedAsset> GetRefittedAssets() => new List<RefittedAsset>();
         public static bool TryReset(RefittedAsset asset, bool restored) => false;
+        public static bool TryRestore(SkinnedMeshRenderer renderer) => false;
         public static bool TryRegister(ReFitRequest request, ReFitResult result) => false;
 #endif
     }

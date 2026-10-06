@@ -5,6 +5,8 @@
 - Use the Orbiters Toolkit blendshape picker (requires Orbiters Toolkit 0.3.11).
 - Fix refit blendshapes that moved no vertex when the clothing sits under an avatar placed away from the scene origin: the fitting copy kept the clothing's local position as a world position, so it fitted nothing. The copy now stays where the clothing is, and avatar bones are no longer matched against the clothing copy's own bones.
 - Tests cover nested clothing on avatars moved, turned and scaled in the scene: the fitting copy keeps its world pose and a transfer gives the same result wherever the avatar stands.
+- The wizard asks, after Tightness, whether the asset was made for this exact avatar. **No** (clothing placed roughly over the body, already clipping) refits its mesh onto the same body with the blendshapes and moves visible clipping out of the body, as it is and in every shape. The summary can refit the asset's whole outfit with it, innermost part first, so the layers stay in order.
+- `ReFitSettings.coverageKeepsLayerOrder` (used by that path only): each part keeps its authored side of the outfit's other parts (`coverageLayers`), clipping another surface covers is left as it is, fabric stays beneath what lies over it in every shape, and small separate pieces (pocket square, pins) follow the fabric they sit on.
 
 ## 0.5.3 — 2026-10-03
 
@@ -20,6 +22,10 @@ are never modified.
 ## Using the wizard
 
 `Tools > Orbiters > ReFit`
+
+After **Tightness**, the wizard asks whether the asset was made for this exact avatar. Answer **No** for clothing made
+for another avatar and placed over this one by hand: ReFit then also removes the clipping it already has, and can refit
+the rest of its outfit with it so jacket, shirt and trousers stay layered.
 
 The wizard asks where your asset is (on an avatar in the scene, or in your project files), which avatar it should
 fit, and whether it should follow a body blendshape. It then shows a summary with setup checks (armature matching,

@@ -101,7 +101,7 @@ namespace Orbiters.ReFit.Editor.Tests
                 foreach (var mode in new[] { ReFitMode.Blendshape, ReFitMode.MeshAndBlendshape, ReFitMode.MeshToMesh })
                 {
                     type.GetField("mode", flags).SetValue(window, mode);
-                    var request = (ReFitRequest)type.GetMethod("BuildRequest", flags).Invoke(window, null);
+                    var request = (ReFitRequest)type.GetMethod("BuildRequest", flags).Invoke(window, new object[] { null });
                     AssertTrue(request.targetBlendshape == null, "Wizard still populates the single-shape field.");
                     if (mode == ReFitMode.MeshToMesh)
                         AssertTrue(request.targetBlendshapes == null, "Mesh-only request leaked previous shape selection.");

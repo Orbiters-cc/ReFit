@@ -260,6 +260,13 @@ namespace Orbiters.ReFit
             public MeshSnapshot sourceBody;   // null when not wantMesh; == targetBasis when source == target
             public MeshSnapshot targetBasis;
             public readonly List<MeshSnapshot> coverageLayers = new List<MeshSnapshot>();
+            // Each layer's vertices as authored (before its own refit), when the layer order is kept, and whether it was refitted.
+            public readonly List<Vector3[]> coverageLayersAuthored = new List<Vector3[]>();
+            public readonly List<bool> coverageLayersRefitted = new List<bool>();
+            // Clipped groups another surface covers as authored: the body coverage leaves them in place. Covers of every group:
+            // in shapes, fabric stays beneath what lies over it.
+            public bool[] hiddenGroups;
+            public ReFitSurfaceCoverage.Cover?[] hiddenCovers;
             public SurfaceBvh stagedSourceBvh;
             public SurfaceBvh targetBvh;
             public List<ShapeTask> shapes = new List<ShapeTask>();
@@ -1071,11 +1078,16 @@ namespace Orbiters.ReFit
                 AddClearanceStats(state, clearanceStats, "primary refit");
                 state.tubes.Apply(asset, targetBasis, bvhTarget, null, null, primaryGroupDeltas, settings, state.Report, "primary refit");
 
+                if (settings.coverDifferentBaseBody && settings.coverageKeepsLayerOrder)
+                {
+                    state.hiddenCovers = new ReFitSurfaceCoverage.Cover?[groupCount];
+                    state.hiddenGroups = ReFitSurfaceCoverage.HiddenGroups(asset, targetBasis, bvhTarget, AuthoredLayers(state), null, state.hiddenCovers);
+                }
                 ReFitSurfaceCoverage.RepairPrimary(asset, targetBasis, primaryGroupDeltas,
-                    state.assetGroupRegions, state.tubes.groups, settings, state.Report, state.targetTriRegions);
-                foreach (var layer in state.coverageLayers)
-                    ReFitSurfaceCoverage.RepairPrimary(asset, layer, primaryGroupDeltas,
-                        state.assetGroupRegions, state.tubes.groups, settings, state.Report, null);
+                    state.assetGroupRegions, state.tubes.groups, settings, state.Report, state.targetTriRegions, hidden: state.hiddenGroups);
+                for (int layer = 0; layer < state.coverageLayers.Count; layer++)
+                    ReFitSurfaceCoverage.RepairPrimary(asset, state.coverageLayers[layer], primaryGroupDeltas,
+                        state.assetGroupRegions, state.tubes.groups, settings, state.Report, null, state.coverageLayersAuthored[layer]);
                 state.primaryLocalDeltas = ToLocalDeltas(state, primaryGroupDeltas, true);
                 if (settings.recalculateNormalDeltas)
                     state.primaryNormalDeltas = NormalDeltas(asset, state.primaryLocalDeltas, null);
@@ -1099,11 +1111,11 @@ namespace Orbiters.ReFit
 
             var coverage = state.shapes.Count > 0
                 ? ReFitSurfaceCoverage.Build(asset, targetBasis, primaryGroupDeltas,
-                    state.assetGroupRegions, state.tubes.groups, settings, state.targetTriRegions) : null;
+                    state.assetGroupRegions, state.tubes.groups, settings, state.targetTriRegions, hidden: state.hiddenGroups) : null;
             var layerCoverage = new List<ReFitSurfaceCoverage>();
-            foreach (var layer in state.coverageLayers)
-                layerCoverage.Add(ReFitSurfaceCoverage.Build(asset, layer, primaryGroupDeltas,
-                    state.assetGroupRegions, state.tubes.groups, settings));
+            for (int layer = 0; layer < state.coverageLayers.Count; layer++)
+                layerCoverage.Add(ReFitSurfaceCoverage.Build(asset, state.coverageLayers[layer], primaryGroupDeltas,
+                    state.assetGroupRegions, state.tubes.groups, settings, authored: state.coverageLayersAuthored[layer]));
 
             // ---- Blendshape transfer fields ----------------------------------------------
             if (state.shapes.Count > 0)
@@ -1197,6 +1209,7 @@ namespace Orbiters.ReFit
                         for (int layer = 0; layer < layerCoverage.Count; layer++)
                             layerCoverage[layer]?.Apply(worker.coverageLayers[layer], frame.layerDeltas[layer], groupDeltas,
                                 coverageRawDeltas ?? (Vector3[])groupDeltas.Clone(), settings, worker.Report, shape.sourceName + " clothing layer");
+                        ReFitSurfaceCoverage.KeepUnderCovers(asset, primaryGroupDeltas, groupDeltas, worker.hiddenCovers, worker.coverageLayers, frame.layerDeltas);
 
                         frame.localDeltas = ToLocalDeltas(worker, groupDeltas, false);
                         if (settings.recalculateNormalDeltas)
@@ -1234,6 +1247,16 @@ namespace Orbiters.ReFit
                 state.comp.projectionDebug = BuildProjectionDebugData(state, bindings, transferBindings, falloff);
 
             SetBackgroundProgress(state, 1f, "Finishing");
+        }
+
+        // What may cover the asset: refitted layers where they are now (outside the body only), the others as authored (a
+        // refit only moves them outward, so what they cover stays covered).
+        private static List<(MeshSnapshot surface, bool refitted)> AuthoredLayers(State state)
+        {
+            var layers = new List<(MeshSnapshot, bool)>();
+            for (int i = 0; i < state.coverageLayers.Count; i++)
+                layers.Add((state.coverageLayers[i], state.coverageLayersRefitted[i]));
+            return layers;
         }
 
         private static void AddClearanceStats(State state, ReFitClearanceCorrectionStats stats, string label)

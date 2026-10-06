@@ -393,7 +393,7 @@ namespace Orbiters.ReFit.Editor.Tests
             }
         }
 
-        private static GameObject OriginalInput(SkinnedMeshRenderer live, ReFitRequest request, out SkinnedMeshRenderer input)
+        internal static GameObject OriginalInput(SkinnedMeshRenderer live, ReFitRequest request, out SkinnedMeshRenderer input)
         {
             // Copy transforms only. Instantiating an avatar would execute arbitrary editor components.
             var map = new Dictionary<Transform, Transform>();
@@ -602,7 +602,7 @@ namespace Orbiters.ReFit.Editor.Tests
 #endif
         }
 
-        private static Mesh Bake(SkinnedMeshRenderer original, Mesh input, Dictionary<string, float> values)
+        internal static Mesh Bake(SkinnedMeshRenderer original, Mesh input, Dictionary<string, float> values)
         {
             var go = new GameObject("__ReFitValidationRenderer") { hideFlags = HideFlags.HideAndDontSave };
             try
@@ -622,7 +622,7 @@ namespace Orbiters.ReFit.Editor.Tests
             finally { Object.DestroyImmediate(go); }
         }
 
-        private static string Quality(string label, Mesh before, Mesh after, bool assertTube = false)
+        internal static string Quality(string label, Mesh before, Mesh after, bool assertTube = false)
         {
             var a = before.vertices; var b = after.vertices; var triangles = before.triangles;
             var ratios = new List<float>(); int over = 0, reversed = 0, degenerate = 0;
@@ -697,7 +697,7 @@ namespace Orbiters.ReFit.Editor.Tests
             finally { preview.Cleanup(); }
         }
 
-        private static void Draw(PreviewRenderUtility preview, Mesh mesh, Material[] materials)
+        internal static void Draw(PreviewRenderUtility preview, Mesh mesh, Material[] materials)
         {
             for (int s = 0; s < mesh.subMeshCount && materials.Length > 0; s++)
                 if (materials[Mathf.Min(s, materials.Length - 1)] != null)

@@ -61,6 +61,12 @@ namespace Orbiters.ReFit
 
         /// <summary>Opt-in residual body coverage for clothing detected on a different avatar base.</summary>
         public bool coverDifferentBaseBody;
+        /// <summary>
+        /// With <see cref="coverDifferentBaseBody"/>, the asset stays outside each coverage layer only where it was outside
+        /// that garment as authored: details made to pass under another part (a bowtie band, a collar) stay there. Needs the
+        /// asset and its layers staged together on the target (a refit onto the same avatar).
+        /// </summary>
+        public bool coverageKeepsLayerOrder;
         /// <summary>Reject body surface candidates whose normal disagrees with the asset vertex normal by more than <see cref="maxNormalAngle"/> degrees. Detected closed tubes and lower-body cloth use their own correspondence policy.</summary>
         public bool filterByNormal = true;
         /// <summary>Maximum angle (degrees) between asset vertex normal and body face normal for a binding to be accepted.</summary>
@@ -172,7 +178,11 @@ namespace Orbiters.ReFit
         public SkinnedMeshRenderer sourceBodyRenderer;
         /// <summary>Optional override of the target avatar's main body renderer (auto-detected otherwise).</summary>
         public SkinnedMeshRenderer targetBodyRenderer;
-        /// <summary>Fitted inner garments to keep beneath this garment during different-base coverage repair.</summary>
+        /// <summary>
+        /// Fitted inner garments to keep beneath this garment during different-base coverage repair. With
+        /// <see cref="ReFitSettings.coverageKeepsLayerOrder"/>, the outfit's other parts: each keeps its authored side of this
+        /// garment, and clipping they cover as authored is not visible and stays as it is.
+        /// </summary>
         public List<SkinnedMeshRenderer> coverageLayers = new List<SkinnedMeshRenderer>();
         /// <summary>Name of the blendshape on the target body to transfer (Blendshape / MeshAndBlendshape modes).</summary>
         public string targetBlendshape;

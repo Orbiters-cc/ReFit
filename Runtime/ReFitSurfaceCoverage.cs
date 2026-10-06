@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Linq;
 using System.Threading.Tasks;
 using UnityEngine;
 
@@ -27,6 +28,10 @@ namespace Orbiters.ReFit
         private Vector3[] basis;
         private List<int>[] adjacency;
         private bool repair;
+        // A clothing layer kept in its authored order: supports keep the authored gap (up to LayerClearance), not RepairSafety.
+        private bool layer;
+        // Small separate pieces (a pocket square, pins, buttons) carried with the fabric around them, when the order is kept.
+        private List<List<int>> pieces;
         private bool[] protectedGroups;
         private int[] triangles;
         private Vector3[] outward;
@@ -46,14 +51,20 @@ namespace Orbiters.ReFit
             return count >= 32 && legs >= count / 4 && other == 0;
         }
 
+        /// <param name="authored">A clothing layer's vertices as authored: support only where the asset was outside it.</param>
         public static ReFitSurfaceCoverage Build(MeshSnapshot asset, MeshSnapshot body, Vector3[] primary,
-            BodyRegion[] regions, bool[] tubes, ReFitSettings settings, BodyRegion[] bodyRegions = null)
+            BodyRegion[] regions, bool[] tubes, ReFitSettings settings, BodyRegion[] bodyRegions = null, Vector3[] authored = null,
+            bool[] hidden = null)
         {
             if (!settings.enableClearanceCorrection || (!settings.coverDifferentBaseBody &&
                 (!settings.preserveLowerBodyCoverage || !IsLowerBodyCloth(asset, regions, tubes)))) return null;
-            var result = new ReFitSurfaceCoverage { basis = new Vector3[asset.GroupCount], adjacency = asset.groupAdjacency, repair = settings.coverDifferentBaseBody };
+            var result = new ReFitSurfaceCoverage { basis = new Vector3[asset.GroupCount], adjacency = asset.groupAdjacency, repair = settings.coverDifferentBaseBody,
+                layer = authored != null };
             result.tubes = result.repair ? DetailGroups(asset, tubes) : tubes;
+            if (result.repair && settings.coverageKeepsLayerOrder) result.pieces = Pieces(asset, result.tubes);
             result.protectedGroups = result.repair ? ProtectOpenings(asset, regions, result.tubes) : tubes;
+            if (result.repair && hidden != null)
+                for (int g = 0; g < hidden.Length; g++) result.protectedGroups[g] |= hidden[g];
             if (result.repair)
             {
                 result.triangles = new int[asset.triangles.Length];
@@ -77,9 +88,11 @@ namespace Orbiters.ReFit
                     var offset = result.basis[g] - nearest.position;
                     var faceNormal = body.FaceNormal(nearest.triangle);
                     var tangent = offset - faceNormal * Vector3.Dot(offset, faceNormal);
+                    float authoredGap = authored != null ? AuthoredGap(asset.worldVertices[asset.groupRep[g]], authored, body.triangles, nearest.triangle, nearest.bary) : 0;
+                    if (authored != null && authoredGap < -AuthoredTolerance) return;
                     if (!result.protectedGroups[g] && nearest.distance <= .1f && tangent.sqrMagnitude <= .005f * .005f)
                         contacts[g] = new VertexSupport { group = g, triangle = nearest.triangle, bary = nearest.bary,
-                            normal = result.outward[g], gap = Mathf.Max(0, Vector3.Dot(result.basis[g] - nearest.position, result.outward[g])),
+                            normal = result.outward[g], gap = authored != null ? Mathf.Clamp(authoredGap, 0, LayerClearance) : Mathf.Max(0, Vector3.Dot(result.basis[g] - nearest.position, result.outward[g])),
                             signedGap = Vector3.Dot(result.basis[g] - nearest.position, result.outward[g]) };
                 });
                 foreach (var contact in contacts) if (contact.HasValue) result.vertexSupports.Add(contact.Value);
@@ -111,11 +124,200 @@ namespace Orbiters.ReFit
                 // Reject skin beyond an opening instead of extending the hem to cover it.
                 var tangent = hit.position - body.worldVertices[i] - normal * gap;
                 if (tangent.sqrMagnitude > .001f * .001f || (!result.repair && gap < -.001f) || gap > range) return;
+                if (authored != null)
+                {
+                    var p0 = asset.worldVertices[asset.triangles[t]]; var p1 = asset.worldVertices[asset.triangles[t + 1]]; var p2 = asset.worldVertices[asset.triangles[t + 2]];
+                    var clothAuthored = p0 * hit.bary.x + p1 * hit.bary.y + p2 * hit.bary.z;
+                    // The garment passed under this layer here as authored (a collar over a lapel): leave it there.
+                    float authoredGap = Vector3.Dot(clothAuthored - authored[i], Vector3.Cross(p1 - p0, p2 - p0).normalized);
+                    if (authoredGap < -AuthoredTolerance) return;
+                    gap = Mathf.Min(gap, Mathf.Clamp(authoredGap, 0, LayerClearance));
+                }
                 samples[i] = new Support { vertex = i, a = a, b = b, c = c, bary = hit.bary, gap = Mathf.Max(0, gap), signedGap = gap };
             });
             // The solver accumulates constraints in vertex order, regardless of query completion order.
             foreach (var sample in samples) if (sample.HasValue) result.supports.Add(sample.Value);
             return result.supports.Count == 0 && result.vertexSupports.Count == 0 ? null : result;
+        }
+
+        // Hidden: a surface lies over the group as authored, between these heights above it and within this reach of the line
+        // out of the body. Its own fabric counts once it is this many rings away (a fold, a lining, a vest over the shirt).
+        private static readonly float[] CoverHeights = { .002f, .005f, .009f, .014f, .02f };
+        private const float CoverReach = .003f, CoverFacing = .5f, CoverTilt = 30 * Mathf.Deg2Rad;
+        private const int CoverRings = 4;
+
+        /// <summary>
+        /// Clipped groups another surface covers: the garment's own outer fabric (a collar
+        /// fold, a vest over its shirt) or another part of the outfit (a bowtie band under the collar, a jacket collar under the
+        /// shirt's). Their clipping was never visible; pushing them out of the body would bring them through what covers them.
+        /// </summary>
+        /// <param name="others">The outfit's other parts: refitted ones cover only from outside the body.</param>
+        public static bool[] HiddenGroups(MeshSnapshot asset, MeshSnapshot body, SurfaceBvh bodyIndex, IList<(MeshSnapshot surface, bool refitted)> others) =>
+            HiddenGroups(asset, body, bodyIndex, others, null, null);
+
+        /// <summary>What lies over a group straight out of the body: a layer's triangle, or the asset's own (layer -1).</summary>
+        public struct Cover
+        {
+            public int layer, triangle;
+            public Vector3 bary, normal;
+        }
+
+        /// <param name="by">Diagnostics: -1 hidden by the asset's own fabric, otherwise the index of the covering garment.</param>
+        internal static bool[] HiddenGroups(MeshSnapshot asset, MeshSnapshot body, SurfaceBvh bodyIndex, IList<(MeshSnapshot surface, bool refitted)> others, int[] byGroup,
+            Cover?[] covers)
+        {
+            var hidden = new bool[asset.GroupCount];
+            var self = SurfaceBvh.Build(asset);
+            // A button or a pocket square does not hide the fabric it sits on.
+            var details = DetailGroups(asset, null);
+            var indices = others.Where(o => o.surface != null).Select(o => (snapshot: o.surface, index: SurfaceBvh.Build(o.surface), o.refitted)).ToList();
+            Parallel.For(0, asset.GroupCount, g =>
+            {
+                var point = asset.worldVertices[asset.groupRep[g]];
+                var nearest = bodyIndex.ClosestPoint(point, .1f);
+                if (!nearest.found) return;
+                var up = body.BaryNormal(nearest.triangle, nearest.bary);
+                HashSet<int> near = null;
+                // Whatever lies over it, clipped or not: in shapes it must not pass through that.
+                if (covers != null) covers[g] = CoverOf(point, up);
+                // Only clipping is left in place: a hidden group outside the body still moves with the fabric around it.
+                if (Vector3.Dot(point - nearest.position, up) >= -AuthoredTolerance) return;
+                // Covered from every side, not only straight out: a hem's edge near the line does not hide what is below it.
+                var side = Vector3.Cross(up, Mathf.Abs(up.y) < .9f ? Vector3.up : Vector3.right).normalized;
+                var other = Vector3.Cross(up, side);
+                int cover = int.MinValue;
+                foreach (var ray in new[] { up, Tilt(up, side), Tilt(up, -side), Tilt(up, other), Tilt(up, -other) })
+                {
+                    int by = Covered(point, ray, up);
+                    if (by == int.MinValue) return;
+                    cover = cover == int.MinValue || by >= 0 ? by : cover;
+                }
+                hidden[g] = true;
+                if (byGroup != null) byGroup[g] = cover;
+
+                Cover? CoverOf(Vector3 from, Vector3 outward)
+                {
+                    foreach (float height in CoverHeights)
+                    {
+                        var probe = from + outward * height;
+                        for (int o = 0; o < indices.Count; o++)
+                        {
+                            if (!indices[o].refitted) continue;
+                            var surface = indices[o].snapshot;
+                            var hit = indices[o].index.ClosestPoint(probe, CoverReach, t => Vector3.Dot(surface.FaceNormal(t), outward) >= CoverFacing);
+                            // A part not refitted yet does not move with the shapes: it will be refitted over this one later.
+                            if (indices[o].refitted && hit.found && Outside(hit.position)) return new Cover { layer = o, triangle = hit.triangle, bary = hit.bary, normal = outward };
+                        }
+                        var own = self.ClosestPoint(probe, CoverReach, t => Vector3.Dot(asset.FaceNormal(t), outward) >= CoverFacing);
+                        if (own.found && Far(own.triangle)) return new Cover { layer = -1, triangle = own.triangle, bary = own.bary, normal = outward };
+                    }
+                    return null;
+                }
+
+                bool Far(int triangle)
+                {
+                    near ??= Rings(asset, g, CoverRings);
+                    int a = asset.groupOfVertex[asset.triangles[triangle * 3]], b = asset.groupOfVertex[asset.triangles[triangle * 3 + 1]],
+                        c = asset.groupOfVertex[asset.triangles[triangle * 3 + 2]];
+                    return !near.Contains(a) && !near.Contains(b) && !near.Contains(c) && !details[a] && !details[b] && !details[c];
+                }
+
+                // The covering garment's index, -1 for the asset's own outer fabric, int.MinValue when nothing covers.
+                int Covered(Vector3 from, Vector3 ray, Vector3 outward)
+                {
+                    foreach (float height in CoverHeights)
+                    {
+                        var probe = from + ray * height;
+                        for (int o = 0; o < indices.Count; o++)
+                        {
+                            // Past a lining or the inner side of a collar to the outer fabric facing out.
+                            var surface = indices[o].snapshot;
+                            var hit = indices[o].index.ClosestPoint(probe, CoverReach, t => Vector3.Dot(surface.FaceNormal(t), outward) >= CoverFacing);
+                            if (hit.found && (!indices[o].refitted || Outside(hit.position))) return o;
+                        }
+                        var own = self.ClosestPoint(probe, CoverReach, t => Vector3.Dot(asset.FaceNormal(t), outward) >= CoverFacing);
+                        if (own.found && Far(own.triangle)) return -1;
+                    }
+                    return int.MinValue;
+                }
+
+                // A refitted part still clipping into the body hides nothing (trousers left in the hips under the jacket's hem).
+                bool Outside(Vector3 position)
+                {
+                    var skin = bodyIndex.ClosestPoint(position, .1f);
+                    return !skin.found || Vector3.Dot(position - skin.position, body.BaryNormal(skin.triangle, skin.bary)) >= 0;
+                }
+            });
+            return hidden;
+        }
+
+        /// <summary>
+        /// In a shape, fabric stays beneath what lies over it (its own outer fabric or another part of the outfit): each surface
+        /// follows the body on its own, and the one closer to the skin, which follows it more, would pass through the other
+        /// (a jacket collar through the shirt's, a band through its fold). Only crossings are corrected.
+        /// </summary>
+        public static void KeepUnderCovers(MeshSnapshot asset, Vector3[] primary, Vector3[] deltas, Cover?[] covers,
+            IList<MeshSnapshot> layers, IList<Vector3[]> layerDeltas)
+        {
+            if (covers == null) return;
+            Vector3 Base(int vertex) => asset.worldVertices[vertex] + (primary != null ? primary[asset.groupOfVertex[vertex]] : Vector3.zero);
+            // Covers can be covered too (a band under a fold under a lapel): settle chains over a few passes.
+            for (int pass = 0; pass < 3; pass++)
+                for (int g = 0; g < covers.Length; g++)
+                {
+                    if (!covers[g].HasValue) continue;
+                    var c = covers[g].Value;
+                    Vector3 coverBase, coverMotion;
+                    if (c.layer >= 0)
+                    {
+                        var surface = layers[c.layer].worldVertices; var moved = layerDeltas[c.layer]; var t = layers[c.layer].triangles;
+                        int a = t[c.triangle * 3], b = t[c.triangle * 3 + 1], d = t[c.triangle * 3 + 2];
+                        coverBase = surface[a] * c.bary.x + surface[b] * c.bary.y + surface[d] * c.bary.z;
+                        coverMotion = moved[a] * c.bary.x + moved[b] * c.bary.y + moved[d] * c.bary.z;
+                    }
+                    else
+                    {
+                        int a = asset.triangles[c.triangle * 3], b = asset.triangles[c.triangle * 3 + 1], d = asset.triangles[c.triangle * 3 + 2];
+                        coverBase = Base(a) * c.bary.x + Base(b) * c.bary.y + Base(d) * c.bary.z;
+                        coverMotion = deltas[asset.groupOfVertex[a]] * c.bary.x + deltas[asset.groupOfVertex[b]] * c.bary.y + deltas[asset.groupOfVertex[d]] * c.bary.z;
+                    }
+                    var groupBase = Base(asset.groupRep[g]);
+                    float baseGap = Vector3.Dot(coverBase - groupBase, c.normal);
+                    // Already through it at rest: nothing to keep.
+                    if (baseGap < 0) continue;
+                    float keep = Mathf.Min(baseGap, LayerClearance);
+                    float gap = Vector3.Dot(coverBase + coverMotion - groupBase - deltas[g], c.normal);
+                    if (gap < keep) deltas[g] -= c.normal * (keep - gap);
+                }
+        }
+
+        private static Vector3 Tilt(Vector3 up, Vector3 toward) => (up * Mathf.Cos(CoverTilt) + toward * Mathf.Sin(CoverTilt)).normalized;
+
+        private static HashSet<int> Rings(MeshSnapshot asset, int start, int rings)
+        {
+            var seen = new HashSet<int> { start };
+            var frontier = new List<int> { start };
+            for (int ring = 0; ring < rings; ring++)
+            {
+                var next = new List<int>();
+                foreach (int g in frontier)
+                    foreach (int n in asset.groupAdjacency[g])
+                        if (seen.Add(n)) next.Add(n);
+                frontier = next;
+            }
+            return seen;
+        }
+
+        // Authored interpenetration finer than this is noise, not a part made to pass under another.
+        private const float AuthoredTolerance = .0005f;
+
+        // A garment's height over a layer as authored: within LayerClearance, the gap it keeps when the layer moves.
+        private const float LayerClearance = .002f;
+
+        private static float AuthoredGap(Vector3 cloth, Vector3[] layer, int[] triangles, int triangle, Vector3 bary)
+        {
+            var a = layer[triangles[triangle * 3]]; var b = layer[triangles[triangle * 3 + 1]]; var c = layer[triangles[triangle * 3 + 2]];
+            return Vector3.Dot(cloth - (a * bary.x + b * bary.y + c * bary.z), Vector3.Cross(b - a, c - a).normalized);
         }
 
         private static bool[] ProtectOpenings(MeshSnapshot asset, BodyRegion[] regions, bool[] tubes)
@@ -132,7 +334,7 @@ namespace Orbiters.ReFit
             return result;
         }
 
-        private static bool[] DetailGroups(MeshSnapshot asset, bool[] tubes)
+        internal static bool[] DetailGroups(MeshSnapshot asset, bool[] tubes)
         {
             var result = tubes != null ? (bool[])tubes.Clone() : new bool[asset.GroupCount];
             var edgeCounts = new Dictionary<ulong, int>();
@@ -168,10 +370,11 @@ namespace Orbiters.ReFit
         }
 
         public static void RepairPrimary(MeshSnapshot asset, MeshSnapshot body, Vector3[] primary,
-            BodyRegion[] regions, bool[] tubes, ReFitSettings settings, ReFitReport report, BodyRegion[] bodyRegions)
+            BodyRegion[] regions, bool[] tubes, ReFitSettings settings, ReFitReport report, BodyRegion[] bodyRegions, Vector3[] authored = null,
+            bool[] hidden = null)
         {
             if (!settings.coverDifferentBaseBody) return;
-            var coverage = Build(asset, body, primary, regions, tubes, settings, bodyRegions);
+            var coverage = Build(asset, body, primary, regions, tubes, settings, bodyRegions, authored, hidden);
             if (coverage == null) return;
             var correction = new Vector3[primary.Length];
             coverage.Apply(body, null, correction, new Vector3[primary.Length], settings, report, "different-base coverage");
@@ -206,7 +409,7 @@ namespace Orbiters.ReFit
                     var skin = body.worldVertices[a] * s.bary.x + body.worldVertices[b] * s.bary.y + body.worldVertices[c] * s.bary.z + motion;
                     // Shapes are additive. Each one preserves the achieved base clearance rather
                     // than applying the same unresolved base repair again (even for tiny skin motion).
-                    float safety = bodyDelta != null ? s.signedGap : Mathf.Max(RepairSafety, s.gap);
+                    float safety = bodyDelta != null ? s.signedGap : layer ? s.gap : Mathf.Max(RepairSafety, s.gap);
                     float missing = safety - Vector3.Dot(positions[s.group] - skin, s.normal);
                     if (missing <= .00005f) continue;
                     corrections[s.group] += s.normal * missing; weights[s.group]++;
@@ -224,7 +427,7 @@ namespace Orbiters.ReFit
                     if (Vector3.Dot(n, reference) < .35f) continue;
                     var p = positions[ga] * s.bary.x + positions[gb] * s.bary.y + positions[gc] * s.bary.z;
                     // Do not spend the original gap independently in every additive shape.
-                    float safety = repair && bodyDelta != null ? s.signedGap :
+                    float safety = repair && bodyDelta != null ? s.signedGap : repair && layer ? s.gap :
                         Mathf.Max(repair ? Mathf.Max(RepairSafety, settings.clearanceMinimumSafetyDistance) : settings.clearanceMinimumSafetyDistance, s.gap);
                     float missing = safety - Vector3.Dot(p - skin, n);
                     if (missing <= .00005f) continue;
@@ -268,6 +471,7 @@ namespace Orbiters.ReFit
             if (repair)
             {
                 FollowDetails(deltas, original);
+                FollowPieces(deltas, original);
                 residual = 0;
                 foreach (var s in supports)
                 {
@@ -276,7 +480,7 @@ namespace Orbiters.ReFit
                     var n = Vector3.Cross(b - a, c - a).normalized;
                     if (Vector3.Dot(n, body.worldNormals[s.vertex]) < .35f) continue;
                     var skin = body.worldVertices[s.vertex] + (bodyDelta != null ? bodyDelta[s.vertex] : Vector3.zero);
-                    float safety = bodyDelta != null ? s.signedGap : Mathf.Max(Mathf.Max(RepairSafety, settings.clearanceMinimumSafetyDistance), s.gap);
+                    float safety = bodyDelta != null ? s.signedGap : layer ? s.gap : Mathf.Max(Mathf.Max(RepairSafety, settings.clearanceMinimumSafetyDistance), s.gap);
                     residual = Mathf.Max(residual, safety - Vector3.Dot(a*s.bary.x + b*s.bary.y + c*s.bary.z - skin, n));
                 }
             }
@@ -284,6 +488,50 @@ namespace Orbiters.ReFit
             report?.Info("surface-coverage", $"{label}: {supports.Count} body supports, {corrected} constraint corrections, maximum coverage correction {max * 1000:F3}mm, last support residual {residual * 1000:F3}mm. Support residual is not a full mesh-intersection test.");
             if (residual > .0005f)
                 report?.Warn("surface-coverage-limited", $"{label}: clothing surface support remains {residual * 1000:F3}mm short after the bounded correction. Inspect the garment at individual and combined shape weights.");
+        }
+
+        // Separate pieces up to an eighth of the garment, other than the closed details already carried.
+        private static List<List<int>> Pieces(MeshSnapshot asset, bool[] details)
+        {
+            var visited = new bool[asset.GroupCount]; var components = new List<List<int>>(); int largest = 0;
+            for (int start = 0; start < visited.Length; start++)
+            {
+                if (visited[start]) continue;
+                var component = new List<int>(); var queue = new Queue<int>(); queue.Enqueue(start); visited[start] = true;
+                while (queue.Count > 0)
+                {
+                    int g = queue.Dequeue(); component.Add(g);
+                    foreach (int n in asset.groupAdjacency[g]) if (!visited[n]) { visited[n] = true; queue.Enqueue(n); }
+                }
+                components.Add(component); largest = Math.Max(largest, component.Count);
+            }
+            return components.Where(c => c.Count < largest / 8 && !c.Exists(g => details != null && details[g])).ToList();
+        }
+
+        // A piece not connected to the fabric it sits on rides with it as one rigid part, unless its own correction is larger:
+        // a pocket square or a pin must not sink into fabric pushed out of the body.
+        private void FollowPieces(Vector3[] deltas, Vector3[] original)
+        {
+            if (pieces == null || pieces.Count == 0) return;
+            var cloth = new MeshSnapshot { worldVertices = basis, triangles = triangles };
+            var index = SurfaceBvh.Build(cloth);
+            foreach (var piece in pieces)
+            {
+                var members = new HashSet<int>(piece);
+                Vector3 carry = Vector3.zero, own = Vector3.zero;
+                foreach (int g in piece)
+                {
+                    own += deltas[g] - original[g];
+                    var hit = index.ClosestPoint(basis[g], .04f, t => !members.Contains(triangles[t * 3]) && !members.Contains(triangles[t * 3 + 1]) && !members.Contains(triangles[t * 3 + 2]));
+                    if (!hit.found) continue;
+                    int a = triangles[hit.triangle * 3], b = triangles[hit.triangle * 3 + 1], c = triangles[hit.triangle * 3 + 2];
+                    var d = (deltas[a] - original[a]) * hit.bary.x + (deltas[b] - original[b]) * hit.bary.y + (deltas[c] - original[c]) * hit.bary.z;
+                    if (d.sqrMagnitude > carry.sqrMagnitude) carry = d;
+                }
+                own /= piece.Count;
+                if (carry.sqrMagnitude <= own.sqrMagnitude) continue;
+                foreach (int g in piece) deltas[g] = original[g] + carry;
+            }
         }
 
         private void FollowDetails(Vector3[] deltas, Vector3[] original)

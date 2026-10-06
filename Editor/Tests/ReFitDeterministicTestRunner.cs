@@ -2781,7 +2781,7 @@ namespace Orbiters.ReFit.Editor.Tests
                         BindingFlags.Instance | BindingFlags.NonPublic);
                     AssertTrue(method != null, "Could not reflect ReFitWizard.BuildRequest.");
 
-                    var request = method.Invoke(window, null) as ReFitRequest;
+                    var request = method.Invoke(window, new object[] { null }) as ReFitRequest;
                     AssertTrue(request != null, "BuildRequest returned null.");
                     AssertTrue(request.settings.captureProjectionDebug,
                         "Debug mode should capture projection data even when the Scene view projection rays are hidden.");

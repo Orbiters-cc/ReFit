@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Linq;
 using System.IO;
 using UnityEditor;
 using UnityEditor.UIElements;
@@ -52,6 +53,7 @@ namespace Orbiters.ReFit.Editor
             TargetForFile,
             FileAssetChoice,
             Tightness,
+            MadeFor,
             Summary,
             Settings,
             GravityPreview,
@@ -80,6 +82,12 @@ namespace Orbiters.ReFit.Editor
         private float clearanceTightnessPreset = 0.5f;
         private bool clearanceTightnessUserChosen;
         private bool standardTightnessInitialized;
+        // Was the asset made for this exact avatar? If not, ReFit also moves it out of the body where it clips.
+        private bool madeForAvatar = true;
+        // Not made for it: refit the other parts of its outfit with it, innermost first, so their layers stay in order.
+        private bool refitOutfit = true;
+        private readonly List<(SkinnedMeshRenderer part, ReFitRequest request, ReFitResult result)> outfitResults =
+            new List<(SkinnedMeshRenderer, ReFitRequest, ReFitResult)>();
         private readonly Stack<IEnumerator> executionCoroutines = new Stack<IEnumerator>();
         private bool isExecuting;
         private float executionProgress;
@@ -197,6 +205,7 @@ namespace Orbiters.ReFit.Editor
             targetAvatar = null; sourceAvatar = null; blendshapes.Clear();
             mode = ReFitMode.MeshToMesh;
             ResetTightnessChoice();
+            madeForAvatar = true; refitOutfit = true; outfitResults.Clear();
             validateReport = null; lastResult = null;
             lastRequest = null; gravityPreview = null;
             commissionCreators = null;
@@ -238,6 +247,7 @@ namespace Orbiters.ReFit.Editor
                 case Step.TargetForFile: BuildTargetInput(Step.FileAssetChoice); break;
                 case Step.FileAssetChoice: BuildFileAssetChoice(); break;
                 case Step.Tightness: BuildTightness(); break;
+                case Step.MadeFor: BuildMadeFor(); break;
                 case Step.Summary: BuildSummary(); break;
                 case Step.Settings: BuildToolSettings(); break;
                 case Step.GravityPreview: BuildGravityPreview(); break;
@@ -592,10 +602,53 @@ namespace Orbiters.ReFit.Editor
             footer.AddToClassList("refit-tightness-footer");
             content.Add(footer);
 
-            var next = new Button(() => Go(Step.Summary)) { text = "Next" };
+            var next = new Button(() => Go(Step.MadeFor)) { text = "Next" };
             next.AddToClassList("refit-primary");
             next.AddToClassList("refit-tightness-next");
             footer.Add(next);
+        }
+
+        private void BuildMadeFor()
+        {
+            var madeFor = MadeForAvatar();
+            Question($"Was it made for {(madeFor != null ? madeFor.name : "this avatar")} exactly ?");
+            Help("Clothing from another avatar is often placed roughly over the body, sinking into it in places.");
+            var cards = Cards();
+            cards.Add(Card("Yes, it was made for it",
+                mode == ReFitMode.Blendshape ? "It fits the body as it is: ReFit only makes it follow the blendshapes." : "It fits that avatar: ReFit moves it to this one.",
+                () => { madeForAvatar = true; Go(Step.Summary); }));
+            cards.Add(Card("No, I placed it myself",
+                "ReFit also moves it out of the body where it clips, as it is and with the blendshapes, keeping layered parts in order.",
+                () => { madeForAvatar = false; Go(Step.Summary); }));
+        }
+
+        // The avatar the asset sits on as authored: the source for a move to another avatar, this one otherwise.
+        private GameObject MadeForAvatar() => mode == ReFitMode.Blendshape || sourceAvatar == null ? targetAvatar : sourceAvatar;
+
+        // Refit onto the same avatar from where it was placed: it is on that avatar's hierarchy.
+        private bool OnItsAvatar(SkinnedMeshRenderer part) => !madeForAvatar && mode != ReFitMode.MeshToMesh && targetAvatar != null &&
+            part != null && part.transform.IsChildOf(targetAvatar.transform) && (sourceAvatar == null || sourceAvatar == targetAvatar);
+
+        // The outfit a part belongs to: its object directly under the avatar, when that holds other meshes. Body and
+        // editor-only renderers excluded.
+        private List<SkinnedMeshRenderer> OutfitParts(SkinnedMeshRenderer part)
+        {
+            var parts = new List<SkinnedMeshRenderer> { part };
+            if (part == null || targetAvatar == null || !part.transform.IsChildOf(targetAvatar.transform) || part.transform == targetAvatar.transform) return parts;
+            var top = part.transform;
+            while (top.parent != null && top.parent != targetAvatar.transform) top = top.parent;
+            var body = AutoDetectBody(targetAvatar, null);
+            foreach (var renderer in top.GetComponentsInChildren<SkinnedMeshRenderer>(true))
+                if (renderer != part && renderer != body && renderer.sharedMesh != null && (renderer.hideFlags & HideFlags.DontSaveInEditor) == 0)
+                    parts.Add(renderer);
+            return parts;
+        }
+
+        // The parts refitted in this run: the asset, or its outfit innermost first.
+        private List<SkinnedMeshRenderer> RunParts()
+        {
+            if (!OnItsAvatar(asset) || !refitOutfit) return new List<SkinnedMeshRenderer> { asset };
+            return ReFitOutfit.InnerFirst(AutoDetectBody(targetAvatar, null), OutfitParts(asset));
         }
 
         private VisualElement BuildTightnessOption(string title, bool tight, string caption)
@@ -647,6 +700,19 @@ namespace Orbiters.ReFit.Editor
             SummaryRow("Tightness", clearanceTightnessKnown
                 ? $"{Mathf.RoundToInt(clearanceTightnessPreset * 100f)}%"
                 : "Custom");
+            SummaryRow("Made for this avatar", madeForAvatar ? "Yes" : "No: moved out of the body where it clips");
+            var outfit = OnItsAvatar(asset) ? OutfitParts(asset) : null;
+            if (outfit != null && outfit.Count > 1)
+            {
+                var together = new Toggle($"Refit its outfit with it ({outfit.Count} parts)") { value = refitOutfit };
+                together.AddToClassList("refit-field");
+                together.tooltip = "Inner parts first, so the outer ones stay over them: " + string.Join(", ", outfit.Select(p => p.name));
+                together.RegisterValueChangedCallback(e => { refitOutfit = e.newValue; validateReport = null; validateScheduled = false; Render(); });
+                content.Add(together);
+                Help(refitOutfit
+                    ? "Inner parts first, each keeping its side of the others: " + string.Join(", ", RunParts().Select(p => p.name)) + "."
+                    : "Only this part is refitted; it keeps its side of the outfit's other parts, which stay as they are.");
+            }
 
             // Advanced settings
             var advanced = new Foldout { text = "Advanced options", value = false };
@@ -691,7 +757,7 @@ namespace Orbiters.ReFit.Editor
                 validateScheduled = true;
                 content.schedule.Execute(() =>
                 {
-                    validateReport = ReFitService.Validate(BuildRequest());
+                    validateReport = ReFitService.Validate(BuildRequest(asset));
                     ShowReport();
                 }).StartingIn(50);
             }
@@ -1304,21 +1370,34 @@ namespace Orbiters.ReFit.Editor
             content.Add(flush);
         }
 
-        private ReFitRequest BuildRequest()
+        private ReFitRequest BuildRequest(SkinnedMeshRenderer part)
         {
             var requestSettings = settings.Clone();
             requestSettings.captureProjectionDebug = ReFitDebugService.Enabled;
             if (requestSettings.captureProjectionDebug)
                 requestSettings.maxProjectionDebugGroups = 0;
-            return new ReFitRequest
+            var request = new ReFitRequest
             {
                 mode = mode,
-                assetRenderer = asset,
+                assetRenderer = part,
                 sourceAvatar = mode == ReFitMode.Blendshape ? null : sourceAvatar,
                 targetAvatar = targetAvatar,
                 targetBlendshapes = mode == ReFitMode.MeshToMesh ? null : new List<string>(blendshapes),
                 settings = requestSettings
             };
+            if (madeForAvatar) return request;
+            // Not made for it: the coverage pass made for clothing from another avatar base.
+            requestSettings.coverDifferentBaseBody = true;
+            if (OnItsAvatar(part))
+            {
+                // Its mesh is refitted onto the same body, from where it was placed, with the blendshapes. The outfit's other
+                // parts keep their side of it; clipping they cover stays as it is.
+                request.mode = ReFitMode.MeshAndBlendshape;
+                request.sourceAvatar = targetAvatar;
+                requestSettings.coverageKeepsLayerOrder = true;
+                request.coverageLayers = OutfitParts(part).Where(p => p != part).ToList();
+            }
+            return request;
         }
 
         private void StartExecution()
@@ -1327,8 +1406,9 @@ namespace Orbiters.ReFit.Editor
 
             try
             {
-                lastRequest = BuildRequest();
+                lastRequest = BuildRequest(asset);
                 lastResult = null;
+                outfitResults.Clear();
                 executionProgress = 0f;
                 executionStep = "Preparing...";
                 isExecuting = true;
@@ -1347,14 +1427,44 @@ namespace Orbiters.ReFit.Editor
 
         private IEnumerator RunExecution()
         {
-            yield return ReFitService.ExecuteCoroutine(
-                lastRequest,
-                (t, label) =>
+            var parts = RunParts();
+            if (parts.Count == 1)
+            {
+                // A part not made for this avatar starts again from its original mesh, not from an earlier refit.
+                if (OnItsAvatar(asset) && ReFitRecordIntegration.TryRestore(asset)) lastRequest = BuildRequest(asset);
+                yield return ReFitService.ExecuteCoroutine(
+                    lastRequest,
+                    (t, label) =>
+                    {
+                        executionProgress = Mathf.Clamp01(t);
+                        executionStep = label;
+                    },
+                    result => lastResult = result);
+            }
+            else
+                for (int i = 0; i < parts.Count; i++)
                 {
-                    executionProgress = Mathf.Clamp01(t);
-                    executionStep = label;
-                },
-                result => lastResult = result);
+                    var part = parts[i];
+                    if (part == null) continue;
+                    ReFitRecordIntegration.TryRestore(part);
+                    // Built now: the parts refitted before it are its layers as refitted.
+                    var request = BuildRequest(part);
+                    // One prefab of the outfit, once every part is refitted.
+                    request.settings.savePrefab &= i == parts.Count - 1;
+                    ReFitResult result = null;
+                    int index = i;
+                    yield return ReFitService.ExecuteCoroutine(
+                        request,
+                        (t, label) =>
+                        {
+                            executionProgress = Mathf.Clamp01((index + Mathf.Clamp01(t)) / parts.Count);
+                            executionStep = part.name + ": " + label;
+                        },
+                        r => result = r);
+                    Record(request, result, part);
+                    outfitResults.Add((part, request, result));
+                    if (part == asset) { lastRequest = request; lastResult = result; }
+                }
 
             isExecuting = false;
             executionProgress = 1f;
@@ -1414,23 +1524,27 @@ namespace Orbiters.ReFit.Editor
             FinishExecution();
         }
 
+        private static void Record(ReFitRequest request, ReFitResult result, SkinnedMeshRenderer part)
+        {
+            if (result == null || !result.success) return;
+            ReFitRecordIntegration.TryRegister(request, result);
+            SessionLog.Add(new RefitLogEntry
+            {
+                assetName = part != null ? part.name : "asset",
+                meshAssetPath = result.meshAssetPath,
+                sceneRenderer = result.sceneRenderer,
+                originalMesh = result.originalMesh,
+                originalRendererState = result.originalRendererState,
+                refitMesh = result.mesh
+            });
+        }
+
         private void FinishExecution()
         {
             StopExecutionPump();
-            if (lastResult != null && lastResult.success)
-            {
-                ReFitRecordIntegration.TryRegister(lastRequest, lastResult);
-                SessionLog.Add(new RefitLogEntry
-                {
-                    assetName = asset != null ? asset.name : "asset",
-                    meshAssetPath = lastResult.meshAssetPath,
-                    sceneRenderer = lastResult.sceneRenderer,
-                    originalMesh = lastResult.originalMesh,
-                    originalRendererState = lastResult.originalRendererState,
-                    refitMesh = lastResult.mesh
-                });
-            }
-            if (lastResult != null && lastResult.success &&
+            if (outfitResults.Count == 0) Record(lastRequest, lastResult, asset);
+            // The gravity preview shows one garment: an outfit run goes to its results.
+            if (outfitResults.Count == 0 && lastResult != null && lastResult.success &&
                 ReFitGravityPreviewService.TryCreatePreview(lastResult, lastRequest, out gravityPreview))
             {
                 gravityPreviewWeight = 100f;
@@ -1501,7 +1615,21 @@ namespace Orbiters.ReFit.Editor
         private void BuildResult()
         {
             bool ok = lastResult != null && lastResult.success;
-            Question(ok ? "Done ! Your asset has been re-fitted." : "ReFit could not complete.");
+            if (outfitResults.Count > 0)
+            {
+                int done = outfitResults.Count(r => r.result != null && r.result.success);
+                Question(done == outfitResults.Count ? $"Done ! The {done} parts of the outfit have been re-fitted." : $"{done} of {outfitResults.Count} parts were re-fitted.");
+                foreach (var item in outfitResults)
+                {
+                    bool partOk = item.result != null && item.result.success;
+                    SummaryRow(item.part != null ? item.part.name : "-", partOk ? "Re-fitted" : "Not re-fitted");
+                    if (!partOk && item.result != null)
+                        foreach (var m in item.result.report.messages)
+                            if (m.severity == ReFitSeverity.Error) AddMessage(content, m);
+                }
+            }
+            else
+                Question(ok ? "Done ! Your asset has been re-fitted." : "ReFit could not complete.");
 
             if (lastResult != null)
             {

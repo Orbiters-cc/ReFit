@@ -70,6 +70,7 @@ namespace Orbiters.ReFit
                 }
                 for (int v = 0; v < snapshot.worldNormals.Length; v++) snapshot.worldNormals[v].Normalize();
                 state.coverageLayers.Add(snapshot);
+                state.coverageLayerNames.Add(original.name);
                 // As authored: without the layer's own refit (its primary shape), body shapes at zero.
                 state.coverageLayersAuthored.Add(state.settings.coverageKeepsLayerOrder
                     ? MeshSnapshot.Capture(renderer, false, AuthoredWeights(stage, renderer), state.Report).worldVertices : null);

@@ -1,5 +1,13 @@
 # ReFit
 
+## 0.5.5 — 2026-10-07
+
+- `surface-coverage-limited` warns only when clothing stays inside the body or an inner garment, or within 1 mm of it, and says how far (`clothing remains 4.20mm under the body surface`). Clothing outside it with less than the 1 cm of room the correction aims for no longer warns, nor counts as rough in Toolkit and My Avatar. The correction is unchanged.
+- Coverage messages name the surface they cover: the body or `inner garment '<name>'`.
+- A cancelled refit reports `refit-cancelled` once.
+- A failed scene application (such as `bone-apply-incomplete`) no longer adds a second `refit-exception: Unexpected error`.
+- The reset test registers the object it adds with Undo, so reverting it no longer warns.
+
 ## 0.5.4 — 2026-10-05
 
 - Use the Orbiters Toolkit blendshape picker (requires Orbiters Toolkit 0.3.11).

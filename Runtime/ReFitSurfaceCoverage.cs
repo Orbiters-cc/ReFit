@@ -11,6 +11,11 @@ namespace Orbiters.ReFit
     {
         // A visible allowance for coarse triangles over a curved body, including in-between shape weights.
         private const float RepairSafety = .01f;
+        // Clothing left short of its targeted clearance clips only inside the surface it covers or this close to it.
+        // Farther out it only has less room than the correction aims for (RepairSafety): not worth a warning.
+        internal const float ClipTolerance = .001f;
+        // A remaining shortfall below this is solver noise.
+        private const float ShortTolerance = .0005f;
         private struct Support
         {
             public int vertex, a, b, c;
@@ -36,6 +41,8 @@ namespace Orbiters.ReFit
         private int[] triangles;
         private Vector3[] outward;
         private bool[] tubes;
+        // What the supports keep the clothing outside of, for diagnostics: the body or an inner garment.
+        private string surfaceName;
 
         public static bool IsLowerBodyCloth(MeshSnapshot asset, BodyRegion[] regions, bool[] tubes)
         {
@@ -52,14 +59,15 @@ namespace Orbiters.ReFit
         }
 
         /// <param name="authored">A clothing layer's vertices as authored: support only where the asset was outside it.</param>
+        /// <param name="innerGarment">The garment's name when <paramref name="body"/> is an inner garment, not the body.</param>
         public static ReFitSurfaceCoverage Build(MeshSnapshot asset, MeshSnapshot body, Vector3[] primary,
             BodyRegion[] regions, bool[] tubes, ReFitSettings settings, BodyRegion[] bodyRegions = null, Vector3[] authored = null,
-            bool[] hidden = null)
+            bool[] hidden = null, string innerGarment = null)
         {
             if (!settings.enableClearanceCorrection || (!settings.coverDifferentBaseBody &&
                 (!settings.preserveLowerBodyCoverage || !IsLowerBodyCloth(asset, regions, tubes)))) return null;
             var result = new ReFitSurfaceCoverage { basis = new Vector3[asset.GroupCount], adjacency = asset.groupAdjacency, repair = settings.coverDifferentBaseBody,
-                layer = authored != null };
+                layer = authored != null, surfaceName = innerGarment != null ? $"inner garment '{innerGarment}'" : "the body surface" };
             result.tubes = result.repair ? DetailGroups(asset, tubes) : tubes;
             if (result.repair && settings.coverageKeepsLayerOrder) result.pieces = Pieces(asset, result.tubes);
             result.protectedGroups = result.repair ? ProtectOpenings(asset, regions, result.tubes) : tubes;
@@ -371,10 +379,10 @@ namespace Orbiters.ReFit
 
         public static void RepairPrimary(MeshSnapshot asset, MeshSnapshot body, Vector3[] primary,
             BodyRegion[] regions, bool[] tubes, ReFitSettings settings, ReFitReport report, BodyRegion[] bodyRegions, Vector3[] authored = null,
-            bool[] hidden = null)
+            bool[] hidden = null, string innerGarment = null)
         {
             if (!settings.coverDifferentBaseBody) return;
-            var coverage = Build(asset, body, primary, regions, tubes, settings, bodyRegions, authored, hidden);
+            var coverage = Build(asset, body, primary, regions, tubes, settings, bodyRegions, authored, hidden, innerGarment);
             if (coverage == null) return;
             var correction = new Vector3[primary.Length];
             coverage.Apply(body, null, correction, new Vector3[primary.Length], settings, report, "different-base coverage");
@@ -391,6 +399,8 @@ namespace Orbiters.ReFit
             var corrections = new Vector3[deltas.Length];
             var weights = new float[deltas.Length];
             float residual = 0;
+            // Clearance of the support most at risk of clipping (RisksClipping); infinite when none is.
+            float clipping = float.PositiveInfinity;
             var limits = repair ? BuildLimits(original, bodyDelta != null) : null;
             var positions = new Vector3[deltas.Length];
             for (int iteration = 0; iteration < 48; iteration++)
@@ -398,7 +408,7 @@ namespace Orbiters.ReFit
                 Array.Clear(corrections, 0, corrections.Length);
                 Array.Clear(weights, 0, weights.Length);
                 for (int g = 0; g < positions.Length; g++) positions[g] = basis[g] + deltas[g];
-                float worst = 0;
+                float worst = 0, closest = float.PositiveInfinity;
                 // Dense skin samples constrain face interiors; cloth samples additionally catch deep
                 // penetrations and folded cuffs whose face normals no longer point toward the skin.
                 foreach (var s in vertexSupports)
@@ -432,6 +442,7 @@ namespace Orbiters.ReFit
                     float missing = safety - Vector3.Dot(p - skin, n);
                     if (missing <= .00005f) continue;
                     worst = Mathf.Max(worst, missing); corrected++;
+                    if (RisksClipping(missing, safety - missing)) closest = Mathf.Min(closest, safety - missing);
                     // Follow the body's outward direction. Pushing along a newly tilted fabric face
                     // introduces tangential drift that can reopen intersections at intermediate weights.
                     var push = reference * (missing / (Mathf.Max(.35f, Vector3.Dot(n, reference)) * s.bary.sqrMagnitude));
@@ -464,6 +475,7 @@ namespace Orbiters.ReFit
                     }
                 }
                 residual = worst;
+                clipping = closest;
                 if (repair) Regularize(deltas, original, bodyDelta != null, limits);
                 if (worst <= .0001f && iteration >= 40) break;
             }
@@ -473,6 +485,7 @@ namespace Orbiters.ReFit
                 FollowDetails(deltas, original);
                 FollowPieces(deltas, original);
                 residual = 0;
+                clipping = float.PositiveInfinity;
                 foreach (var s in supports)
                 {
                     if (bodyDelta != null && bodyDelta[s.vertex].sqrMagnitude < 1e-10f) continue;
@@ -481,14 +494,28 @@ namespace Orbiters.ReFit
                     if (Vector3.Dot(n, body.worldNormals[s.vertex]) < .35f) continue;
                     var skin = body.worldVertices[s.vertex] + (bodyDelta != null ? bodyDelta[s.vertex] : Vector3.zero);
                     float safety = bodyDelta != null ? s.signedGap : layer ? s.gap : Mathf.Max(Mathf.Max(RepairSafety, settings.clearanceMinimumSafetyDistance), s.gap);
-                    residual = Mathf.Max(residual, safety - Vector3.Dot(a*s.bary.x + b*s.bary.y + c*s.bary.z - skin, n));
+                    float shortfall = safety - Vector3.Dot(a*s.bary.x + b*s.bary.y + c*s.bary.z - skin, n);
+                    residual = Mathf.Max(residual, shortfall);
+                    if (RisksClipping(shortfall, safety - shortfall)) clipping = Mathf.Min(clipping, safety - shortfall);
                 }
             }
             for (int g = 0; g < deltas.Length; g++) max = Mathf.Max(max, (deltas[g] - original[g]).magnitude);
-            report?.Info("surface-coverage", $"{label}: {supports.Count} body supports, {corrected} constraint corrections, maximum coverage correction {max * 1000:F3}mm, last support residual {residual * 1000:F3}mm. Support residual is not a full mesh-intersection test.");
-            if (residual > .0005f)
-                report?.Warn("surface-coverage-limited", $"{label}: clothing surface support remains {residual * 1000:F3}mm short after the bounded correction. Inspect the garment at individual and combined shape weights.");
+            report?.Info("surface-coverage", $"{label}: {supports.Count} supports on {surfaceName}, {corrected} constraint corrections, maximum coverage correction {max * 1000:F3}mm, last support residual {residual * 1000:F3}mm short of the targeted clearance. Support residual is not a full mesh-intersection test.");
+            if (clipping < ClipTolerance)
+                report?.Warn("surface-coverage-limited", LimitedWarning(label, surfaceName, clipping));
         }
+
+        /// <summary>
+        /// A support the bounded correction left at risk of clipping: still short of its targeted clearance, and inside the
+        /// surface it covers or within <see cref="ClipTolerance"/> of it. Short of the targeted room alone, cloth farther out
+        /// only fits closer than intended.
+        /// </summary>
+        internal static bool RisksClipping(float shortfall, float clearance) => shortfall > ShortTolerance && clearance < ClipTolerance;
+
+        /// <param name="clearance">The support most at risk: its signed distance out of <paramref name="surface"/>.</param>
+        internal static string LimitedWarning(string label, string surface, float clearance) => clearance < 0
+            ? $"{label}: clothing remains {-clearance * 1000:F2}mm under {surface} after the bounded correction. Inspect the garment at individual and combined shape weights."
+            : $"{label}: clothing remains only {clearance * 1000:F2}mm from {surface} after the bounded correction and may clip. Inspect the garment at individual and combined shape weights.";
 
         // Separate pieces up to an eighth of the garment, other than the closed details already carried.
         private static List<List<int>> Pieces(MeshSnapshot asset, bool[] details)

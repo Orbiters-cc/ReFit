@@ -263,6 +263,8 @@ namespace Orbiters.ReFit
             // Each layer's vertices as authored (before its own refit), when the layer order is kept, and whether it was refitted.
             public readonly List<Vector3[]> coverageLayersAuthored = new List<Vector3[]>();
             public readonly List<bool> coverageLayersRefitted = new List<bool>();
+            // Each layer's name, read on the main thread for the coverage diagnostics.
+            public readonly List<string> coverageLayerNames = new List<string>();
             // Clipped groups another surface covers as authored: the body coverage leaves them in place. Covers of every group:
             // in shapes, fabric stays beneath what lies over it.
             public bool[] hiddenGroups;
@@ -1087,7 +1089,8 @@ namespace Orbiters.ReFit
                     state.assetGroupRegions, state.tubes.groups, settings, state.Report, state.targetTriRegions, hidden: state.hiddenGroups);
                 for (int layer = 0; layer < state.coverageLayers.Count; layer++)
                     ReFitSurfaceCoverage.RepairPrimary(asset, state.coverageLayers[layer], primaryGroupDeltas,
-                        state.assetGroupRegions, state.tubes.groups, settings, state.Report, null, state.coverageLayersAuthored[layer]);
+                        state.assetGroupRegions, state.tubes.groups, settings, state.Report, null, state.coverageLayersAuthored[layer],
+                        innerGarment: state.coverageLayerNames[layer]);
                 state.primaryLocalDeltas = ToLocalDeltas(state, primaryGroupDeltas, true);
                 if (settings.recalculateNormalDeltas)
                     state.primaryNormalDeltas = NormalDeltas(asset, state.primaryLocalDeltas, null);
@@ -1115,7 +1118,8 @@ namespace Orbiters.ReFit
             var layerCoverage = new List<ReFitSurfaceCoverage>();
             for (int layer = 0; layer < state.coverageLayers.Count; layer++)
                 layerCoverage.Add(ReFitSurfaceCoverage.Build(asset, state.coverageLayers[layer], primaryGroupDeltas,
-                    state.assetGroupRegions, state.tubes.groups, settings, authored: state.coverageLayersAuthored[layer]));
+                    state.assetGroupRegions, state.tubes.groups, settings, authored: state.coverageLayersAuthored[layer],
+                    innerGarment: state.coverageLayerNames[layer]));
 
             // ---- Blendshape transfer fields ----------------------------------------------
             if (state.shapes.Count > 0)
@@ -1208,7 +1212,7 @@ namespace Orbiters.ReFit
                         coverage?.Apply(targetBasis, worldShapeDelta, groupDeltas, coverageRawDeltas, settings, worker.Report, shape.sourceName);
                         for (int layer = 0; layer < layerCoverage.Count; layer++)
                             layerCoverage[layer]?.Apply(worker.coverageLayers[layer], frame.layerDeltas[layer], groupDeltas,
-                                coverageRawDeltas ?? (Vector3[])groupDeltas.Clone(), settings, worker.Report, shape.sourceName + " clothing layer");
+                                coverageRawDeltas ?? (Vector3[])groupDeltas.Clone(), settings, worker.Report, shape.sourceName);
                         ReFitSurfaceCoverage.KeepUnderCovers(asset, primaryGroupDeltas, groupDeltas, worker.hiddenCovers, worker.coverageLayers, frame.layerDeltas);
 
                         frame.localDeltas = ToLocalDeltas(worker, groupDeltas, false);

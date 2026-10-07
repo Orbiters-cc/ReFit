@@ -90,8 +90,7 @@ namespace Orbiters.ReFit.Editor
             if (!computation.success || result.report.HasErrors || cancellationToken.IsCancellationRequested)
             {
                 if (computation.mesh != null) Object.DestroyImmediate(computation.mesh);
-                if (cancellationToken.IsCancellationRequested)
-                    result.report.Warn("refit-cancelled", "ReFit was cancelled before application.");
+                if (cancellationToken.IsCancellationRequested) ReportCancelled(result.report);
                 return result;
             }
 
@@ -111,7 +110,11 @@ namespace Orbiters.ReFit.Editor
                 result.sceneRenderer = ReFitAssetPipeline.ApplyToScene(request, computation, result.report,
                     out var originalState, debug);
                 if (result.sceneRenderer == null || result.report.HasErrors)
+                {
+                    // Application reports why it failed (bone-apply-incomplete...): roll back without a second, "unexpected" error.
+                    if (result.report.HasErrors) throw new ReportedFailure();
                     throw new InvalidOperationException("Scene application did not produce a valid result.");
+                }
 
                 var subfolder = request.assetRenderer != null ? request.assetRenderer.name : "ReFit";
                 result.mesh = computation.mesh;
@@ -180,8 +183,19 @@ namespace Orbiters.ReFit.Editor
         private static void RecordException(ReFitResult result, Exception e)
         {
             result.success = false;
-            if (e is OperationCanceledException) result.report.Warn("refit-cancelled", "ReFit was cancelled before application.");
+            if (e is ReportedFailure) return;
+            if (e is OperationCanceledException) ReportCancelled(result.report);
             else result.report.Error("refit-exception", $"Unexpected error: {e.Message}\n{e.StackTrace}");
         }
+
+        // The engine reports the cancellations it observes; only one arriving after it finished is reported here.
+        private static void ReportCancelled(ReFitReport report)
+        {
+            if (!report.messages.Exists(m => m.code == "refit-cancelled"))
+                report.Warn("refit-cancelled", "ReFit was cancelled before application.");
+        }
+
+        /// <summary>Rolls application back when its failure is already in the report under its own code.</summary>
+        private sealed class ReportedFailure : Exception { }
     }
 }

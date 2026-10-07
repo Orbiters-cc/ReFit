@@ -15,7 +15,65 @@ namespace Orbiters.ReFit.Editor.Tests
             CheckDeepPenetrationAndLayers();
             CheckAdditiveRepairDoesNotRepeat();
             CheckCoveragePoseIsTemporary();
-            Debug.Log("[ReFit Coverage Tests] PASS: dense body peaks between cloth vertices, combined shapes, zero shape, rotated/scaled surfaces.");
+            CheckLimitedCoverageWarnsOnlyWhenClipping();
+            Debug.Log("[ReFit Coverage Tests] PASS: dense body peaks between cloth vertices, combined shapes, zero shape, rotated/scaled surfaces, clipping-only coverage warnings.");
+        }
+
+        // The bounded correction aims for 10mm of room. Cloth it leaves closer than that but outside the body only fits
+        // tighter than intended; only cloth left inside the surface it covers (or at it) is worth surface-coverage-limited.
+        private static void CheckLimitedCoverageWarnsOnlyWhenClipping()
+        {
+            if (ReFitSurfaceCoverage.RisksClipping(.008f, .002f) || !ReFitSurfaceCoverage.RisksClipping(.022f, -.012f) ||
+                !ReFitSurfaceCoverage.RisksClipping(.0096f, .0004f) || ReFitSurfaceCoverage.RisksClipping(.0003f, -.003f))
+                throw new Exception("The coverage warning rule does not tell clipping from missing room.");
+            if (!ReFitSurfaceCoverage.LimitedWarning("Flex", "the body surface", .0004f).StartsWith($"Flex: clothing remains only {.4f:F2}mm from the body surface", StringComparison.Ordinal))
+                throw new Exception("Cloth at the body surface is not reported with the room it has left.");
+            var settings = new ReFitSettings { coverDifferentBaseBody = true };
+            var body = Flat(9, 0);
+            // 75mm inside the body: the 80mm correction budget brings it 5mm out, short of the room but not clipping.
+            var inside = Flat(5, -.075f);
+            var primary = new Vector3[inside.GroupCount];
+            var report = new ReFitReport();
+            ReFitSurfaceCoverage.RepairPrimary(inside, body, primary, null, null, settings, report, null);
+            if (primary.Any(d => Mathf.Abs(d.z - .08f) > .0001f)) throw new Exception("The coverage fixture no longer ends 5mm out of the body.");
+            if (!report.messages.Any(m => m.code == "surface-coverage") || report.messages.Any(m => m.code == "surface-coverage-limited"))
+                throw new Exception("Cloth outside the body with less room than targeted was reported as clipping. " + string.Join("\n", report.messages));
+            // A shape moving the skin 100mm through cloth 10mm over it: the budget leaves the cloth 10mm under the skin.
+            foreach (string garment in new[] { null, "Shirt" })
+            {
+                var cloth = Flat(5, .01f);
+                var coverage = ReFitSurfaceCoverage.Build(cloth, body, null, null, null, settings, innerGarment: garment)
+                    ?? throw new Exception("The coverage fixture found no body support.");
+                var motion = Enumerable.Repeat(Vector3.forward * .1f, body.worldVertices.Length).ToArray();
+                report = new ReFitReport();
+                coverage.Apply(body, motion, new Vector3[cloth.GroupCount], new Vector3[cloth.GroupCount], settings, report, "Flex");
+                var warning = report.messages.FirstOrDefault(m => m.code == "surface-coverage-limited");
+                string expected = $"Flex: clothing remains {10f:F2}mm under " + (garment == null ? "the body surface" : "inner garment 'Shirt'");
+                if (warning == null || !warning.text.StartsWith(expected, StringComparison.Ordinal))
+                    throw new Exception($"Cloth left inside the surface it covers was not reported as '{expected}'. " + string.Join("\n", report.messages));
+            }
+        }
+
+        // A flat square facing +z as an in-memory snapshot, one welding group per vertex.
+        private static MeshSnapshot Flat(int count, float z)
+        {
+            var vertices = new Vector3[count * count]; var triangles = new List<int>();
+            for (int y = 0; y < count; y++) for (int x = 0; x < count; x++)
+            {
+                int i = y * count + x;
+                vertices[i] = new Vector3(-.15f + .3f * x / (count - 1), .3f + .3f * y / (count - 1), z);
+                if (x + 1 < count && y + 1 < count) triangles.AddRange(new[] { i, i + 1, i + count, i + 1, i + count + 1, i + count });
+            }
+            var adjacency = vertices.Select(_ => new HashSet<int>()).ToArray();
+            for (int t = 0; t < triangles.Count; t += 3)
+                for (int e = 0; e < 3; e++)
+                {
+                    int a = triangles[t + e], b = triangles[t + (e + 1) % 3];
+                    adjacency[a].Add(b); adjacency[b].Add(a);
+                }
+            var groups = Enumerable.Range(0, vertices.Length).ToArray();
+            return new MeshSnapshot { worldVertices = vertices, worldNormals = Enumerable.Repeat(Vector3.forward, vertices.Length).ToArray(),
+                triangles = triangles.ToArray(), groupOfVertex = groups, groupRep = groups, groupAdjacency = adjacency.Select(a => a.ToList()).ToArray() };
         }
 
         private static void CheckCoveragePoseIsTemporary()

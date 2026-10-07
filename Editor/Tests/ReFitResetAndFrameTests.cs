@@ -73,6 +73,8 @@ namespace Orbiters.ReFit.Editor.Tests
                     AssertTrue(rig != null && accessory.hips == null, "The armature replacement did not rebuild the rig.");
                     AssertTrue(probe.rootTransform.IsChildOf(rig), "The probe was not rebound to the rebuilt rig.");
                     var userAdded = NewChild(FindRendererBone(applied, "Chest"), "User Added");
+                    // As a user would add it: reverting the test later removes it before the rig it was parented under.
+                    Undo.RegisterCreatedObjectUndo(userAdded.gameObject, "ReFit test user object");
 
                     AssertTrue(originalState.Restore(applied, "ReFit test restore"), "Restore failed.");
 

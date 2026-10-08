@@ -50,7 +50,6 @@ namespace Orbiters.ReFit.Editor
                 .Select(r => new RefittedAsset { renderer = r.GetComponent<SkinnedMeshRenderer>() })
                 .ToList();
 
-        /// <summary>Forgets the refit; restores the original mesh unless <paramref name="restored"/> (ReFit restored it itself).</summary>
         /// <summary>Puts a refitted mesh back to its original (its record removed), so a new refit does not stack on it.</summary>
         public static bool TryRestore(SkinnedMeshRenderer renderer)
         {
@@ -60,11 +59,12 @@ namespace Orbiters.ReFit.Editor
             return true;
         }
 
+        /// <summary>Takes the refit back for good (MCB forgets its saved fit too); restores the original mesh unless <paramref name="restored"/> (ReFit restored it itself).</summary>
         public static bool TryReset(RefittedAsset asset, bool restored)
         {
             var record = asset?.renderer != null ? asset.renderer.GetComponent<OrbitersRefit>() : null;
             if (record == null) return false;
-            RefitRecords.Remove(record, restore: !restored);
+            RefitRecords.Discard(record, restore: !restored);
             return true;
         }
 

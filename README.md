@@ -1,5 +1,10 @@
 # ReFit
 
+## 0.5.6 — 2026-10-08
+
+- Resetting a refitted asset takes the fit back through Orbiters Toolkit's `RefitRecords.Discard`, so MCB also forgets
+  the fit it saved for the version (requires Orbiters Toolkit 0.3.18).
+
 ## 0.5.5 — 2026-10-07
 
 - `surface-coverage-limited` warns only when clothing stays inside the body or an inner garment, or within 1 mm of it, and says how far (`clothing remains 4.20mm under the body surface`). Clothing outside it with less than the 1 cm of room the correction aims for no longer warns, nor counts as rough in Toolkit and My Avatar. The correction is unchanged.

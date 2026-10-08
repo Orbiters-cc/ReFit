@@ -69,3 +69,13 @@ When checking rebuilt leaf bones, do not stop at parent/child counts or bindpose
 - For leaf bones with no deforming child, validate the intended tail separately from the deforming joint transform. Do not move the deforming bone just to make the gizmo look longer. Prefer the target avatar child bone that represents the next anatomical joint, such as target `hand`/`wrist` for a generated forearm leaf, then fall back to preserved source clothing children or an inferred source tail if the target has no usable child.
 - Non-deforming tail helpers must not be inserted into `SkinnedMeshRenderer.bones` and must not create target-only deforming bones such as lower legs on clothing that had no equivalent. They are hierarchy/gizmo children only.
 - Before declaring a rebuilt armature valid, inspect representative chains such as `Hips/Spine/Chest/.../upper_arm.L/forearm.L`, left/right legs, hood bones, and hood strings, including lengths and orientations, not only duplicate branches.
+
+## Looking at Unity editor windows
+
+When a Unity editor with a working MCP for Unity bridge is involved, look at its windows only through Orbiters
+Toolkit's `orbiters_editor_window` MCP tool (skill `orbiters-toolkit`; call it with `execute_custom_tool` when the typed
+tool lacks a parameter). It captures in the background without bringing Unity forward or changing the user's layout,
+tabs, scrolling or selection: shown windows, inactive docked tabs, windows that are not open (`window_type` +
+`open_if_missing`), long windows (`width`/`height`/`scroll_to`) and any object's Inspector without selecting it
+(`inspect`). Never ask the user to open, focus or scroll a window for a screenshot, and never use desktop screenshots,
+window-capture APIs or mouse/keyboard input on Unity to look at it. If a capture fails, fix the tool.

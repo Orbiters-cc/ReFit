@@ -96,9 +96,6 @@ namespace Orbiters.ReFit.Editor.Tests
                     "Commission handoff serializes only selected creators and ReFit context",
                     CommissionHandoff_JsonContractIsMinimalAndStable);
                 RunCase(failures,
-                    "Commission environment resolves the same dev and production API roots as MCB",
-                    CommissionEnvironment_UsesExpectedApiRoots);
-                RunCase(failures,
                     "Commission creator avatars are alpha-masked to a circle",
                     CommissionAvatar_IsCircular);
                 RunCase(failures,
@@ -1553,16 +1550,6 @@ namespace Orbiters.ReFit.Editor.Tests
                 priceRange = new ReFitCommissionPriceRange { minCents = 400, maxCents = 800, currency = "eur" }
             };
             AssertTrue(ReFitCommissionClient.PriceLabel(creator) == "4 - 8 EUR", "Creator price range label is incorrect.");
-        }
-
-        private static void CommissionEnvironment_UsesExpectedApiRoots()
-        {
-            AssertTrue(
-                ReFitCommissionClient.FallbackApiUrl(false) == "https://api.orbiters.cc/refit",
-                "Production ReFit API root does not match MCB production routing.");
-            AssertTrue(
-                ReFitCommissionClient.FallbackApiUrl(true) == "http://localhost:4100/refit",
-                "Development ReFit API root does not match MCB development routing.");
         }
 
         private static void CommissionAvatar_IsCircular()

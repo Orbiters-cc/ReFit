@@ -1,5 +1,10 @@
 # ReFit
 
+## 0.5.7 — 2026-10-09
+
+- The server address comes only from Orbiters Toolkit (`OrbitersEnvironment`): ReFit's own copy of the production and
+  development addresses is gone (only a test used it, and its `localhost` differed from the tools' `127.0.0.1`).
+
 ## 0.5.6 — 2026-10-08
 
 - Resetting a refitted asset takes the fit back through Orbiters Toolkit's `RefitRecords.Discard`, so MCB also forgets
@@ -75,8 +80,9 @@ Run `Orbiters.ReFit.Editor.Tests.ReFitCommissionCaptureTests.RunOrThrow()` throu
 `Tools > Orbiters > ReFit > Run Commission Capture Tests` for the isolated capture regression checks.
 These checks require an editor with graphics support, not a `-nographics` runner.
 
-The **Settings** page includes the **Dev Environment** switch shared by the Orbiters tools (Orbiters settings). Disabled
-uses `https://api.orbiters.cc/refit`; enabled uses the local API at `http://localhost:4100/refit`.
+The **Settings** page includes the **Dev Environment** switch shared by the Orbiters tools (Orbiters settings). ReFit
+asks Orbiters Toolkit for the server (`OrbitersEnvironment.ApiUrl("refit")`): `https://api.orbiters.cc/refit`, or the
+local API at `http://127.0.0.1:4100/refit` in development.
 
 ## What it produces
 

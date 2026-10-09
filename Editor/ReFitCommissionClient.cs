@@ -110,8 +110,6 @@ namespace Orbiters.ReFit.Editor
             public string error;
         }
 
-        internal const string ProductionApiUrl = "https://api.orbiters.cc/refit";
-        internal const string DevelopmentApiUrl = "http://localhost:4100/refit";
         private static readonly Dictionary<string, Texture2D> TextureCache = new Dictionary<string, Texture2D>();
         private static readonly Dictionary<string, Texture2D> CircularTextureCache = new Dictionary<string, Texture2D>();
         private static readonly Dictionary<string, List<Action<Texture2D>>> TextureWaiters =
@@ -336,11 +334,6 @@ namespace Orbiters.ReFit.Editor
             if (min <= 0 && max <= 0) return "Ask for a quote";
             if (min > 0 && max > 0) return $"{min / 100f:0.##} - {max / 100f:0.##} EUR";
             return min > 0 ? $"From {min / 100f:0.##} EUR" : $"Up to {max / 100f:0.##} EUR";
-        }
-
-        internal static string FallbackApiUrl(bool isDevEnvironment)
-        {
-            return isDevEnvironment ? DevelopmentApiUrl : ProductionApiUrl;
         }
 
         private static string ApiUrl => OrbitersEnvironment.ApiUrl("refit");

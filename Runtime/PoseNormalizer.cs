@@ -133,7 +133,7 @@ namespace Orbiters.ReFit
                 AddUsedBone(used, assetBones, weight.boneIndex2, weight.weight2);
                 AddUsedBone(used, assetBones, weight.boneIndex3, weight.weight3);
             }
-            foreach (var kind in new[] { HumanBodyBones.LeftUpperLeg, HumanBodyBones.RightUpperLeg })
+            foreach (var kind in Thighs)
             {
                 if (!stage.sourceHumanMap.TryGetValue(kind, out var source) || source == null ||
                     !stage.targetHumanMap.TryGetValue(kind, out var target) || target == null) return;
@@ -141,26 +141,47 @@ namespace Orbiters.ReFit
                 foreach (var pair in assetMatching) if (used.Contains(pair.Key) && pair.Value == source) { matched = true; break; }
                 if (!matched) return;
             }
-            var legs = new HashSet<Transform>();
-            foreach (var pair in new[] { stage.sourceHumanMap, stage.targetHumanMap })
-                foreach (var kind in new[] { HumanBodyBones.LeftUpperLeg, HumanBodyBones.RightUpperLeg })
-                    if (pair.TryGetValue(kind, out var leg) && leg != null) legs.Add(leg);
-            foreach (var renderer in stage.stagingRoot.GetComponentsInChildren<SkinnedMeshRenderer>(true))
-            {
-                var matching = HumanoidBoneMapper.MatchBonesByName(renderer.bones, stage.sourceRoot.transform);
-                foreach (var entry in matching)
-                    foreach (var kind in new[] { HumanBodyBones.LeftUpperLeg, HumanBodyBones.RightUpperLeg })
-                        if (entry.Key != null && stage.sourceHumanMap.TryGetValue(kind, out var source) && source == entry.Value)
-                            legs.Add(entry.Key);
-            }
-            var axis = stage.targetRoot.transform.forward;
-            foreach (var leg in legs)
-            {
-                float side = Vector3.Dot(leg.position - stage.targetRoot.transform.position, stage.targetRoot.transform.right) >= 0 ? 1 : -1;
-                leg.rotation = Quaternion.AngleAxis(side * 20f, axis) * leg.rotation;
-            }
+            if (SpreadThighs(stage, 20f) == null) return;
             stage.sourceSurface = null; stage.sourceSurfaceIndex = null;
             report.Info("coverage-star-pose", "Separated both thighs by 20 degrees on temporary copies for cross-base coverage. The clothing keeps its authored pose and skin weights.");
+        }
+
+        private static readonly HumanBodyBones[] Thighs = { HumanBodyBones.LeftUpperLeg, HumanBodyBones.RightUpperLeg };
+
+        /// <summary>
+        /// Turns both thighs of every staged rig away from the midline by <paramref name="degrees"/> (around the target's
+        /// forward axis): the source and target thighs and every staged renderer bone named like a source thigh (the
+        /// clothing's own armature). Returns their previous local rotations to restore, or null (nothing turned) when a body
+        /// has no humanoid thigh.
+        /// </summary>
+        private static Dictionary<Transform, Quaternion> SpreadThighs(NormalizedStage stage, float degrees)
+        {
+            var legs = new HashSet<Transform>();
+            var sourceThighs = new HashSet<Transform>();
+            foreach (var map in new[] { stage.sourceHumanMap, stage.targetHumanMap })
+                foreach (var kind in Thighs)
+                {
+                    if (map == null || !map.TryGetValue(kind, out var leg) || leg == null) return null;
+                    legs.Add(leg);
+                    if (map == stage.sourceHumanMap) sourceThighs.Add(leg);
+                }
+            foreach (var renderer in stage.stagingRoot.GetComponentsInChildren<SkinnedMeshRenderer>(true))
+                foreach (var entry in HumanoidBoneMapper.MatchBonesByName(renderer.bones, stage.sourceRoot.transform))
+                    if (entry.Key != null && entry.Value != null && sourceThighs.Contains(entry.Value))
+                        legs.Add(entry.Key);
+            var root = stage.targetRoot.transform;
+            var previous = new Dictionary<Transform, Quaternion>();
+            foreach (var leg in legs)
+            {
+                // A thigh nested under another turned one (a clothing armature merged into the avatar's) follows its parent.
+                bool nested = false;
+                for (var parent = leg.parent; parent != null && !nested; parent = parent.parent) nested = legs.Contains(parent);
+                if (nested) continue;
+                previous[leg] = leg.localRotation;
+                float side = Vector3.Dot(leg.position - root.position, root.right) >= 0 ? 1 : -1;
+                leg.rotation = Quaternion.AngleAxis(side * degrees, root.forward) * leg.rotation;
+            }
+            return previous;
         }
 
         private static void AddUsedBone(HashSet<Transform> used, Transform[] bones, int index, float weight)

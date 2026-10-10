@@ -30,6 +30,11 @@ in `MCBIntegrationService`, not repeated in commission UI code.
    The primary comparison uses default body surfaces. Each requested target frame is captured separately.
 5. `SurfaceBindingSolver` binds welded clothing groups to source/target triangles using barycentric coordinates,
    distance falloff, normal and bone-region filtering. Relaxed correspondence is recorded in diagnostics.
+   A clothing face turned towards the skin it covers (a lining, the inside of a strap) keeps that skin unless a
+   face turned its way is about as close. Regions are bands: a triangle belongs to every region with a quarter of
+   its skin weight; across bodies a limb's clothing also accepts torso skin, never another limb's. Source points
+   map to the target (`ChainPoint`) by nearest point where the bodies overlap within 1 cm, otherwise along the
+   source normal onto faces turned the same way, unless that is over three times the nearest distance plus 2 cm.
    Weight transfer applies its own influence compatibility policy: a geometric hit alone does not authorize
    unrelated bone influence. Bindings are reused across requested shapes.
 
@@ -39,6 +44,10 @@ Mesh refit starts from the bound target-minus-source surface displacement. Blend
 target body's frame displacement at the target binding. Primary and transferred fields have independent
 smoothing controls. Clearance correction, surface guards, bounded hem response and detached-island coherence
 refine the fields. Shared `ReFitSettingsPresets.ApplyTightness` drives the wizard's clearance policy.
+The surface guard samples triangle centers and edges, so it must not treat the clothing's own authoring as clipping:
+each sample's depth on the body the clothing was made for is measured once, and the guard restores that depth (coarse
+edges sag into curved bodies as authored). It lifts a sample only through corners holding at least half of it, since
+lifting it through a lone movable corner pulls that corner into a spike.
 `garmentKind` permits an explicit override instead of depending on ancestor names.
 
 World-space deformation becomes mesh-local pre-skin deltas. Keeping the original rig requires inverse skin
@@ -50,8 +59,12 @@ Replacement builds one clothing skeleton from the clothing's required bone set. 
 bone information; clothing-only hood, string and other extra chains remain attached to mapped parents.
 Missing downstream deformation bones are not imported wholesale. Leaf visualization helpers use the nearest
 appropriate target child (shin after thigh, wrist after forearm), with original-clothing fallback; helpers are
-not added to the renderer's deforming bone list. Target weights are projected/remapped, and extras are preserved
-according to the configured policy, with four normalized influences per vertex.
+not added to the renderer's deforming bone list. The clothing's mapped weights follow the change between the
+target and source skinning at each group's matched points (both bodies' bones mapped into the new bone list),
+scaled by the distance falloff and by contact (full within 1 cm of the skin, none from 4 cm), lightly smoothed over
+the clothing, and rejected when they would move weight onto another limb. Vertices without mapped weights take the
+target's projected weights; extras are preserved according to the configured policy, with four normalized
+influences per vertex.
 
 ## Ownership and Application
 

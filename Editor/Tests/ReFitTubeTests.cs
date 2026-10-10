@@ -13,7 +13,7 @@ namespace Orbiters.ReFit.Editor.Tests
             CheckFixture(Matrix4x4.identity);
             CheckFixture(Matrix4x4.TRS(new Vector3(1.3f, -0.4f, 2.1f), Quaternion.Euler(31, 42, 19), Vector3.one * 3.57f));
             CheckEngine();
-            Debug.Log("[ReFit Tube Tests] PASS: analytic expansion, equal-size components, thickness, zero field, scaled/rotated pose and legacy reproduction.");
+            Debug.Log("[ReFit Tube Tests] PASS: analytic expansion, equal-size components, thickness, zero field, scaled/rotated pose and skin-facing ring faces.");
         }
 
         private static void CheckEngine()
@@ -129,18 +129,20 @@ namespace Orbiters.ReFit.Editor.Tests
                     var p = inverse.MultiplyPoint3x4(body.worldVertices[i]); p.y = 0;
                     bodyDelta[i] = transform.MultiplyVector(p.normalized * 0.025f);
                 }
-                var legacy = SurfaceBindingSolver.ComputeGroupBindings(asset, body, index, settings, null, null, null);
-                var bad = Sample(body, legacy, bodyDelta);
+                // Without the tube policy, ring faces turned towards the body keep the skin they face instead of the
+                // far side of the cylinder (which once turned the hard-normal binding inside out).
+                var untreated = SurfaceBindingSolver.ComputeGroupBindings(asset, body, index, settings, null, null, null);
+                var plain = Sample(body, untreated, bodyDelta);
                 var raw = Sample(body, bindings, bodyDelta);
                 tubes.Apply(asset, body, index, bodyDelta, null, raw, settings, null, "muscle");
-                float maxError = 0, badError = 0, thicknessError = 0;
+                float maxError = 0, plainError = 0, thicknessError = 0;
                 for (int g = 0; g < asset.GroupCount; g++)
                 {
                     var p = inverse.MultiplyPoint3x4(asset.worldVertices[asset.groupRep[g]]);
                     var radial = new Vector3(p.x, 0, p.z).normalized;
                     var expected = transform.MultiplyVector(radial * 0.025f);
                     maxError = Mathf.Max(maxError, (raw[g] - expected).magnitude);
-                    badError = Mathf.Max(badError, (bad[g] - expected).magnitude);
+                    plainError = Mathf.Max(plainError, (plain[g] - expected).magnitude);
                     var q = inverse.MultiplyPoint3x4(asset.worldVertices[asset.groupRep[g]] + raw[g]);
                     float cy = p.y < 0 ? -0.065f : 0.065f;
                     float r = new Vector2(q.x, q.z).magnitude;
@@ -151,7 +153,7 @@ namespace Orbiters.ReFit.Editor.Tests
                         Require(new Vector2(mid.x, mid.z).magnitude > 0.1f + 0.025f * w, "Interpolated tube entered the analytic body.");
                     }
                 }
-                Require(badError > 0.02f, "Fixture did not reproduce the hard-normal correspondence failure.");
+                Require(plainError < 0.002f, $"Skin-facing ring faces bound away from the skin they face ({plainError * 1000:F2}mm field error).");
                 Require(maxError < 0.001f, $"Analytic expansion error {maxError * 1000:F3}mm exceeds 1mm.");
                 Require(thicknessError < 0.0004f, "Tube thickness changed by more than 10%.");
                 var unsafeField = new Vector3[asset.GroupCount];

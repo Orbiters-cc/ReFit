@@ -1,5 +1,50 @@
 # ReFit
 
+## 0.5.8 — 2026-10-10
+
+- The ReFit window is one page in the look of My Avatar and the Logger. It opens on the selection (or the scene's only
+  avatar), shows the avatar wearing the chosen piece in a 3D stage on the left (drag to turn, scroll to zoom, right-drag
+  to move; front, three-quarter, side and back presets) and the avatar's clothing as picture cards on the right, and sets
+  every choice by itself: what it was made for, the body shapes, the fit. One button runs the refit; the stage then
+  compares before and after with one camera, split by a handle. Choices answer on press, the setup checks run a moment
+  after the last change, and every advanced option is on the Settings page. A narrow window puts the stage above the
+  page. The window keeps the size it is given: pages scroll inside it. The stage uses the preview camera Orbiters Toolkit
+  shares with MCB's version comparison (requires Orbiters Toolkit 0.3.20).
+- Made for the original base: on an avatar whose custom base an Orbiters tool (MCB) knows, clothing for the original base
+  is fitted from it (picked by default unless the clothing already has the custom base's shapes). The original base is
+  opened only for the refit.
+- Body shapes the avatar keeps switched on under the clothing (such as a custom base's fix shape) are picked by default,
+  with a line saying which: the clothing follows them.
+- Underwear, swimwear and form-fitting one-pieces (jockstrap, briefs, bikini, swimsuit, bodysuit…) count as clothing and
+  fit snug by default, like the clothing the gravity detection recognises. `ReFitClothingDetection` says which. Loose
+  one-pieces (onesies, jumpsuits) are not taken by name: fitted snug, the reported onesie took eight times longer for about
+  a tenth less clipping.
+- The snug fit no longer pulls spikes out of coarse clothing. Its surface guard brought every sample of the clothing's
+  edges out of the body, also where long edges already sagged into a curved body as authored (a waistband across the
+  hips); it could move only the few corners where the body grew, so it drove those out again and again (the reported
+  jockstrap's waistband ends stood 15 mm out of the band). It now restores the depth the clothing had on the body it was
+  made for, and lifts a sample only when the corners it may move hold at least half of it.
+- Clothing facing the skin it covers (the inside of a strap, waistband or lining) keeps that skin. It was matched to a
+  distant surface turned its way, so it lost the body's shapes (the inside of straps sank into a grown buttock) and folded
+  thin parts.
+- Body regions are transition bands: a body triangle belongs to every region holding a quarter of its skin weight, so hip
+  clothing fits the side of the hips and the groin where the thighs carry most of the weight. Across two bodies a limb's
+  clothing may also land on skin the other body gives to the torso (a buttock weighted to the thighs on one base and to the
+  hips on the other), never on another limb.
+- Where the bodies differ by more than a centimeter, a point of the original body maps to the new body along its surface
+  normal (outward on a larger body) instead of to the nearest point, unless that is much farther: clothing on a grown
+  buttock or thigh stays on it instead of being pulled into the nearest crease.
+- Skin weights, when the armature is replaced: the clothing keeps its own weights and follows the change of skinning
+  between the two bodies where it lies on the skin (where the new body hands the groin over to the thighs, a jockstrap's
+  pouch edges do too), fading out for parts standing 1 to 4 cm off it, which move as their creator made them. Where both
+  bodies agree nothing changes. This replaces the blend with projected body weights, accepted or rejected per vertex, that
+  left blotches of thigh weight tearing pouches apart when the legs moved. A change that would move clothing onto another
+  limb is still rejected.
+- Matching with the thighs spread was evaluated on the jockstrap and onesie reports and left out: it did not reduce clipping,
+  and clothing weighted differently from the skin under it (a hip-weighted pouch over thigh-weighted groin skin) was
+  matched to skin it does not cover at rest.
+- Saved transfer data of earlier versions is rebuilt (binding and transfer provenance changed).
+
 ## 0.5.7 — 2026-10-09
 
 - The server address comes only from Orbiters Toolkit (`OrbitersEnvironment`): ReFit's own copy of the production and
@@ -41,23 +86,35 @@ are never modified.
 
 `Tools > Orbiters > ReFit`
 
-After **Tightness**, the wizard asks whether the asset was made for this exact avatar. Answer **No** for clothing made
-for another avatar and placed over this one by hand: ReFit then also removes the clipping it already has, and can refit
-the rest of its outfit with it so jacket, shirt and trousers stay layered.
+The window opens on what you selected: an avatar, a piece of clothing it wears, or a prefab from your project files (with
+nothing selected, the scene's only avatar). The avatar's clothing shows as picture cards; click one, select it in the
+Hierarchy or drop a prefab on the stage, and the stage on the left shows the avatar wearing it in 3D: drag to turn,
+scroll to zoom, right-drag (or Shift-drag) to move, double-click to frame the piece again, or pick Front, ¾, Side or
+Back. Under the cards, one row per choice, already set:
 
-The wizard asks where your asset is (on an avatar in the scene, or in your project files), which avatar it should
-fit, and whether it should follow a body blendshape. It then shows a summary with setup checks (armature matching,
-proportion comparison) before the **ReFit** button. Warnings never block: if your custom base has intentionally
-relocated bones but a near-identical mesh, just proceed — the surface projection compensates.
+- **Made for**: this avatar (ReFit makes it follow body shapes), the original base of the avatar's custom base when MCB
+  knows it, or another avatar (picked by itself when you fit a piece from the avatar wearing it to another one).
+- **Body shapes**: the shapes the clothing should follow. The ones the avatar keeps switched on under the clothing are
+  picked for you, a custom base's own shapes are suggested, and **More** opens the search picker with your recent shapes.
+- **Fit**: Loose, Balanced or Snug. Clothing (underwear and swimwear included) starts Snug, accessories Loose.
+- **Placed by hand**: for clothing made for another avatar and placed over this one by hand. ReFit then also removes the
+  clipping it already has and, with **Whole outfit**, refits the rest of its outfit with it, innermost part first, so
+  jacket, shirt and trousers stay layered.
 
-Right-click a skinned accessory in the Hierarchy and choose **ReFit** to start with that accessory and its
-containing avatar already selected. The renderer's Inspector context menu also exposes **ReFit**. If the
-selection has multiple meshes or no identifiable avatar, the wizard keeps the relevant selection step instead
-of guessing. This shortcut only configures the wizard; it does not change the scene.
+The **ReFit** button shows its progress. The setup checks (armature matching, proportion comparison) appear under it.
+Warnings never block: if your custom base has intentionally relocated bones but a near-identical mesh, just proceed — the
+surface projection compensates. Afterwards the stage compares before and after with the same camera: drag the handle
+to move the split, anywhere else to turn. The result selects the
+refitted renderer, shows its mesh, undoes the refit, or goes back for the next piece. Every advanced option is on the
+**Settings** page (the sliders in the top banner, or **Advanced options**).
 
-The body blendshape step uses a search field with wrapping name suggestions. With no query, it shows the three
-most recently refitted blendshapes that exist on the selected body. Successful transfers from both the wizard
-and the other Orbiters tools (MCB, My Avatar) update this local history; failed operations do not. Back and Settings are in the top banner.
+Right-click a skinned accessory in the Hierarchy and choose **ReFit** to start with that accessory and its avatar. The
+renderer's Inspector context menu also exposes **ReFit**. With several meshes, the window shows them to pick instead of
+guessing. This shortcut only configures the window; it does not change the scene.
+
+The body shapes picker searches with wrapping name suggestions and, with no query, shows the three most recently
+refitted blendshapes that exist on the body. Successful transfers from both the window and the other Orbiters tools (MCB,
+My Avatar) update this local history; failed operations do not.
 
 The main page lists active ReFit commissions below refitted assets, with creator, status and the website's
 progress bar. Sign in to your Orbiters account (in My Avatar or MCB) to load your requests. Clicking a row opens its website page. The first page
@@ -89,8 +146,9 @@ local API at `http://127.0.0.1:4100/refit` in development.
 - A new mesh saved under `Assets/ReFit/<asset name>/` with the `refit` blendshape (and a second blendshape when
   transferring a body shape, e.g. `refit_Belly_Big`).
 - The scene renderer is switched to the new mesh; when fitting to a different avatar, the asset's armature is
-  replaced with the target's bones, skin weights are projected from the target body, and bones with no target
-  equivalent (skirt/physics bones, props) are preserved and re-parented.
+  replaced with the target's bones, the asset's skin weights follow the difference between the two bodies' skinning
+  where it lies on the skin, and bones with no target equivalent (skirt/physics bones, props) are preserved and
+  re-parented.
 - When the armature is **not** replaced (blendshape-only mode), a standalone prefab is also saved when possible.
 - Scene application is undoable (`Ctrl+Z`); undo does not delete successfully saved output files.
 - Failed armature application rolls back scene changes and does not save a partial result. Optional prefab
@@ -233,9 +291,9 @@ debug snapshots, editor load and asset saving are separate costs from engine-onl
 ## How it works
 
 See `Documentation~/DESIGN.md` for the algorithm: authored-pose staging and scene-pose baking, scale matching,
-once-computed BVH surface bindings with normal / body-region filtering, barycentric delta transfer, Laplacian
-smoothing with distance falloff, inverse-skinning of the deltas into blendshape space, and barycentric skin weight
-projection.
+once-computed BVH surface bindings with normal / body-region filtering, normal projection between differing bodies,
+barycentric delta transfer, Laplacian smoothing with distance falloff, inverse-skinning of the deltas into blendshape
+space, and skin weights that follow the change of skinning between the bodies.
 
 ## Requirements
 

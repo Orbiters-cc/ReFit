@@ -1,5 +1,93 @@
 # Validation Records
 
+## 2026-10-09: Fit Default for Underwear, and the ReFit Window (0.5.8)
+
+Underwear and swimwear are now clothing by name and fit snug (tightness 0.93) like the body clothing the gravity detection
+finds; the reported jockstrap used to get the accessory default (0). Replayed with
+`ReFitCaseValidation.Queue("jockstrap", "snug", true, "fit", "tightness=0.93")` and `"loose"` with `"tightness=0"`
+(renders under `Temp/ReFitTests/cases/jockstrap-snug-*` and `jockstrap-loose-*`, which an editor restart clears):
+
+| Jockstrap on the Ultipaw | Loose (before) | Snug (now) |
+| --- | --- | --- |
+| Rest | 4 samples, 7.2 mm | 4 samples, 7.2 mm |
+| Spread | 0 samples, 1.1 mm | 0 samples, 1.5 mm |
+| Crouched | 160 samples, 16.6 mm | 154 samples, 16.6 mm |
+| `orbit muscles` at 100, rest | 778 samples, 24.5 mm | 799 samples, 24.3 mm |
+| `orbit muscles` at 100, crouched | 1287 samples, 36.5 mm | 1130 samples, 36.5 mm |
+| Engine | 2.0 s | 5.2 s |
+
+The renders look the same at rest; the muscle shape still swallows the straps in the gluteal fold either way (below).
+
+Loose one-pieces stay out of the name list. The reported onesie fitted snug had about a tenth less clipping (rest 935
+samples vs 1023, spread 829 vs 928, crouched 2011 vs 2349) but deeper worst points at rest (46.5 mm vs 39.2 mm) and took
+179 s instead of 23 s (deformation 84 s instead of 12.6 s, the `VVorthy` transfer 93 s).
+
+Spikes at the hips (snug jockstrap): the window's after picture showed the waistband's ends at both hips jagged. Close-ups
+at 1600 px from three-quarter and side, rest and crouched (`Temp/ReFitTests/spikes/before-*`, `after-*`, `compare-*`)
+showed real geometry, not z-fighting: folded flaps along the band's lower edge and horns when crouched. A handful of
+waistband vertices (402, 554, 353, 570 and their rim twins) moved 15 to 20 mm while their neighbours moved 3 mm, edges
+stretched up to 23 times. The surface guard did it. Its samples on the band's 12 to 21 mm long edges sag into the hips
+already on the Winterpaw as authored (up to 7.4 mm, 2.7 mm on average) and 1 to 2 mm deeper on the Ultipaw; the guard
+treated all of it as clipping, could move only the few corners where the body grew enough, and pushed those out on each
+of its six iterations. Turning the guard off removed the spikes and changed no clipping count. The guard now restores
+each sample's authored depth instead of lifting it out of the body, and lifts a sample only when the corners it may move
+hold at least half of it.
+
+| Jockstrap, snug, rest | Before | After |
+| --- | --- | --- |
+| Vertices moved over 5 mm unlike their neighbours | 11 (worst 15 mm) | 0 (worst 3.6 mm, the pouch's folded bottom) |
+| Edge stretch, max | 23.0 | 4.6 |
+| Clipping rest / spread / crouched | 4 / 0 / 154 samples | 4 / 0 / 156 samples |
+
+The reported-jockstrap test now also requires no such spike at rest and edges stretched at most 8 times. Loose and
+balanced fits never ran the guard here (no spikes either way). The real hoodie replays and the clearance checks that run
+the guard at the same strength (hem bounds, detached islands) still pass.
+
+Window defaults, on the same fixtures in preview scenes: on the ThiccWiker wearing the onesie, the active body shapes found
+under it are `VVorthy - normal fix - Reverted` (it moves 9564 body vertices, up to 80 mm) and not `Claw.short` (its claws
+are more than 3 cm from the onesie). The jockstrap and a bodysuit are clothing by name; a bracelet, brass ring, zebra tail
+or the onesie are not.
+
+The window was checked in hidden copies (`orbiters_editor_window`) against My Avatar and the Logger: neutral greys,
+16 px cards, the #00DA6D primary with 8 px corners and white text, pill chips, flat buttons that dip on press. The
+before/after stage reuses the before pictures' framing for the after pictures, so the halves line up.
+
+Deterministic suite (reflection runner, one case per editor update): 79 passed, 2 opt-in scene/VRCFury checks skipped, none failed; the reported jockstrap now runs snug (rest 4 samples, spread 0, crouched 154) and the onesie loose as before (rest 1023, 39.2 mm). Orbiters Toolkit refit tests (ClothingCoverage, FitCheck, RefitBuild, RefitRecords, AttachmentVolumeFit): 47 passed.
+
+## 2026-10-09: Crotch and Different-Base Fit (reported jockstrap and onesie)
+
+Two user reports replayed with `ReFitCaseValidation` on transform-only copies in preview scenes (private assets under
+`Assets/ReFitCases`; renders, CSVs and reports under `Temp/ReFitTests/cases`, not to be committed or published):
+
+- A jockstrap made for the Winterpaw, refitted onto an Ultipaw like the wizard does ("made for another avatar base",
+  "Yes, it was made for it", armature replaced, `orbit muscles` transferred). The two bodies are within 4 mm at rest
+  around it, but the Ultipaw gives the groin and the hips' sides to the thighs where the Winterpaw gives them to the hips.
+- A Wickerbeast onesie refitted onto a ThiccWiker with the different-base coverage ("No, I placed it myself"), the
+  ThiccWiker's always-on `VVorthy - normal fix - Reverted` shape transferred and mirrored at 100.
+
+Clipping counts clothing vertices and triangle centers outside the authored body that end over 3 mm inside the target
+body (worst depth, solid-angle confirmed); poses turn the thighs out 35 degrees ("spread") or raise them 75 degrees with
+bent knees ("crouch") on every copied rig.
+
+| Case | Before | After |
+| --- | --- | --- |
+| Jockstrap at rest | 5 samples, 7.2 mm; edge stretch P95 2.21, 41 reversed triangles | 4 samples, 7.2 mm (the unfitted jockstrap clips there too); P95 1.22, 66 reversed in the pouch's folded bottom |
+| Jockstrap spread | 487 samples, 28 mm; pouch shredded | 0 samples, 1.1 mm |
+| Jockstrap crouched | 916 samples, 65 mm | 160 samples, 16.6 mm |
+| Jockstrap weights | blotches of thigh weight over the hip-weighted pouch | smooth hips-to-thigh gradient, 0.3 % on the other side's leg |
+| Onesie at rest | buttocks, inner thighs and back of the knees bare; 98 mm deep | 1023 samples (thighs pressing together, tail opening), 39 mm |
+
+Causes found: skin-facing clothing faces matched to far surfaces (the inside of straps and waistbands bound 10 to 15 cm
+away, so they lost the body's shapes); hard dominant-weight regions refusing the hips' sides and a re-weighted buttock;
+nearest-point matching pulling a grown buttock's clothing into the gluteal crease; skin weights blended or rejected per
+vertex (discontinuous thigh weight tore the pouch apart in poses). Matching with the thighs spread was evaluated and
+left out: rest and pose clipping were unchanged for the onesie, the jockstrap's muscle transfer clipped more (1117 vs 873
+samples), and a pose pairs clothing with skin it does not cover at rest when the two are weighted differently.
+
+Remaining: with `orbit muscles` at 100 the Ultipaw's thighs and buttocks grow into each other and swallow the straps in
+the gluteal fold (778 samples); the ThiccWiker's breasts show through the onesie's chest; the onesie's tail opening
+widens over the much larger buttocks.
+
 ## 2026-09-10: Closed Tubular Accessories
 
 Validated with Unity 2022.3.22f1 via MCP and offscreen Unity camera renders. No desktop input was used and

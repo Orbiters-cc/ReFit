@@ -59,7 +59,7 @@ namespace Orbiters.ReFit
 
         public static string BindingSettings(ReFitSettings settings)
         {
-            var hash = Hash128.Compute("ReFit-binding-4");
+            var hash = Hash128.Compute("ReFit-binding-5");
             hash.Append(settings.coverDifferentBaseBody ? 1 : 0);
             hash.Append(settings.preserveClosedTubes ? 1 : 0);
             hash.Append(settings.preserveLowerBodyCoverage ? 1 : 0);
@@ -84,7 +84,7 @@ namespace Orbiters.ReFit
             geometry.transferWeights = false;
             geometry.proportionWarningThreshold = 0f;
             // Algorithm revisions must not reuse fields generated before surface coverage correction.
-            return Hash128.Compute("ReFit-transfer-4:" + JsonUtility.ToJson(geometry)).ToString();
+            return Hash128.Compute("ReFit-transfer-5:" + JsonUtility.ToJson(geometry)).ToString();
         }
     }
 }

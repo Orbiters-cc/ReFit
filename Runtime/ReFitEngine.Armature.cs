@@ -12,13 +12,14 @@ namespace Orbiters.ReFit
         // ------------------------------------------------------------------
 
         private static bool BuildBonePlan(NormalizedStage stage, MeshSnapshot asset, MeshSnapshot targetBody,
-            ReFitComputation comp, Dictionary<Transform, BodyRegion> sourceRegions,
+            MeshSnapshot sourceBody, ReFitComputation comp, Dictionary<Transform, BodyRegion> sourceRegions,
             Dictionary<Transform, BodyRegion> targetRegions, ReFitReport report,
-            out Matrix4x4[] bindposes, out int[] bodyBoneToNewOut, out int[] assetBoneToNewOut,
+            out Matrix4x4[] bindposes, out int[] bodyBoneToNewOut, out int[] sourceBoneToNewOut, out int[] assetBoneToNewOut,
             out bool[] assetBoneIsExtraOut, out BodyRegion[] newBoneRegionsOut)
         {
             bindposes = null;
             bodyBoneToNewOut = null;
+            sourceBoneToNewOut = null;
             assetBoneToNewOut = null;
             assetBoneIsExtraOut = null;
             newBoneRegionsOut = null;
@@ -250,6 +251,17 @@ namespace Orbiters.ReFit
             // do not have a hoodie equivalent are remapped to the nearest represented ancestor, so the output
             // armature does not grow lower legs/fingers/etc. just because the target avatar has them.
             var bodyBoneToNew = BuildBodyBoneRemap(targetBody.bones, indexOf, comp.rootBoneIndex);
+            // The source body's bones through their target equivalents (by name or humanoid role), so both bodies'
+            // weights compare in the new bone list. A source bone without one counts as its nearest resolved ancestor.
+            var sourceBones = sourceBody != null && sourceBody.bones != null ? sourceBody.bones : Array.Empty<Transform>();
+            var sourceAsTarget = new Transform[sourceBones.Length];
+            for (int i = 0; i < sourceBones.Length; i++)
+                for (var bone = sourceBones[i]; bone != null && sourceAsTarget[i] == null; bone = bone.parent)
+                {
+                    sourceAsTarget[i] = ResolveDirect(bone);
+                    if (bone == stage.sourceRoot.transform) break;
+                }
+            var sourceBoneToNew = BuildBodyBoneRemap(sourceAsTarget, indexOf, comp.rootBoneIndex);
 
             // 6) bindposes captured in the staged pose, relative to the staged asset renderer
             var rendererL2W = stage.assetRenderer.transform.localToWorldMatrix;
@@ -262,6 +274,7 @@ namespace Orbiters.ReFit
             comp.keptPlacements = placements.ToArray();
             comp.leafTailHints = BuildLeafTailHints(stageBones, originalAssetBonesByNew, assetBoneSet);
             bodyBoneToNewOut = bodyBoneToNew;
+            sourceBoneToNewOut = sourceBoneToNew;
             assetBoneToNewOut = assetBoneToNew;
             assetBoneIsExtraOut = assetBoneIsExtra;
             newBoneRegionsOut = newBoneRegions.ToArray();

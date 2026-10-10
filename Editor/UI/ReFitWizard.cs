@@ -2,18 +2,18 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Linq;
-using System.IO;
+using Orbiters.Toolkit.Editor;
+using Orbiters.Toolkit.Editor.Refit;
 using UnityEditor;
-using UnityEditor.UIElements;
 using UnityEngine;
-using UnityEngine.SceneManagement;
 using UnityEngine.UIElements;
 
 namespace Orbiters.ReFit.Editor
 {
     /// <summary>
-    /// The ReFit wizard: walks the user through picking the asset, the avatars and the fit mode,
-    /// then runs <see cref="ReFitService"/>. UIToolkit, styled after the MCB look.
+    /// The ReFit window: one page (the studio) that finds the clothing, the avatar and the base it was made for by itself,
+    /// shows the avatar wearing it, and runs <see cref="ReFitService"/> with one button; then compares before and after on
+    /// the same stage. Settings and every advanced option are one click away. UI Toolkit, in the Orbiters tools' look.
     /// </summary>
     public partial class ReFitWizard : EditorWindow
     {
@@ -30,62 +30,57 @@ namespace Orbiters.ReFit.Editor
 
         /// <summary>All re-fits performed this session (survives reopening the window, cleared on assembly reload).</summary>
         private static readonly List<RefitLogEntry> SessionLog = new List<RefitLogEntry>();
-        private static readonly Dictionary<string, Texture2D> CreditTextures = new Dictionary<string, Texture2D>();
-        private const string BlackOrbitProfilePath = "Packages/orbiters.refit/blackorbit.png";
-        private const string KofiSymbolPath = "Packages/orbiters.refit/kofi_symbol.png";
-        private const string KofiUrl = "https://ko-fi.com/blackorbit";
-        private const float ClothingDefaultTightness = 0.93f;
-        private const float AccessoryDefaultTightness = 0f;
         private static readonly Color32 ReFitGreen = new Color32(0, 218, 109, 255);
         private static readonly Color ReFitProgressTrack = new Color(0.22f, 0.22f, 0.22f);
+        private const string StyleSheetPath = "Packages/orbiters.refit/Editor/UI/refit.uss";
 
-        private enum Step
+        private enum Page { Studio, Settings, Result }
+
+        /// <summary>Which body the asset was made for.</summary>
+        private enum MadeFor
         {
-            AssetLocation,
-            AvatarSelect,
-            AssetSelect,
-            FitChoice,
-            TargetInput,
-            MyAvatarChoice,
-            SourceInput,
-            BlendshapeSelect,
-            AssetFileInput,
-            TargetForFile,
-            FileAssetChoice,
-            Tightness,
-            MadeFor,
-            Summary,
-            Settings,
-            GravityPreview,
-            Result
+            /// <summary>The avatar it should fit: only body shapes are followed.</summary>
+            Target,
+            /// <summary>The original base of the target's custom base, as an Orbiters tool (MCB) knows it.</summary>
+            OriginalBase,
+            /// <summary>Another avatar picked by the user (or the one it is worn on, when fitting it to another).</summary>
+            Other
         }
 
-        // wizard state
-        private Step current = Step.AssetLocation;
-        private readonly Stack<Step> history = new Stack<Step>();
-        private GameObject myAvatar;
-        private SkinnedMeshRenderer asset;
-        private GameObject assetFileObject;
-        private GameObject targetAvatar;
-        private GameObject sourceAvatar;
-        private readonly List<string> blendshapes = new List<string>();
-        private ReFitMode mode = ReFitMode.MeshToMesh;
-        private ReFitSettings settings = new ReFitSettings();
+        // What is being refitted (serialized: the window keeps its choices across script reloads)
+        [SerializeField] private Page page = Page.Studio;
+        [SerializeField] private GameObject myAvatar;
+        [SerializeField] private SkinnedMeshRenderer asset;
+        [SerializeField] private GameObject assetFileObject;
+        [SerializeField] private GameObject targetAvatar;
+        [SerializeField] private GameObject sourceAvatar;
+        [SerializeField] private SkinnedMeshRenderer sourceBody;
+        [SerializeField] private MadeFor madeFor = MadeFor.Target;
+        private CustomBaseInfo originalBase;
+        private CustomBaseOriginal resolvedOriginal;
+        [SerializeField] private List<string> blendshapes = new List<string>();
+        [SerializeField] private List<string> activeShapes = new List<string>();
+        [SerializeField] private ReFitMode mode = ReFitMode.Blendshape;
+        [SerializeField] private ReFitSettings settings = new ReFitSettings();
+        [SerializeField] private bool shapesOpen;
+        [SerializeField] private bool clearanceAdvanced;
+        [SerializeField] private bool clearanceTightnessKnown = true;
+        [SerializeField] private float clearanceTightnessPreset = 0.5f;
+        [SerializeField] private bool clearanceTightnessUserChosen;
+        [SerializeField] private bool assetIsClothing;
+        // Was the asset made for this exact avatar? If not, ReFit also moves it out of the body where it clips.
+        [SerializeField] private bool madeForAvatar = true;
+        // Not made for it: refit the other parts of its outfit with it, innermost first, so their layers stay in order.
+        [SerializeField] private bool refitOutfit = true;
+
+        // Checks and the run
         private ReFitReport validateReport;
-        private bool validateScheduled;
+        private string validateKey;
         private ReFitResult lastResult;
         private ReFitRequest lastRequest;
+        private string lastSourceName;
         private ReFitGravityPreview gravityPreview;
         private float gravityPreviewWeight = 100f;
-        private bool clearanceAdvanced;
-        private bool clearanceTightnessKnown = true;
-        private float clearanceTightnessPreset = 0.5f;
-        private bool clearanceTightnessUserChosen;
-        private bool standardTightnessInitialized;
-        // Was the asset made for this exact avatar? If not, ReFit also moves it out of the body where it clips.
-        private bool madeForAvatar = true;
-        // Not made for it: refit the other parts of its outfit with it, innermost first, so their layers stay in order.
-        private bool refitOutfit = true;
         private readonly List<(SkinnedMeshRenderer part, ReFitRequest request, ReFitResult result)> outfitResults =
             new List<(SkinnedMeshRenderer, ReFitRequest, ReFitResult)>();
         private readonly Stack<IEnumerator> executionCoroutines = new Stack<IEnumerator>();
@@ -97,16 +92,21 @@ namespace Orbiters.ReFit.Editor
         private bool commissionHandoffLoading;
         private string commissionError;
 
+        // Chrome: the header, then the stage on the left and the page on the right (stacked when narrow).
+        private VisualElement body, stageColumn, panel;
+        private bool narrow;
         private ScrollView content;
         private Button backButton;
         private Button settingsButton;
+        private OrbitersGlowSurfaceElement glow;
 
         [MenuItem("Tools/Orbiters/ReFit")]
         public static void Open()
         {
-            var window = GetWindow<ReFitWizard>();
-            window.titleContent = new GUIContent("ReFit");
-            window.minSize = new Vector2(MinimumWidth, MinimumHeight);
+            var window = Summon();
+            // Opening it on a selection starts with that selection.
+            if (!window.isExecuting && window.asset == null && Selection.activeGameObject != null)
+                window.UseSelection(Selection.activeGameObject);
             window.Show();
         }
 
@@ -114,1260 +114,220 @@ namespace Orbiters.ReFit.Editor
         {
             var root = rootVisualElement;
             root.Clear();
-            var styleSheet = AssetDatabase.LoadAssetAtPath<StyleSheet>("Packages/orbiters.refit/Editor/UI/refit.uss");
+            var styleSheet = AssetDatabase.LoadAssetAtPath<StyleSheet>(StyleSheetPath);
             if (styleSheet != null) root.styleSheets.Add(styleSheet);
             root.AddToClassList("refit-root");
 
+            glow = new OrbitersGlowSurfaceElement(new Color(0.169f, 0.169f, 0.169f, 1f), new Color(0.169f, 0.169f, 0.169f, 1f), 0f, -60f, 220f);
+            glow.AddToClassList("refit-glow");
+            root.Add(glow);
+            root.RegisterCallback<PointerMoveEvent>(_ => glow.WakeForSeconds(15));
+
             var header = new VisualElement();
             header.AddToClassList("refit-header");
-            var brand = new VisualElement();
+            // The brand is centred over the whole header; the back and settings buttons sit at its edges.
+            var brand = new VisualElement { pickingMode = PickingMode.Ignore };
             brand.AddToClassList("refit-brand");
-            brand.Add(ReFitLogo.Create(1.05f));
-            var title = new Label("ReFit");
+            var logo = ReFitLogo.Create(0.82f);
+            logo.AddToClassList("refit-logo");
+            logo.pickingMode = PickingMode.Ignore;
+            brand.Add(logo);
+            var title = new Label("ReFit") { pickingMode = PickingMode.Ignore };
             title.AddToClassList("refit-title");
             brand.Add(title);
-            var betaBadge = new Label("beta");
-            betaBadge.AddToClassList("refit-beta-badge");
-            brand.Add(betaBadge);
+            var beta = new StageBadge(FeatureStage.Beta);
+            beta.AddToClassList("refit-beta-badge");
+            brand.Add(beta);
             header.Add(brand);
+            backButton = HeaderButton("‹", "Back", GoBack);
+            backButton.AddToClassList("refit-header-button--back");
+            header.Add(backButton);
+            var spacer = new VisualElement { pickingMode = PickingMode.Ignore };
+            spacer.style.flexGrow = 1f;
+            header.Add(spacer);
+            // The same button opens and closes the settings.
+            settingsButton = HeaderButton(null, "Settings", () => { if (page == Page.Settings) GoBack(); else Go(Page.Settings); });
+            var gear = new VectorIcon(IconGlyph.Sliders);
+            gear.AddToClassList("refit-header-icon");
+            settingsButton.Add(gear);
+            header.Add(settingsButton);
             root.Add(header);
 
-            var body = new VisualElement();
+            body = new VisualElement();
             body.AddToClassList("refit-body");
-            body.style.flexGrow = 1;
             root.Add(body);
-
-            var nav = new VisualElement();
-            nav.AddToClassList("refit-nav");
-            backButton = new Button(GoBack) { text = "< Back" };
-            backButton.AddToClassList("refit-back");
-            backButton.AddToClassList("refit-header-button");
-            backButton.tooltip = "Back";
-            nav.Add(backButton);
-            var navSpacer = new VisualElement();
-            navSpacer.style.flexGrow = 1f;
-            nav.Add(navSpacer);
-            settingsButton = new Button(() =>
-            {
-                if (current != Step.Settings) Go(Step.Settings);
-            })
-            { text = "Settings" };
-            settingsButton.AddToClassList("refit-back");
-            settingsButton.AddToClassList("refit-header-button");
-            nav.Add(settingsButton);
-            header.Add(nav);
-
+            stageColumn = new VisualElement();
+            stageColumn.AddToClassList("refit-stage-column");
+            body.Add(stageColumn);
+            stage?.Release();
+            stage = BuildStage();
+            stageColumn.Add(stage);
+            panel = new VisualElement();
+            panel.AddToClassList("refit-panel");
+            body.Add(panel);
             content = new ScrollView(ScrollViewMode.Vertical);
             content.AddToClassList("refit-scroll");
             content.horizontalScrollerVisibility = ScrollerVisibility.Hidden;
-            body.Add(content);
-            body.Add(CreateFooterCredit());
-            ConfigureContentSizing();
+            content.contentContainer.AddToClassList("refit-page-content");
+            panel.Add(content);
+            var credit = new SupportCredit();
+            credit.AddToClassList("refit-credit");
+            panel.Add(credit);
+            narrow = false;
+            root.RegisterCallback<GeometryChangedEvent>(_ => UpdateLayout());
 
             commissionPoll?.Pause();
             commissionPoll = root.schedule.Execute(PollCommissions).Every(2000);
-
+            Selection.selectionChanged -= OnSelectionChanged;
+            Selection.selectionChanged += OnSelectionChanged;
+            // After a script reload the choices are back; what is not kept is found again.
+            if (page == Page.Result && lastResult == null) page = Page.Studio;
+            if (targetAvatar != null && originalBase == null) originalBase = ReFitAutoSetup.OriginalBase(targetAvatar);
+            if (asset == null && targetAvatar == null) AutoDetect();
             Render();
+            if (asset != null && page != Page.Result) RequestBeforePicture();
+        }
+
+        // Two columns, the stage on the left; narrower than NarrowWidth, the stage tops the page and scrolls with it.
+        private void UpdateLayout()
+        {
+            float width = rootVisualElement.layout.width;
+            if (float.IsNaN(width) || width <= 0f || stage == null) return;
+            bool wanted = width < NarrowWidth;
+            if (wanted == narrow && stage.parent != null) return;
+            narrow = wanted;
+            rootVisualElement.EnableInClassList("refit-root--narrow", narrow);
+            PlaceStage();
+        }
+
+        private void PlaceStage()
+        {
+            if (stage == null || content == null) return;
+            if (narrow)
+            {
+                if (stage.parent != content.contentContainer || content.contentContainer.IndexOf(stage) != 0)
+                    content.contentContainer.Insert(0, stage);
+            }
+            else if (stage.parent != stageColumn) stageColumn.Add(stage);
+            stage.EnableInClassList("refit-stage--inline", narrow);
+            stageColumn.style.display = narrow ? DisplayStyle.None : DisplayStyle.Flex;
         }
 
         // ------------------------------------------------------------------
         // Navigation
         // ------------------------------------------------------------------
 
-        private void Go(Step next)
+        [SerializeField] private Page returnPage = Page.Studio;
+
+        private void Go(Page next)
         {
             if (isExecuting) return;
-            history.Push(current);
-            current = next;
-            if (next == Step.Summary) { validateReport = null; validateScheduled = false; }
+            if (next == Page.Settings) returnPage = page;
+            page = next;
+            if (content != null) content.scrollOffset = Vector2.zero;
             Render();
         }
 
         private void GoBack()
         {
             if (isExecuting) return;
-            if (history.Count == 0) return;
-            if (current == Step.GravityPreview)
-            {
-                ReFitGravityPreviewService.ClearPreview(gravityPreview);
-                gravityPreview = null;
-            }
-            current = history.Pop();
+            if (page == Page.Settings) { page = returnPage; Render(); return; }
+            if (page == Page.Result) { BackToStudio(); return; }
+        }
+
+        /// <summary>From a result to the studio, with the same avatar, ready for another piece.</summary>
+        private void BackToStudio()
+        {
+            ReFitGravityPreviewService.ClearPreview(gravityPreview);
+            gravityPreview = null;
+            lastResult = null;
+            lastRequest = null;
+            outfitResults.Clear();
+            ClearPictures(true);
+            page = Page.Studio;
+            InvalidateChecks();
+            if (asset != null) RequestBeforePicture();
             Render();
         }
 
         private void Restart()
         {
-            history.Clear();
             ReFitGravityPreviewService.ClearPreview(gravityPreview);
-            current = Step.AssetLocation;
+            page = Page.Studio;
             myAvatar = null; asset = null; assetFileObject = null;
-            targetAvatar = null; sourceAvatar = null; blendshapes.Clear();
-            mode = ReFitMode.MeshToMesh;
+            targetAvatar = null; sourceAvatar = null; sourceBody = null; originalBase = null;
+            madeFor = MadeFor.Target;
+            blendshapes.Clear(); activeShapes.Clear();
+            mode = ReFitMode.Blendshape;
             ResetTightnessChoice();
             madeForAvatar = true; refitOutfit = true; outfitResults.Clear();
-            validateReport = null; lastResult = null;
+            validateReport = null; validateKey = null; lastResult = null;
             lastRequest = null; gravityPreview = null;
             commissionCreators = null;
             commissionCreatorsLoading = false;
             commissionHandoffLoading = false;
             commissionError = null;
+            ClearPictures(true);
             Render();
         }
 
         private void OnDisable()
         {
-            contentSizeUpdate?.Pause();
+            // First: whatever else fails, the stage's renderer is freed.
+            stage?.Release();
             commissionPoll?.Pause();
             commissionGeneration++;
             commissionListLoading = false;
+            Selection.selectionChanged -= OnSelectionChanged;
             StopExecutionPump();
             isExecuting = false;
+            ReleaseOriginal();
             ReFitGravityPreviewService.ClearPreview(gravityPreview);
+            ClearPictures(true);
         }
+
+        private void OnDestroy() => stage?.Release();
 
         private void Render()
         {
             if (content == null) return;
             content.Clear();
-            backButton.style.display = history.Count > 0 && current != Step.Result ? DisplayStyle.Flex : DisplayStyle.None;
+            // Hidden, not removed: the brand stays centred.
+            backButton.style.visibility = page != Page.Studio ? Visibility.Visible : Visibility.Hidden;
             backButton.SetEnabled(!isExecuting);
-            settingsButton.SetEnabled(current != Step.Settings && !isExecuting);
-            switch (current)
+            settingsButton.SetEnabled(!isExecuting);
+            settingsButton.EnableInClassList("refit-header-button--on", page == Page.Settings);
+            switch (page)
             {
-                case Step.AssetLocation: BuildAssetLocation(); break;
-                case Step.AvatarSelect: BuildAvatarSelect(); break;
-                case Step.AssetSelect: BuildAssetSelect(); break;
-                case Step.FitChoice: BuildFitChoice(); break;
-                case Step.TargetInput: BuildTargetInput(Step.Tightness); break;
-                case Step.MyAvatarChoice: BuildMyAvatarChoice(); break;
-                case Step.SourceInput: BuildSourceInput(); break;
-                case Step.BlendshapeSelect: BuildBlendshapeSelect(); break;
-                case Step.AssetFileInput: BuildAssetFileInput(); break;
-                case Step.TargetForFile: BuildTargetInput(Step.FileAssetChoice); break;
-                case Step.FileAssetChoice: BuildFileAssetChoice(); break;
-                case Step.Tightness: BuildTightness(); break;
-                case Step.MadeFor: BuildMadeFor(); break;
-                case Step.Summary: BuildSummary(); break;
-                case Step.Settings: BuildToolSettings(); break;
-                case Step.GravityPreview: BuildGravityPreview(); break;
-                case Step.Result: BuildResult(); break;
+                case Page.Settings: BuildToolSettings(); break;
+                case Page.Result: BuildResult(); break;
+                default: BuildStudio(); break;
             }
+            PlaceStage();
+            ShowPictures();
         }
 
         // ------------------------------------------------------------------
-        // Steps
+        // Requests
         // ------------------------------------------------------------------
 
-        private void BuildAssetLocation()
+        /// <summary>The mode follows the choices: another body refits the mesh, shapes are followed when picked.</summary>
+        private void UpdateMode()
         {
-            Question("Where is your asset ?");
-            var cards = Cards();
-            cards.Add(Card("On my avatar", null, () => Go(Step.AvatarSelect)));
-            cards.Add(Card("In my project files", null, () => Go(Step.AssetFileInput)));
-            BuildRefittedAssets();
-            BuildActiveCommissions();
+            bool otherBody = madeFor != MadeFor.Target;
+            mode = otherBody ? (blendshapes.Count > 0 ? ReFitMode.MeshAndBlendshape : ReFitMode.MeshToMesh) : ReFitMode.Blendshape;
         }
 
-        /// <summary>Lists active re-fitted assets recorded with the Orbiters tools and from this ReFit session.</summary>
-        private void BuildRefittedAssets()
+        /// <summary>Why the ReFit button cannot run yet, or null when it can.</summary>
+        private string MissingChoice()
         {
-            SessionLog.RemoveAll(e => e == null || e.sceneRenderer == null);
-            var recordedAssets = ReFitRecordIntegration.GetRefittedAssets();
-            var recordedRendererIds = new HashSet<int>();
-            foreach (var asset in recordedAssets)
-            {
-                if (asset?.renderer != null) recordedRendererIds.Add(asset.renderer.GetInstanceID());
-            }
-
-            var activeSessionEntries = new List<RefitLogEntry>();
-            for (int i = SessionLog.Count - 1; i >= 0; i--)
-            {
-                var entry = SessionLog[i];
-                if (IsActive(entry) && !recordedRendererIds.Contains(entry.sceneRenderer.GetInstanceID()))
-                    activeSessionEntries.Add(entry);
-            }
-
-            if (recordedAssets.Count == 0 && activeSessionEntries.Count == 0) return;
-
-            var section = new Label("Re-fitted assets");
-            section.AddToClassList("refit-section");
-            section.style.marginTop = 28;
-            content.Add(section);
-
-            foreach (var asset in recordedAssets)
-            {
-                var captured = asset;
-                AddRefittedAssetRow(captured.DisplayName, captured.renderer, () =>
-                {
-                    // A refit from this session also undoes its armature replacement; the record is then only dropped.
-                    var sessionEntry = SessionLog.FindLast(e => e?.originalRendererState != null &&
-                                                                e.sceneRenderer == captured.renderer && IsActive(e));
-                    bool restored = sessionEntry != null && sessionEntry.originalRendererState.Restore(sessionEntry.sceneRenderer, "ReFit revert");
-                    if (ReFitRecordIntegration.TryReset(captured, restored) || sessionEntry != null) Render();
-                });
-            }
-
-            foreach (var entry in activeSessionEntries)
-            {
-                var captured = entry;
-                AddRefittedAssetRow(entry.assetName, entry.sceneRenderer, () => RevertEntry(captured));
-            }
-        }
-
-        private void AddRefittedAssetRow(
-            string displayName, SkinnedMeshRenderer renderer, Action resetAction)
-        {
-            var row = new VisualElement();
-            row.AddToClassList("refit-summary-row");
-            row.style.alignItems = Align.Center;
-            row.style.marginTop = 4;
-
-            var name = new Label(displayName);
-            name.AddToClassList("refit-summary-value");
-            name.style.flexGrow = 1;
-            row.Add(name);
-
-            var reset = new Button(resetAction) { text = "Reset" };
-            reset.AddToClassList("refit-back");
-            row.Add(reset);
-
-            var capturedRenderer = renderer;
-            var ping = new Button(() =>
-            {
-                if (capturedRenderer != null)
-                {
-                    Selection.activeGameObject = capturedRenderer.gameObject;
-                    EditorGUIUtility.PingObject(capturedRenderer.gameObject);
-                }
-            }) { text = "Select" };
-            ping.AddToClassList("refit-back");
-            ping.style.marginLeft = 6;
-            row.Add(ping);
-
-            content.Add(row);
-        }
-
-        private static bool IsActive(RefitLogEntry entry) =>
-            entry.sceneRenderer != null && entry.refitMesh != null && entry.sceneRenderer.sharedMesh == entry.refitMesh &&
-            (entry.originalRendererState != null || entry.originalMesh != null);
-
-        private void RevertEntry(RefitLogEntry entry)
-        {
-            if (entry?.sceneRenderer != null)
-            {
-                if (entry.originalRendererState != null)
-                {
-                    entry.originalRendererState.Restore(entry.sceneRenderer, "ReFit revert");
-                }
-                else if (entry.originalMesh != null)
-                {
-                    Undo.RecordObject(entry.sceneRenderer, "ReFit revert");
-                    entry.sceneRenderer.sharedMesh = entry.originalMesh;
-                    EditorUtility.SetDirty(entry.sceneRenderer);
-                }
-            }
-            Render();
-        }
-
-        private void BuildAvatarSelect()
-        {
-            Question("Select your avatar");
-            var avatars = FindSceneAvatars();
-            if (avatars.Count == 0)
-                Help("No avatar found in the open scene(s). Drop one below.");
-            var cards = Cards();
-            foreach (var avatar in avatars)
-            {
-                var a = avatar;
-                cards.Add(Card(a.name, DescribeAvatar(a), () => { myAvatar = a; Go(Step.AssetSelect); }, "refit-card--list"));
-            }
-            var field = new ObjectField("Or pick it manually") { objectType = typeof(GameObject), allowSceneObjects = true };
-            field.AddToClassList("refit-field");
-            field.RegisterValueChangedCallback(e =>
-            {
-                if (e.newValue is GameObject go) { myAvatar = go; Go(Step.AssetSelect); }
-            });
-            content.Add(field);
-        }
-
-        private void BuildAssetSelect()
-        {
-            Question($"Select the asset on '{myAvatar.name}' to re-fit");
-            var body = AutoDetectBody(myAvatar, null);
-            var cards = Cards();
-            foreach (var smr in myAvatar.GetComponentsInChildren<SkinnedMeshRenderer>(true))
-            {
-                if (smr.sharedMesh == null) continue;
-                var s = smr;
-                var sub = $"{smr.sharedMesh.vertexCount} vertices" + (smr == body ? "  -  looks like the body" : "");
-                cards.Add(Card(s.name, sub, () => { asset = s; ResetTightnessChoice(); Go(Step.FitChoice); }, "refit-card--list"));
-            }
-        }
-
-        private void BuildFitChoice()
-        {
-            Question("Do you want to make it fit your avatar or another one ?");
-            var cards = Cards();
-            cards.Add(Card("To my avatar", "The asset stays on this avatar", () => { targetAvatar = myAvatar; ResetTightnessChoice(); Go(Step.MyAvatarChoice); }));
-            cards.Add(Card("To another one", "Move and fit the asset onto a different avatar", () =>
-            {
-                sourceAvatar = myAvatar;
-                mode = ReFitMode.MeshToMesh;
-                Go(Step.TargetInput);
-            }));
-        }
-
-        private void BuildTargetInput(Step next)
-        {
-            Question("Which avatar should it fit ?");
-            Help("Scene object or prefab / FBX from your project files.");
-            var field = new ObjectField("Destination avatar") { objectType = typeof(GameObject), allowSceneObjects = true, value = targetAvatar };
-            field.AddToClassList("refit-field");
-            content.Add(field);
-            var nextButton = Primary("Next", () =>
-            {
-                targetAvatar = (GameObject)field.value;
-                ResetTightnessChoice();
-                Go(next);
-            });
-            nextButton.SetEnabled(targetAvatar != null);
-            field.RegisterValueChangedCallback(e => nextButton.SetEnabled(e.newValue != null));
-        }
-
-        private void BuildMyAvatarChoice()
-        {
-            Question("What should it adapt to ?");
-            var cards = Cards();
-            cards.Add(Card("The asset was made for another avatar base",
-                "Your avatar is a different or modified base; fit the asset to its body",
-                () => { mode = ReFitMode.MeshToMesh; Go(Step.SourceInput); }));
-            cards.Add(Card("Make it fit blendshapes",
-                "Follow one or more body blendshapes (it already fits the base body)",
-                () => Go(Step.BlendshapeSelect)));
-        }
-
-        private void BuildSourceInput()
-        {
-            Question("Which avatar base was the asset made for ?");
-            Help("Scene object or prefab / FBX from your project files.");
-            var field = new ObjectField("Source avatar base") { objectType = typeof(GameObject), allowSceneObjects = true, value = sourceAvatar };
-            field.AddToClassList("refit-field");
-            content.Add(field);
-            var nextButton = Primary("Next", () =>
-            {
-                sourceAvatar = (GameObject)field.value;
-                mode = ReFitMode.MeshToMesh;
-                Go(Step.Tightness);
-            });
-            nextButton.SetEnabled(sourceAvatar != null);
-            field.RegisterValueChangedCallback(e => nextButton.SetEnabled(e.newValue != null));
-        }
-
-        private void BuildBlendshapeSelect()
-        {
-            Question("Which blendshapes should the asset follow ?");
-            var body = AutoDetectBody(targetAvatar, asset);
-            if (body == null || body.sharedMesh == null)
-            {
-                blendshapes.Clear();
-                Help("No body renderer with blendshapes was found on the target avatar.");
-                return;
-            }
-            Help($"Select one or more blendshapes of '{body.name}'. Each becomes a separate shape on the asset in one ReFit run.");
-
-            var names = new List<string>();
-            for (int i = 0; i < body.sharedMesh.blendShapeCount; i++) names.Add(body.sharedMesh.GetBlendShapeName(i));
-            if (names.Count == 0)
-            {
-                blendshapes.Clear();
-                Help("The target body has no blendshapes.");
-                return;
-            }
-            Button next = null;
-            content.Add(new ReFitBlendshapePicker(names, blendshapes,
-                () => next?.SetEnabled(blendshapes.Count > 0)));
-
-            Help("Optional: if the asset was also made for another avatar base, set it below to re-fit the mesh at the same time.");
-            var sourceField = new ObjectField("Source avatar base (optional)") { objectType = typeof(GameObject), allowSceneObjects = true, value = sourceAvatar };
-            sourceField.AddToClassList("refit-field");
-            content.Add(sourceField);
-
-            next = Primary("Next", () =>
-            {
-                sourceAvatar = (GameObject)sourceField.value;
-                mode = sourceAvatar != null ? ReFitMode.MeshAndBlendshape : ReFitMode.Blendshape;
-                Go(Step.Tightness);
-            });
-            next.SetEnabled(blendshapes.Count > 0);
-        }
-
-        private void BuildAssetFileInput()
-        {
-            Question("Pick the asset in your project files");
-            Help("A prefab or FBX containing the clothing / accessory (skinned mesh).");
-            var field = new ObjectField("Asset file") { objectType = typeof(GameObject), allowSceneObjects = true, value = assetFileObject };
-            field.AddToClassList("refit-field");
-            content.Add(field);
-
-            var list = new VisualElement();
-            content.Add(list);
-
-            void RefreshList()
-            {
-                list.Clear();
-                asset = null;
-                if (assetFileObject == null) return;
-                var renderers = assetFileObject.GetComponentsInChildren<SkinnedMeshRenderer>(true);
-                if (renderers.Length == 0)
-                {
-                    var help = new Label("No skinned mesh found inside this object.");
-                    help.AddToClassList("refit-help");
-                    list.Add(help);
-                    return;
-                }
-                if (renderers.Length == 1)
-                {
-                    asset = renderers[0];
-                    ResetTightnessChoice();
-                    Go(Step.TargetForFile);
-                    return;
-                }
-                var section = new Label("Several meshes found - pick the one to re-fit:");
-                section.AddToClassList("refit-section");
-                list.Add(section);
-                var cards = new VisualElement();
-                cards.AddToClassList("refit-cards");
-                list.Add(cards);
-                foreach (var smr in renderers)
-                {
-                    if (smr.sharedMesh == null) continue;
-                    var s = smr;
-                    cards.Add(Card(s.name, $"{s.sharedMesh.vertexCount} vertices", () => { asset = s; ResetTightnessChoice(); Go(Step.TargetForFile); }, "refit-card--list"));
-                }
-            }
-
-            field.RegisterValueChangedCallback(e =>
-            {
-                assetFileObject = e.newValue as GameObject;
-                RefreshList();
-            });
-            RefreshList();
-        }
-
-        private void BuildFileAssetChoice()
-        {
-            Question("How should it be fitted ?");
-            var cards = Cards();
-            cards.Add(Card("It was made for another avatar base",
-                "Fit its mesh onto the destination avatar's body",
-                () => { mode = ReFitMode.MeshToMesh; Go(Step.SourceInput); }));
-            cards.Add(Card("Make it fit blendshapes",
-                "It already fits this avatar; follow one or more of its body blendshapes",
-                () => Go(Step.BlendshapeSelect)));
-        }
-
-        private void BuildTightness()
-        {
-            EnsureStandardTightnessDefault();
-
-            Question("How tight should the asset be around the growing parts ?");
-
-            var layout = new VisualElement();
-            layout.AddToClassList("refit-tightness-layout");
-            content.Add(layout);
-
-            layout.Add(BuildTightnessOption("Not tight", false, "Best for accessories"));
-
-            var sliderColumn = new VisualElement();
-            sliderColumn.AddToClassList("refit-tightness-slider-column");
-            var slider = new Slider(" ", 0f, 1f)
-            {
-                value = clearanceTightnessKnown ? clearanceTightnessPreset : 0.5f
-            };
-            slider.AddToClassList("refit-tightness-slider");
-            slider.RegisterValueChangedCallback(e =>
-            {
-                ApplyClearanceTightnessPreset(e.newValue);
-            });
-            sliderColumn.Add(slider);
-            layout.Add(sliderColumn);
-
-            layout.Add(BuildTightnessOption("Tight", true, "Best for clothing"));
-
-            if (!clearanceTightnessKnown)
-                Help("Custom advanced setup is active. Move the slider to replace it with a tightness preset.");
-
-            var footer = new VisualElement();
-            footer.AddToClassList("refit-tightness-footer");
-            content.Add(footer);
-
-            var next = new Button(() => Go(Step.MadeFor)) { text = "Next" };
-            next.AddToClassList("refit-primary");
-            next.AddToClassList("refit-tightness-next");
-            footer.Add(next);
-        }
-
-        private void BuildMadeFor()
-        {
-            var madeFor = MadeForAvatar();
-            Question($"Was it made for {(madeFor != null ? madeFor.name : "this avatar")} exactly ?");
-            Help("Clothing from another avatar is often placed roughly over the body, sinking into it in places.");
-            var cards = Cards();
-            cards.Add(Card("Yes, it was made for it",
-                mode == ReFitMode.Blendshape ? "It fits the body as it is: ReFit only makes it follow the blendshapes." : "It fits that avatar: ReFit moves it to this one.",
-                () => { madeForAvatar = true; Go(Step.Summary); }));
-            cards.Add(Card("No, I placed it myself",
-                "ReFit also moves it out of the body where it clips, as it is and with the blendshapes, keeping layered parts in order.",
-                () => { madeForAvatar = false; Go(Step.Summary); }));
-        }
-
-        // The avatar the asset sits on as authored: the source for a move to another avatar, this one otherwise.
-        private GameObject MadeForAvatar() => mode == ReFitMode.Blendshape || sourceAvatar == null ? targetAvatar : sourceAvatar;
-
-        // Refit onto the same avatar from where it was placed: it is on that avatar's hierarchy.
-        private bool OnItsAvatar(SkinnedMeshRenderer part) => !madeForAvatar && mode != ReFitMode.MeshToMesh && targetAvatar != null &&
-            part != null && part.transform.IsChildOf(targetAvatar.transform) && (sourceAvatar == null || sourceAvatar == targetAvatar);
-
-        // The outfit a part belongs to: its object directly under the avatar, when that holds other meshes. Body and
-        // editor-only renderers excluded.
-        private List<SkinnedMeshRenderer> OutfitParts(SkinnedMeshRenderer part)
-        {
-            var parts = new List<SkinnedMeshRenderer> { part };
-            if (part == null || targetAvatar == null || !part.transform.IsChildOf(targetAvatar.transform) || part.transform == targetAvatar.transform) return parts;
-            var top = part.transform;
-            while (top.parent != null && top.parent != targetAvatar.transform) top = top.parent;
-            var body = AutoDetectBody(targetAvatar, null);
-            foreach (var renderer in top.GetComponentsInChildren<SkinnedMeshRenderer>(true))
-                if (renderer != part && renderer != body && renderer.sharedMesh != null && (renderer.hideFlags & HideFlags.DontSaveInEditor) == 0)
-                    parts.Add(renderer);
-            return parts;
-        }
-
-        // The parts refitted in this run: the asset, or its outfit innermost first.
-        private List<SkinnedMeshRenderer> RunParts()
-        {
-            if (!OnItsAvatar(asset) || !refitOutfit) return new List<SkinnedMeshRenderer> { asset };
-            return ReFitOutfit.InnerFirst(AutoDetectBody(targetAvatar, null), OutfitParts(asset));
-        }
-
-        private VisualElement BuildTightnessOption(string title, bool tight, string caption)
-        {
-            var column = new VisualElement();
-            column.AddToClassList("refit-tightness-option");
-
-            var titleLabel = new Label(title);
-            titleLabel.AddToClassList("refit-tightness-title");
-            column.Add(titleLabel);
-
-            column.Add(new TightnessIllustration(tight));
-
-            var captionLabel = new Label(caption);
-            captionLabel.AddToClassList("refit-tightness-caption");
-            column.Add(captionLabel);
-
-            return column;
-        }
-
-        private void EnsureStandardTightnessDefault()
-        {
-            if (standardTightnessInitialized)
-                return;
-
-            standardTightnessInitialized = true;
-            if (clearanceTightnessUserChosen || !clearanceTightnessKnown)
-                return;
-
-            var candidate = ReFitGravityRelaxation.DetectCandidate(asset, targetAvatar);
-            ApplyClearanceTightnessPreset(candidate != null && candidate.isCandidate
-                ? ClothingDefaultTightness
-                : AccessoryDefaultTightness, false);
-        }
-
-        // ------------------------------------------------------------------
-        // Summary & execution
-        // ------------------------------------------------------------------
-
-        private void BuildSummary()
-        {
-            Question("Ready to ReFit");
-
-            SummaryRow("Asset", asset != null ? asset.name : "-");
-            SummaryRow("Mode", ModeLabel());
-            if (mode != ReFitMode.Blendshape) SummaryRow("Made for", sourceAvatar != null ? sourceAvatar.name : "-");
-            SummaryRow("Fit to", targetAvatar != null ? targetAvatar.name : "-");
-            if (mode != ReFitMode.MeshToMesh) SummaryRow($"Blendshapes ({blendshapes.Count})", string.Join(", ", blendshapes));
-            SummaryRow("Tightness", clearanceTightnessKnown
-                ? $"{Mathf.RoundToInt(clearanceTightnessPreset * 100f)}%"
-                : "Custom");
-            SummaryRow("Made for this avatar", madeForAvatar ? "Yes" : "No: moved out of the body where it clips");
-            var outfit = OnItsAvatar(asset) ? OutfitParts(asset) : null;
-            if (outfit != null && outfit.Count > 1)
-            {
-                var together = new Toggle($"Refit its outfit with it ({outfit.Count} parts)") { value = refitOutfit };
-                together.AddToClassList("refit-field");
-                together.tooltip = "Inner parts first, so the outer ones stay over them: " + string.Join(", ", outfit.Select(p => p.name));
-                together.RegisterValueChangedCallback(e => { refitOutfit = e.newValue; validateReport = null; validateScheduled = false; Render(); });
-                content.Add(together);
-                Help(refitOutfit
-                    ? "Inner parts first, each keeping its side of the others: " + string.Join(", ", RunParts().Select(p => p.name)) + "."
-                    : "Only this part is refitted; it keeps its side of the outfit's other parts, which stay as they are.");
-            }
-
-            // Advanced settings
-            var advanced = new Foldout { text = "Advanced options", value = false };
-            advanced.AddToClassList("refit-field");
-            content.Add(advanced);
-            BuildSettings(advanced);
-
-            // Validation
-            var checksSection = new Label("Checks");
-            checksSection.AddToClassList("refit-section");
-            content.Add(checksSection);
-            var messages = new VisualElement();
-            content.Add(messages);
-
-            void ShowReport()
-            {
-                messages.Clear();
-                if (validateReport == null)
-                {
-                    var checking = new Label("Checking the setup...");
-                    checking.AddToClassList("refit-help");
-                    messages.Add(checking);
-                    return;
-                }
-                bool any = false;
-                foreach (var m in validateReport.messages)
-                {
-                    if (m.severity == ReFitSeverity.Info && (m.code == "body-autodetect" || m.code == "proportions-ok")) { AddMessage(messages, m); any = true; continue; }
-                    if (m.severity != ReFitSeverity.Info) { AddMessage(messages, m); any = true; }
-                }
-                if (!any)
-                {
-                    var ok = new Label("All good.");
-                    ok.AddToClassList("refit-help");
-                    messages.Add(ok);
-                }
-            }
-            ShowReport();
-
-            if (!validateScheduled && validateReport == null)
-            {
-                validateScheduled = true;
-                content.schedule.Execute(() =>
-                {
-                    validateReport = ReFitService.Validate(BuildRequest(asset));
-                    ShowReport();
-                }).StartingIn(50);
-            }
-
-            var run = new ReFitProgressButtonElement(
-                StartExecution,
-                () => new ReFitProgressButtonData
-                {
-                    text = isExecuting && !string.IsNullOrWhiteSpace(executionStep) ? executionStep : "ReFit",
-                    enabled = !isExecuting && asset != null && targetAvatar != null,
-                    isRunning = isExecuting,
-                    progress = isExecuting ? executionProgress : 1f,
-                    fillColor = ReFitGreen,
-                    trackColor = ReFitProgressTrack
-                });
-            run.AddToClassList("refit-primary");
-            content.Add(run);
-            Help("Warnings never block the operation - if the proportions differ because bones were intentionally moved, you can proceed.");
-        }
-
-        private void BuildSettings(VisualElement parent)
-        {
-            var defaultSettings = new ReFitSettings();
-
-            var name = new TextField("Blendshape name") { value = settings.blendshapeName };
-            name.RegisterValueChangedCallback(e => settings.blendshapeName = e.newValue);
-            parent.Add(name);
-
-            var maxDist = new FloatField("Max projection distance (m)") { value = settings.maxProjectionDistance };
-            maxDist.RegisterValueChangedCallback(e => settings.maxProjectionDistance = Mathf.Max(0.001f, e.newValue));
-            parent.Add(maxDist);
-
-            var falloff = new FloatField("Full-effect distance (m)") { value = settings.falloffStartDistance };
-            falloff.RegisterValueChangedCallback(e => settings.falloffStartDistance = Mathf.Max(0f, e.newValue));
-            parent.Add(falloff);
-
-            AddIntFieldWithReset(parent, "Primary refit smoothing iterations", 0, 10,
-                settings.primarySmoothingIterations,
-                ReFitSettings.DefaultPrimarySmoothingIterations,
-                value => settings.primarySmoothingIterations = value);
-
-            AddFloatFieldWithReset(parent, "Primary refit smoothing strength", 0f, 1f,
-                settings.primarySmoothingStrength,
-                ReFitSettings.DefaultPrimarySmoothingStrength,
-                value => settings.primarySmoothingStrength = value);
-
-            AddIntFieldWithReset(parent, "Transferred blendshape smoothing iterations", 0, 10,
-                settings.transferredBlendshapeSmoothingIterations,
-                ReFitSettings.DefaultTransferredBlendshapeSmoothingIterations,
-                value => settings.transferredBlendshapeSmoothingIterations = value);
-
-            AddFloatFieldWithReset(parent, "Transferred blendshape smoothing strength", 0f, 1f,
-                settings.transferredBlendshapeSmoothingStrength,
-                ReFitSettings.DefaultTransferredBlendshapeSmoothingStrength,
-                value => settings.transferredBlendshapeSmoothingStrength = value);
-
-            var clearanceSection = new Label("Clearance correction");
-            clearanceSection.AddToClassList("refit-section");
-            clearanceSection.style.marginTop = 14;
-            parent.Add(clearanceSection);
-
-            var clearance = new Toggle("Preserve clothing clearance") { value = settings.enableClearanceCorrection };
-            clearance.AddToClassList("refit-field");
-            clearance.RegisterValueChangedCallback(e => settings.enableClearanceCorrection = e.newValue);
-            parent.Add(clearance);
-
-            var advanced = new Toggle("Advanced") { value = clearanceAdvanced };
-            advanced.AddToClassList("refit-field");
-            parent.Add(advanced);
-
-            var clearanceControls = new VisualElement();
-            parent.Add(clearanceControls);
-
-            void RefreshClearanceControls()
-            {
-                clearanceControls.Clear();
-                BuildClearanceControls(clearanceControls, defaultSettings);
-            }
-
-            advanced.RegisterValueChangedCallback(e =>
-            {
-                clearanceAdvanced = e.newValue;
-                RefreshClearanceControls();
-            });
-            RefreshClearanceControls();
-
-            var offset = new EnumField("Offset mode", settings.offsetMode);
-            offset.RegisterValueChangedCallback(e => settings.offsetMode = (OffsetMode)e.newValue);
-            parent.Add(offset);
-
-            var normalFilter = new Toggle("Filter by normals") { value = settings.filterByNormal };
-            normalFilter.RegisterValueChangedCallback(e => settings.filterByNormal = e.newValue);
-            parent.Add(normalFilter);
-
-            var regionFilter = new Toggle("Filter by body region") { value = settings.filterByBoneRegion };
-            regionFilter.RegisterValueChangedCallback(e => settings.filterByBoneRegion = e.newValue);
-            parent.Add(regionFilter);
-
-            if (mode != ReFitMode.Blendshape)
-            {
-                var replace = new Toggle("Replace armature with target's") { value = settings.replaceArmature };
-                replace.RegisterValueChangedCallback(e => settings.replaceArmature = e.newValue);
-                parent.Add(replace);
-
-                var weights = new Toggle("Transfer skin weights from target") { value = settings.transferWeights };
-                weights.RegisterValueChangedCallback(e => settings.transferWeights = e.newValue);
-                parent.Add(weights);
-
-                var keepExtra = new Toggle("Keep extra bones (physics, props)") { value = settings.keepExtraBoneVertices };
-                keepExtra.RegisterValueChangedCallback(e => settings.keepExtraBoneVertices = e.newValue);
-                parent.Add(keepExtra);
-            }
-
-            var normals = new Toggle("Recalculate shape normals") { value = settings.recalculateNormalDeltas };
-            normals.RegisterValueChangedCallback(e => settings.recalculateNormalDeltas = e.newValue);
-            parent.Add(normals);
-        }
-
-        private void BuildClearanceControls(VisualElement parent, ReFitSettings defaultSettings)
-        {
-            if (!clearanceAdvanced)
-            {
-                BuildClearanceTightnessSlider(parent);
-                return;
-            }
-
-            AddFloatFieldWithReset(parent, "Expanded-area tightening strength", 0f, 1f,
-                1f - Mathf.Clamp01(settings.clearanceTightnessFactor),
-                1f - Mathf.Clamp01(defaultSettings.clearanceTightnessFactor),
-                value =>
-                {
-                    MarkClearanceTightnessCustom();
-                    settings.clearanceTightnessFactor = 1f - Mathf.Clamp01(value);
-                });
-
-            AddFloatFieldWithReset(parent, "Minimum safety distance (m)", 0f, 0.1f,
-                settings.clearanceMinimumSafetyDistance,
-                defaultSettings.clearanceMinimumSafetyDistance,
-                value =>
-                {
-                    MarkClearanceTightnessCustom();
-                    settings.clearanceMinimumSafetyDistance = value;
-                });
-
-            AddFloatFieldWithReset(parent, "Max outward safety correction (m)", 0f, 0.25f,
-                settings.clearanceMaxOutwardCorrection,
-                defaultSettings.clearanceMaxOutwardCorrection,
-                value =>
-                {
-                    MarkClearanceTightnessCustom();
-                    settings.clearanceMaxOutwardCorrection = value;
-                });
-
-            AddFloatFieldWithReset(parent, "Max surface guard correction (m)", 0f, 0.1f,
-                settings.clearanceMaxSurfaceGuardCorrection,
-                defaultSettings.clearanceMaxSurfaceGuardCorrection,
-                value =>
-                {
-                    MarkClearanceTightnessCustom();
-                    settings.clearanceMaxSurfaceGuardCorrection = value;
-                });
-
-            AddFloatFieldWithReset(parent, "Surface guard trigger depth (m)", 0f, 0.02f,
-                settings.clearanceSurfaceGuardTriggerDistance,
-                defaultSettings.clearanceSurfaceGuardTriggerDistance,
-                value =>
-                {
-                    MarkClearanceTightnessCustom();
-                    settings.clearanceSurfaceGuardTriggerDistance = value;
-                });
-
-            AddFloatFieldWithReset(parent, "Max inward tightening (m)", 0f, 0.25f,
-                settings.clearanceMaxInwardCorrection,
-                defaultSettings.clearanceMaxInwardCorrection,
-                value =>
-                {
-                    MarkClearanceTightnessCustom();
-                    settings.clearanceMaxInwardCorrection = value;
-                });
-
-            AddFloatFieldWithReset(parent, "Inward tightening strength", 0f, 1f,
-                settings.clearanceInwardStrength,
-                defaultSettings.clearanceInwardStrength,
-                value =>
-                {
-                    MarkClearanceTightnessCustom();
-                    settings.clearanceInwardStrength = value;
-                });
-
-            AddFloatFieldWithReset(parent, "Tightening starts at expansion (m)", 0f, 0.2f,
-                settings.clearanceExpansionStart,
-                defaultSettings.clearanceExpansionStart,
-                value =>
-                {
-                    MarkClearanceTightnessCustom();
-                    settings.clearanceExpansionStart = value;
-                    if (settings.clearanceExpansionFull < value)
-                        settings.clearanceExpansionFull = value;
-                });
-
-            AddFloatFieldWithReset(parent, "Full tightening at expansion (m)", 0f, 0.3f,
-                settings.clearanceExpansionFull,
-                defaultSettings.clearanceExpansionFull,
-                value =>
-                {
-                    MarkClearanceTightnessCustom();
-                    settings.clearanceExpansionFull = Mathf.Max(settings.clearanceExpansionStart, value);
-                });
-
-            AddIntFieldWithReset(parent, "Correction smoothing iterations", 0, 10,
-                settings.clearanceSmoothingIterations,
-                defaultSettings.clearanceSmoothingIterations,
-                value =>
-                {
-                    MarkClearanceTightnessCustom();
-                    settings.clearanceSmoothingIterations = value;
-                });
-
-            AddFloatFieldWithReset(parent, "Correction smoothing strength", 0f, 1f,
-                settings.clearanceSmoothingStrength,
-                defaultSettings.clearanceSmoothingStrength,
-                value =>
-                {
-                    MarkClearanceTightnessCustom();
-                    settings.clearanceSmoothingStrength = value;
-                });
-
-            AddIntFieldWithReset(parent, "Surface guard iterations", 0, 12,
-                settings.clearanceSurfaceGuardIterations,
-                defaultSettings.clearanceSurfaceGuardIterations,
-                value =>
-                {
-                    MarkClearanceTightnessCustom();
-                    settings.clearanceSurfaceGuardIterations = value;
-                });
-
-            AddFloatFieldWithReset(parent, "Surface guard strength", 0f, 1f,
-                settings.clearanceSurfaceGuardStrength,
-                defaultSettings.clearanceSurfaceGuardStrength,
-                value =>
-                {
-                    MarkClearanceTightnessCustom();
-                    settings.clearanceSurfaceGuardStrength = value;
-                });
-
-            AddIntFieldWithReset(parent, "Surface guard edge samples", 1, 3,
-                settings.clearanceSurfaceGuardEdgeSamples,
-                defaultSettings.clearanceSurfaceGuardEdgeSamples,
-                value =>
-                {
-                    MarkClearanceTightnessCustom();
-                    settings.clearanceSurfaceGuardEdgeSamples = value;
-                });
-
-            AddFloatFieldWithReset(parent, "Max primary total correction (m)", 0f, 0.2f,
-                settings.clearanceMaxPrimaryTotalCorrection,
-                defaultSettings.clearanceMaxPrimaryTotalCorrection,
-                value =>
-                {
-                    MarkClearanceTightnessCustom();
-                    settings.clearanceMaxPrimaryTotalCorrection = value;
-                });
-
-            AddFloatFieldWithReset(parent, "Max transferred total correction (m)", 0f, 0.2f,
-                settings.clearanceMaxTransferredTotalCorrection,
-                defaultSettings.clearanceMaxTransferredTotalCorrection,
-                value =>
-                {
-                    MarkClearanceTightnessCustom();
-                    settings.clearanceMaxTransferredTotalCorrection = value;
-                });
-
-            AddFloatFieldWithReset(parent, "Transferred inward scale", 0f, 1f,
-                settings.clearanceTransferredInwardScale,
-                defaultSettings.clearanceTransferredInwardScale,
-                value =>
-                {
-                    MarkClearanceTightnessCustom();
-                    settings.clearanceTransferredInwardScale = value;
-                });
-
-            AddFloatFieldWithReset(parent, "Open boundary correction scale", 0f, 1f,
-                settings.clearanceOpenBoundaryCorrectionScale,
-                defaultSettings.clearanceOpenBoundaryCorrectionScale,
-                value =>
-                {
-                    MarkClearanceTightnessCustom();
-                    settings.clearanceOpenBoundaryCorrectionScale = value;
-                });
-
-            AddFloatFieldWithReset(parent, "Low-confidence correction scale", 0f, 1f,
-                settings.clearanceLowConfidenceCorrectionScale,
-                defaultSettings.clearanceLowConfidenceCorrectionScale,
-                value =>
-                {
-                    MarkClearanceTightnessCustom();
-                    settings.clearanceLowConfidenceCorrectionScale = value;
-                });
-
-            var garmentKind = new EnumField("Garment type", settings.garmentKind);
-            garmentKind.RegisterValueChangedCallback(e => settings.garmentKind = (ReFitGarmentKind)e.newValue);
-            parent.Add(garmentKind);
-            var tubes = new Toggle("Preserve closed tubes") { value = settings.preserveClosedTubes,
-                tooltip = "Automatically detect closed tubular rings and preserve their thickness while fitting. Other meshes keep surface fitting." };
-            tubes.RegisterValueChangedCallback(e => settings.preserveClosedTubes = e.newValue);
-            parent.Add(tubes);
-#if REFIT_VRCHAT_AVATARS
-            var rigid = new Toggle("Keep rigid pieces on the body (beta)") { value = settings.keepRigidPiecesOnBody,
-                tooltip = "Buttons, studs, buckles and other pieces a refit cannot bend follow the body's blendshapes when the avatar is built (Orbiters Follow Body Blendshapes)." };
-            rigid.RegisterValueChangedCallback(e => settings.keepRigidPiecesOnBody = e.newValue);
-            parent.Add(rigid);
-#endif
-
-            AddFloatFieldWithReset(parent, "Upper-body hem follow scale", 0f, 1f,
-                settings.upperBodyGarmentHemFollowScale,
-                defaultSettings.upperBodyGarmentHemFollowScale,
-                value =>
-                {
-                    MarkClearanceTightnessCustom();
-                    settings.upperBodyGarmentHemFollowScale = value;
-                });
-
-            var islandPropagation = new Toggle("Propagate disconnected island corrections")
-            {
-                value = settings.clearancePropagateDisconnectedIslands
-            };
-            islandPropagation.RegisterValueChangedCallback(e =>
-            {
-                MarkClearanceTightnessCustom();
-                settings.clearancePropagateDisconnectedIslands = e.newValue;
-            });
-            parent.Add(islandPropagation);
-
-            AddFloatFieldWithReset(parent, "Island follow strength", 0f, 1f,
-                settings.clearanceIslandPropagationStrength,
-                defaultSettings.clearanceIslandPropagationStrength,
-                value =>
-                {
-                    MarkClearanceTightnessCustom();
-                    settings.clearanceIslandPropagationStrength = value;
-                });
-
-            AddFloatFieldWithReset(parent, "Island follow search distance (m)", 0f, 0.25f,
-                settings.clearanceIslandPropagationSearchDistance,
-                defaultSettings.clearanceIslandPropagationSearchDistance,
-                value =>
-                {
-                    MarkClearanceTightnessCustom();
-                    settings.clearanceIslandPropagationSearchDistance = value;
-                });
-
-            AddFloatFieldWithReset(parent, "Max island follow correction (m)", 0f, 0.1f,
-                settings.clearanceMaxIslandPropagationCorrection,
-                defaultSettings.clearanceMaxIslandPropagationCorrection,
-                value =>
-                {
-                    MarkClearanceTightnessCustom();
-                    settings.clearanceMaxIslandPropagationCorrection = value;
-                });
-
-            AddFloatFieldWithReset(parent, "Island follow donor threshold (m)", 0f, 0.02f,
-                settings.clearanceIslandPropagationMinDonorCorrection,
-                defaultSettings.clearanceIslandPropagationMinDonorCorrection,
-                value =>
-                {
-                    MarkClearanceTightnessCustom();
-                    settings.clearanceIslandPropagationMinDonorCorrection = value;
-                });
-        }
-
-        private void BuildClearanceTightnessSlider(VisualElement parent)
-        {
-            var slider = new Slider(clearanceTightnessKnown ? "Tightness" : "Tightness (custom)", 0f, 1f)
-            {
-                value = clearanceTightnessKnown ? clearanceTightnessPreset : 0.5f
-            };
-            slider.AddToClassList("refit-field");
-            slider.RegisterValueChangedCallback(e =>
-            {
-                ApplyClearanceTightnessPreset(e.newValue);
-                slider.label = "Tightness";
-            });
-            parent.Add(slider);
-
-            if (!clearanceTightnessKnown)
-                AddInlineHelp(parent, "Custom advanced setup is active. Move the slider to replace it with a tightness preset.");
-        }
-
-        private void ApplyClearanceTightnessPreset(float value, bool userChosen = true)
-        {
-            clearanceTightnessPreset = Mathf.Clamp01(value);
-            clearanceTightnessKnown = true;
-            if (userChosen)
-                clearanceTightnessUserChosen = true;
-
-            ReFitSettingsPresets.ApplyTightness(settings, clearanceTightnessPreset);
-        }
-
-        private void MarkClearanceTightnessCustom()
-        {
-            clearanceTightnessKnown = false;
-            clearanceTightnessUserChosen = true;
-        }
-
-        private void ResetTightnessChoice()
-        {
-            standardTightnessInitialized = false;
-            clearanceTightnessUserChosen = false;
-            clearanceTightnessKnown = true;
-            clearanceTightnessPreset = 0.5f;
-        }
-        private static void AddInlineHelp(VisualElement parent, string text)
-        {
-            var label = new Label(text);
-            label.AddToClassList("refit-help");
-            parent.Add(label);
-        }
-
-        private static void AddIntFieldWithReset(VisualElement parent, string label, int min, int max,
-            int currentValue, int defaultValue, Action<int> apply)
-        {
-            var row = CreateResetFieldRow();
-
-            var field = new IntegerField(label) { value = Mathf.Clamp(currentValue, min, max) };
-            PrepareResetField(field);
-            field.RegisterValueChangedCallback(e =>
-            {
-                var value = Mathf.Clamp(e.newValue, min, max);
-                if (value != e.newValue)
-                    field.SetValueWithoutNotify(value);
-                apply(value);
-            });
-            row.Add(field);
-
-            var reset = new Button(() =>
-            {
-                var value = Mathf.Clamp(defaultValue, min, max);
-                field.SetValueWithoutNotify(value);
-                apply(value);
-            })
-            { text = "Reset" };
-            PrepareResetButton(reset);
-            row.Add(reset);
-
-            parent.Add(row);
-        }
-
-        private static void AddFloatFieldWithReset(VisualElement parent, string label, float min, float max,
-            float currentValue, float defaultValue, Action<float> apply)
-        {
-            var row = CreateResetFieldRow();
-
-            var field = new FloatField(label) { value = Mathf.Clamp(currentValue, min, max) };
-            PrepareResetField(field);
-            field.RegisterValueChangedCallback(e =>
-            {
-                var value = Mathf.Clamp(e.newValue, min, max);
-                if (!Mathf.Approximately(value, e.newValue))
-                    field.SetValueWithoutNotify(value);
-                apply(value);
-            });
-            row.Add(field);
-
-            var reset = new Button(() =>
-            {
-                var value = Mathf.Clamp(defaultValue, min, max);
-                field.SetValueWithoutNotify(value);
-                apply(value);
-            })
-            { text = "Reset" };
-            PrepareResetButton(reset);
-            row.Add(reset);
-
-            parent.Add(row);
-        }
-
-        private static VisualElement CreateResetFieldRow()
-        {
-            var row = new VisualElement();
-            row.style.flexDirection = FlexDirection.Row;
-            row.style.alignItems = Align.Center;
-            row.style.marginTop = 2;
-            row.style.width = Length.Percent(100);
-            row.style.flexGrow = 1f;
-            row.style.overflow = Overflow.Hidden;
-            return row;
-        }
-
-        private static void PrepareResetField(BaseField<int> field)
-        {
-            PrepareResetField((VisualElement)field);
-            PrepareResetFieldLabel(field);
-        }
-
-        private static void PrepareResetField(BaseField<float> field)
-        {
-            PrepareResetField((VisualElement)field);
-            PrepareResetFieldLabel(field);
-        }
-
-        private static void PrepareResetField(VisualElement field)
-        {
-            field.style.flexGrow = 1f;
-            field.style.flexShrink = 1f;
-            field.style.flexBasis = 0;
-            field.style.minWidth = 0;
-            field.style.marginRight = 6;
-        }
-
-        private static void PrepareResetFieldLabel<T>(BaseField<T> field)
-        {
-            if (field.labelElement == null) return;
-            field.labelElement.style.flexShrink = 1f;
-            field.labelElement.style.minWidth = 0;
-            field.labelElement.style.whiteSpace = WhiteSpace.Normal;
-        }
-
-        private static void PrepareResetButton(Button reset)
-        {
-            reset.AddToClassList("refit-back");
-            reset.style.flexGrow = 0f;
-            reset.style.flexShrink = 0f;
-            reset.style.width = 64;
-            reset.style.minWidth = 64;
-            reset.style.maxWidth = 64;
-        }
-
-        private void BuildToolSettings()
-        {
-            Question("Settings");
-
-            var connection = new Label("Connection");
-            connection.AddToClassList("refit-section");
-            content.Add(connection);
-
-            var devEnvironment = new Toggle("Dev Environment")
-            {
-                value = ReFitCommissionClient.IsDevEnvironment
-            };
-            devEnvironment.AddToClassList("refit-field");
-            devEnvironment.RegisterValueChangedCallback(e =>
-            {
-                ReFitCommissionClient.IsDevEnvironment = e.newValue;
-                commissionCreators = null;
-                commissionError = null;
-                commissionCreatorsLoading = false;
-                commissionHandoffLoading = false;
-            });
-            content.Add(devEnvironment);
-            Help("Uses the local Orbiters API on port 4100. Production is used when disabled. This setting is shared with MCB when MCB is installed.");
-
-            var operation = new Label("Operation");
-            operation.AddToClassList("refit-section");
-            operation.style.marginTop = 18;
-            content.Add(operation);
-            BuildSettings(content);
-
-            if (ReFitRecordIntegration.IsAvailable)
-            {
-                var recordSection = new Label("Orbiters tools");
-                recordSection.AddToClassList("refit-section");
-                recordSection.style.marginTop = 18;
-                content.Add(recordSection);
-
-                var recordResults = new Toggle("Link transferred blendshapes to the body")
-                {
-                    value = ReFitRecordIntegration.Enabled
-                };
-                recordResults.AddToClassList("refit-field");
-                recordResults.RegisterValueChangedCallback(e => ReFitRecordIntegration.Enabled = e.newValue);
-                content.Add(recordResults);
-                Help("Records each result on the refitted mesh: its transferred blendshapes follow every animation of the body's shapes when the avatar is built, MCB keeps it per custom base version, and MCB or My Avatar can restore the original mesh. Enabled by default.");
-            }
-
-            var debugSection = new Label("Debug");
-            debugSection.AddToClassList("refit-section");
-            debugSection.style.marginTop = 18;
-            content.Add(debugSection);
-
-            var debug = new Toggle("Debug mode") { value = ReFitDebugService.Enabled };
-            debug.AddToClassList("refit-field");
-            debug.RegisterValueChangedCallback(e => ReFitDebugService.Enabled = e.newValue);
-            content.Add(debug);
-            Help("When enabled, ReFit logs diagnostics and creates scene copies of the asset after each apply step.");
-
-            var projection = new Toggle("Projection gizmos") { value = ReFitProjectionGizmoService.Enabled };
-            projection.AddToClassList("refit-field");
-            projection.RegisterValueChangedCallback(e => ReFitProjectionGizmoService.Enabled = e.newValue);
-            content.Add(projection);
-            Help("When debug mode is enabled, ReFit stores source/target projection lines on debug snapshots. This toggle only shows or hides them in the Scene view; details appear when hovering a line.");
-
-            AddIntFieldWithReset(
-                content,
-                "Projection display budget",
-                ReFitProjectionGizmoService.MinDisplaySampleBudget,
-                ReFitProjectionGizmoService.MaxDisplaySampleBudget,
-                ReFitProjectionGizmoService.DisplaySampleBudget,
-                ReFitProjectionGizmoService.DefaultDisplaySampleBudget,
-                ReFitProjectionGizmoService.SetDisplaySampleBudget);
-            Help("Limits Scene view drawing cost only; debug mode still captures every projection group. Increase it for small snapshots when you need denser rays.");
-
-            var flush = new Button(() =>
-            {
-                var removed = ReFitDebugService.FlushSceneDebugObjects();
-                Debug.Log($"[ReFit] Debug flush removed {removed} session(s).");
-            })
-            { text = "Remove debug objects from scene" };
-            flush.AddToClassList("refit-back");
-            flush.style.marginTop = 4;
-            content.Add(flush);
+            if (asset == null) return "Pick the clothing to refit.";
+            if (targetAvatar == null) return "Pick the avatar it should fit.";
+            if (madeFor == MadeFor.Other && sourceAvatar == null) return "Pick the avatar it was made for.";
+            if (madeFor == MadeFor.OriginalBase && originalBase == null) return "The original base is not available.";
+            if (mode == ReFitMode.Blendshape && blendshapes.Count == 0)
+                return "It already fits this avatar: pick body shapes to follow, or the base it was made for.";
+            return null;
         }
 
         private ReFitRequest BuildRequest(SkinnedMeshRenderer part)
@@ -1381,6 +341,7 @@ namespace Orbiters.ReFit.Editor
                 mode = mode,
                 assetRenderer = part,
                 sourceAvatar = mode == ReFitMode.Blendshape ? null : sourceAvatar,
+                sourceBodyRenderer = mode == ReFitMode.Blendshape ? null : sourceBody,
                 targetAvatar = targetAvatar,
                 targetBlendshapes = mode == ReFitMode.MeshToMesh ? null : new List<string>(blendshapes),
                 settings = requestSettings
@@ -1394,30 +355,60 @@ namespace Orbiters.ReFit.Editor
                 // parts keep their side of it; clipping they cover stays as it is.
                 request.mode = ReFitMode.MeshAndBlendshape;
                 request.sourceAvatar = targetAvatar;
+                request.sourceBodyRenderer = null;
                 requestSettings.coverageKeepsLayerOrder = true;
                 request.coverageLayers = OutfitParts(part).Where(p => p != part).ToList();
             }
             return request;
         }
 
+        // Refit onto the same avatar from where it was placed: it is on that avatar's hierarchy.
+        private bool OnItsAvatar(SkinnedMeshRenderer part) => !madeForAvatar && mode != ReFitMode.MeshToMesh && targetAvatar != null &&
+            part != null && part.transform.IsChildOf(targetAvatar.transform) && (sourceAvatar == null || sourceAvatar == targetAvatar);
+
+        // The outfit a part belongs to: its object directly under the avatar, when that holds other meshes. Body and
+        // editor-only renderers excluded.
+        private List<SkinnedMeshRenderer> OutfitParts(SkinnedMeshRenderer part)
+        {
+            var parts = new List<SkinnedMeshRenderer> { part };
+            if (part == null || targetAvatar == null || !part.transform.IsChildOf(targetAvatar.transform) || part.transform == targetAvatar.transform) return parts;
+            var top = part.transform;
+            while (top.parent != null && top.parent != targetAvatar.transform) top = top.parent;
+            var body = ReFitAutoSetup.Body(targetAvatar);
+            foreach (var renderer in top.GetComponentsInChildren<SkinnedMeshRenderer>(true))
+                if (renderer != part && renderer != body && renderer.sharedMesh != null && (renderer.hideFlags & HideFlags.DontSaveInEditor) == 0)
+                    parts.Add(renderer);
+            return parts;
+        }
+
+        // The parts refitted in this run: the asset, or its outfit innermost first.
+        private List<SkinnedMeshRenderer> RunParts()
+        {
+            if (!OnItsAvatar(asset) || !refitOutfit) return new List<SkinnedMeshRenderer> { asset };
+            return ReFitOutfit.InnerFirst(ReFitAutoSetup.Body(targetAvatar), OutfitParts(asset));
+        }
+
+        // ------------------------------------------------------------------
+        // Execution
+        // ------------------------------------------------------------------
+
         private void StartExecution()
         {
-            if (isExecuting || asset == null || targetAvatar == null) return;
-
+            if (isExecuting || MissingChoice() != null) return;
             try
             {
-                lastRequest = BuildRequest(asset);
+                isExecuting = true;
+                executionProgress = 0f;
+                executionStep = "Preparing…";
                 lastResult = null;
                 outfitResults.Clear();
-                executionProgress = 0f;
-                executionStep = "Preparing...";
-                isExecuting = true;
                 backButton?.SetEnabled(false);
                 settingsButton?.SetEnabled(false);
                 executionCoroutines.Clear();
                 executionCoroutines.Push(RunExecution());
                 EditorApplication.update -= PumpExecution;
                 EditorApplication.update += PumpExecution;
+                stage?.SetBusy("Fitting…");
             }
             catch (Exception ex)
             {
@@ -1427,6 +418,26 @@ namespace Orbiters.ReFit.Editor
 
         private IEnumerator RunExecution()
         {
+            // The press shows at once; the pictures and the original base come on the next frame.
+            yield return null;
+            CaptureBeforePictures();
+            if (madeFor == MadeFor.OriginalBase)
+            {
+                executionStep = "Opening " + (originalBase?.BaseName ?? "the original base") + "…";
+                yield return null;
+                if (!ResolveOriginal())
+                {
+                    lastResult = new ReFitResult();
+                    lastResult.report.Error("original-base-missing",
+                        "The original base of " + (originalBase?.Name ?? "this custom base") + " could not be opened.");
+                    FinishExecution();
+                    yield break;
+                }
+            }
+            lastSourceName = mode == ReFitMode.Blendshape ? null : sourceAvatar != null ? sourceAvatar.name : null;
+            if (madeFor == MadeFor.OriginalBase && originalBase != null) lastSourceName = originalBase.BaseName ?? lastSourceName;
+            lastRequest = BuildRequest(asset);
+
             var parts = RunParts();
             if (parts.Count == 1)
             {
@@ -1466,9 +477,6 @@ namespace Orbiters.ReFit.Editor
                     if (part == asset) { lastRequest = request; lastResult = result; }
                 }
 
-            isExecuting = false;
-            executionProgress = 1f;
-            executionStep = null;
             FinishExecution();
         }
 
@@ -1518,9 +526,6 @@ namespace Orbiters.ReFit.Editor
             StopExecutionPump();
             lastResult = new ReFitResult();
             lastResult.report.Error("refit-exception", $"Unexpected error: {ex.Message}\n{ex.StackTrace}");
-            isExecuting = false;
-            executionProgress = 1f;
-            executionStep = null;
             FinishExecution();
         }
 
@@ -1542,628 +547,129 @@ namespace Orbiters.ReFit.Editor
         private void FinishExecution()
         {
             StopExecutionPump();
+            isExecuting = false;
+            executionProgress = 1f;
+            executionStep = null;
             if (outfitResults.Count == 0) Record(lastRequest, lastResult, asset);
+            ReleaseOriginal();
+            gravityPreview = null;
             // The gravity preview shows one garment: an outfit run goes to its results.
             if (outfitResults.Count == 0 && lastResult != null && lastResult.success &&
                 ReFitGravityPreviewService.TryCreatePreview(lastResult, lastRequest, out gravityPreview))
             {
                 gravityPreviewWeight = 100f;
                 ReFitGravityPreviewService.ShowPreview(lastResult.sceneRenderer, gravityPreview, gravityPreviewWeight);
-                Go(Step.GravityPreview);
             }
-            else
-            {
-                gravityPreview = null;
-                Go(Step.Result);
-            }
-        }
-
-        private void BuildGravityPreview()
-        {
-            if (lastResult == null || !lastResult.success || gravityPreview == null ||
-                gravityPreview.frames == null || gravityPreview.frames.Length == 0)
-            {
-                Go(Step.Result);
-                return;
-            }
-
-            Question("Gravity preview");
-            SummaryRow("Detected as", "body clothing");
-            if (gravityPreview.candidate != null)
-            {
-                SummaryRow("Confidence", gravityPreview.candidate.score.ToString("0.00"));
-                if (gravityPreview.candidate.reasons != null && gravityPreview.candidate.reasons.Length > 0)
-                    SummaryRow("Signals", string.Join(", ", gravityPreview.candidate.reasons));
-            }
-            SummaryRow("Preview body", string.IsNullOrEmpty(gravityPreview.bodyRendererName) ? "-" : gravityPreview.bodyRendererName);
-
-            var shapeNames = new List<string>();
-            for (int i = 0; i < gravityPreview.frames.Length; i++)
-                shapeNames.Add(gravityPreview.frames[i].gravityShapeName);
-            SummaryRow("Generated shapes", string.Join(", ", shapeNames));
-
-            var slider = new Slider("Default gravity weight", 0f, ReFitGravityPreviewService.MaximumGravityWeight) { value = gravityPreviewWeight };
-            slider.AddToClassList("refit-field");
-            slider.RegisterValueChangedCallback(e =>
-            {
-                gravityPreviewWeight = e.newValue;
-                ReFitGravityPreviewService.SetWeight(gravityPreviewWeight);
-            });
-            content.Add(slider);
-            Help("The Scene view cyan wire preview shows the additive gravity shape at the selected default weight.");
-
-            var apply = Primary("Apply gravity blendshapes", () =>
-            {
-                ReFitGravityPreviewService.Apply(lastResult, gravityPreview, gravityPreviewWeight);
-                gravityPreview = null;
-                Go(Step.Result);
-            });
-            apply.style.marginTop = 12;
-
-            var skip = new Button(() =>
-            {
-                ReFitGravityPreviewService.ClearPreview(gravityPreview);
-                gravityPreview = null;
-                Go(Step.Result);
-            })
-            { text = "Skip" };
-            skip.AddToClassList("refit-back");
-            skip.style.marginTop = 8;
-            content.Add(skip);
-        }
-
-        private void BuildResult()
-        {
-            bool ok = lastResult != null && lastResult.success;
-            if (outfitResults.Count > 0)
-            {
-                int done = outfitResults.Count(r => r.result != null && r.result.success);
-                Question(done == outfitResults.Count ? $"Done ! The {done} parts of the outfit have been re-fitted." : $"{done} of {outfitResults.Count} parts were re-fitted.");
-                foreach (var item in outfitResults)
-                {
-                    bool partOk = item.result != null && item.result.success;
-                    SummaryRow(item.part != null ? item.part.name : "-", partOk ? "Re-fitted" : "Not re-fitted");
-                    if (!partOk && item.result != null)
-                        foreach (var m in item.result.report.messages)
-                            if (m.severity == ReFitSeverity.Error) AddMessage(content, m);
-                }
-            }
-            else
-                Question(ok ? "Done ! Your asset has been re-fitted." : "ReFit could not complete.");
-
-            if (lastResult != null)
-            {
-                if (!string.IsNullOrEmpty(lastResult.meshAssetPath)) SummaryRow("Mesh asset", lastResult.meshAssetPath);
-                if (!string.IsNullOrEmpty(lastResult.prefabAssetPath)) SummaryRow("Prefab", lastResult.prefabAssetPath);
-                if (lastResult.gravityShapeNames != null && lastResult.gravityShapeNames.Length > 0)
-                {
-                    SummaryRow("Gravity shapes", string.Join(", ", lastResult.gravityShapeNames));
-                    SummaryRow("Gravity default", lastResult.gravityDefaultWeight.ToString("0.#"));
-                }
-
-                var messages = new VisualElement();
-                content.Add(messages);
-                foreach (var m in lastResult.report.messages)
-                    if (m.severity != ReFitSeverity.Info) AddMessage(messages, m);
-
-                if (ok && lastResult.sceneRenderer != null)
-                {
-                    Primary("Select the result in the scene", () =>
-                    {
-                        Selection.activeGameObject = lastResult.sceneRenderer.gameObject;
-                        EditorGUIUtility.PingObject(lastResult.sceneRenderer.gameObject);
-                    });
-                }
-                if (!string.IsNullOrEmpty(lastResult.meshAssetPath))
-                {
-                    var pingMesh = new Button(() =>
-                        EditorGUIUtility.PingObject(AssetDatabase.LoadAssetAtPath<Mesh>(lastResult.meshAssetPath)))
-                    { text = "Show the mesh asset" };
-                    pingMesh.AddToClassList("refit-back");
-                    pingMesh.style.marginTop = 8;
-                    content.Add(pingMesh);
-                }
-            }
-
-            var again = new Button(Restart) { text = "Re-fit another asset" };
-            again.AddToClassList("refit-back");
-            again.style.marginTop = 14;
-            content.Add(again);
-
-            BuildCommissionSuggestions();
-        }
-
-        private void BuildCommissionSuggestions()
-        {
-            EnsureCommissionCreators();
-
-            var section = new VisualElement();
-            section.AddToClassList("refit-commission-section");
-            var title = new Label("The refit doesn't look right ?");
-            title.AddToClassList("refit-commission-title");
-            section.Add(title);
-            var subtitle = new Label("You can commission an artist for a manual refit:");
-            subtitle.AddToClassList("refit-commission-subtitle");
-            section.Add(subtitle);
-
-            if (commissionCreatorsLoading)
-            {
-                var loading = new Label("Loading available creators...");
-                loading.AddToClassList("refit-help");
-                section.Add(loading);
-            }
-            else if (!string.IsNullOrEmpty(commissionError))
-            {
-                var error = new Label(commissionError);
-                error.AddToClassList("refit-msg");
-                error.AddToClassList("refit-msg--warning");
-                section.Add(error);
-                var retry = new Button(() =>
-                {
-                    commissionCreators = null;
-                    commissionError = null;
-                    EnsureCommissionCreators();
-                    Render();
-                }) { text = "Try again" };
-                retry.AddToClassList("refit-back");
-                retry.style.marginTop = 8;
-                section.Add(retry);
-            }
-            else if (commissionCreators == null || commissionCreators.Length == 0)
-            {
-                var unavailable = new Label("No creator currently lists ReFit commissions.");
-                unavailable.AddToClassList("refit-help");
-                section.Add(unavailable);
-            }
-            else
-            {
-                var carousel = new VisualElement();
-                carousel.AddToClassList("refit-commission-carousel");
-                var creatorScroll = new ScrollView(ScrollViewMode.Horizontal);
-                creatorScroll.AddToClassList("refit-commission-scroll");
-                creatorScroll.verticalScrollerVisibility = ScrollerVisibility.Hidden;
-                creatorScroll.horizontalScrollerVisibility = ScrollerVisibility.Hidden;
-                foreach (var creator in commissionCreators) creatorScroll.Add(CreateCommissionCreatorCard(creator));
-                carousel.Add(creatorScroll);
-                if (commissionCreators.Length > 2)
-                {
-                    var nextCreators = new Button(() =>
-                    {
-                        var offset = creatorScroll.scrollOffset;
-                        offset.x += 256f;
-                        creatorScroll.scrollOffset = offset;
-                    }) { text = "\u203A" };
-                    nextCreators.tooltip = "Show more creators";
-                    nextCreators.AddToClassList("refit-commission-carousel-next");
-                    carousel.Add(nextCreators);
-                }
-                section.Add(carousel);
-
-            }
-
-            content.Add(section);
-        }
-
-        private VisualElement CreateCommissionCreatorCard(ReFitCommissionCreator creator)
-        {
-            var card = new Button(() => OpenCommissionWebsite(creator.id));
-            card.text = string.Empty;
-            card.AddToClassList("refit-commission-card");
-            card.SetEnabled(!commissionHandoffLoading);
-            card.tooltip = commissionHandoffLoading ? "Opening Orbiters..." : "Request a manual refit on Orbiters";
-
-            var banner = new Image { scaleMode = ScaleMode.ScaleAndCrop };
-            banner.AddToClassList("refit-commission-banner");
-            card.Add(banner);
-            ReFitCommissionClient.LoadTexture(creator.bannerUrl, texture =>
-            {
-                if (banner == null) return;
-                if (texture != null)
-                {
-                    banner.image = texture;
-                    return;
-                }
-                ReFitCommissionClient.LoadTexture(creator.avatarUrl, fallback =>
-                {
-                    if (banner != null) banner.image = fallback;
-                });
-            });
-
-            var identity = new VisualElement();
-            identity.AddToClassList("refit-commission-identity");
-            var avatarFrame = new VisualElement();
-            avatarFrame.AddToClassList("refit-commission-avatar");
-            var avatar = new Image { scaleMode = ScaleMode.ScaleAndCrop };
-            avatar.AddToClassList("refit-commission-avatar-image");
-            avatarFrame.Add(avatar);
-            identity.Add(avatarFrame);
-            ReFitCommissionClient.LoadCircularTexture(creator.avatarUrl, texture =>
-            {
-                if (avatar != null) avatar.image = texture;
-            });
-            var name = new Label(string.IsNullOrWhiteSpace(creator.username) ? "Creator" : creator.username);
-            name.AddToClassList("refit-commission-name");
-            name.tooltip = name.text;
-            identity.Add(name);
-            var price = new Label(ReFitCommissionClient.PriceLabel(creator));
-            price.AddToClassList("refit-commission-price");
-            price.tooltip = price.text;
-            identity.Add(price);
-            card.Add(identity);
-            return card;
-        }
-
-        private void EnsureCommissionCreators()
-        {
-            if (commissionCreators != null || commissionCreatorsLoading) return;
-            commissionCreatorsLoading = true;
-            commissionError = null;
-            bool requestedDevEnvironment = ReFitCommissionClient.IsDevEnvironment;
-            ReFitCommissionClient.FetchCreators((creators, error) =>
-            {
-                commissionCreatorsLoading = false;
-                if (requestedDevEnvironment != ReFitCommissionClient.IsDevEnvironment)
-                {
-                    commissionCreators = null;
-                    commissionError = null;
-                    return;
-                }
-                commissionCreators = creators ?? Array.Empty<ReFitCommissionCreator>();
-                commissionError = error;
-                if (current == Step.Result) Render();
-            });
-        }
-
-        private void OpenCommissionWebsite(int creatorId)
-        {
-            if (commissionHandoffLoading) return;
-            commissionHandoffLoading = true;
-            commissionError = null;
+            stage?.SetBusy(null);
+            page = Page.Result;
             Render();
+            if (lastResult != null && lastResult.success) RequestAfterPicture();
+        }
 
-            var payload = new ReFitCommissionHandoffRequest
-            {
-                creatorIds = new List<int> { creatorId },
-                details = new ReFitCommissionDetails
-                {
-                    assetName = asset != null ? asset.name : string.Empty,
-                    sourceAvatar = sourceAvatar != null ? sourceAvatar.name : string.Empty,
-                    targetAvatar = targetAvatar != null ? targetAvatar.name : string.Empty,
-                    blendshape = mode == ReFitMode.MeshToMesh ? string.Empty : string.Join(", ", blendshapes),
-                    mode = mode.ToString()
-                }
-            };
-            List<ReFitCommissionPhoto> photos;
-            try
-            {
-                photos = ReFitCommissionCapture.Capture(targetAvatar, lastResult?.sceneRenderer != null ? lastResult.sceneRenderer : asset,
-                    lastResult?.primaryShapeName ?? settings.blendshapeName);
-            }
-            catch (Exception exception)
-            {
-                commissionHandoffLoading = false;
-                commissionError = "Could not capture avatar previews: " + exception.Message;
-                Render();
-                return;
-            }
-            ReFitCommissionClient.CreateHandoff(payload, (url, error) =>
-            {
-                commissionHandoffLoading = false;
-                commissionError = error;
-                if (!string.IsNullOrEmpty(url)) Application.OpenURL(url);
-                if (current == Step.Result) Render();
-            }, photos);
+        // The original base comes from the tool that knows the custom base (it may import a file): only for the run.
+        private bool ResolveOriginal()
+        {
+            ReleaseOriginal();
+            try { resolvedOriginal = originalBase?.ResolveOriginal?.Invoke(); }
+            catch (Exception ex) { Debug.LogWarning("[ReFit] Could not open the original base: " + ex.Message); resolvedOriginal = null; }
+            if (resolvedOriginal == null || resolvedOriginal.Avatar == null) { ReleaseOriginal(); return false; }
+            sourceAvatar = resolvedOriginal.Avatar;
+            sourceBody = resolvedOriginal.Body;
+            return true;
+        }
+
+        private void ReleaseOriginal()
+        {
+            if (resolvedOriginal == null) return;
+            if (madeFor == MadeFor.OriginalBase) { sourceAvatar = null; sourceBody = null; }
+            try { resolvedOriginal.Dispose(); }
+            catch (Exception ex) { Debug.LogWarning("[ReFit] Could not close the original base: " + ex.Message); }
+            resolvedOriginal = null;
         }
 
         // ------------------------------------------------------------------
         // Helpers
         // ------------------------------------------------------------------
 
-        private void Question(string text)
+        private static Button HeaderButton(string glyph, string tooltip, Action onClick)
         {
-            var label = new Label(text);
-            label.AddToClassList("refit-question");
-            content.Add(label);
-        }
-
-        private void Help(string text)
-        {
-            var label = new Label(text);
-            label.AddToClassList("refit-help");
-            content.Add(label);
-        }
-
-        private VisualElement Cards()
-        {
-            var cards = new VisualElement();
-            cards.AddToClassList("refit-cards");
-            content.Add(cards);
-            return cards;
-        }
-
-        private VisualElement Card(string label, string sublabel, Action onClick, string extraClass = null)
-        {
-            var card = new VisualElement();
-            card.AddToClassList("refit-card");
-            if (extraClass != null) card.AddToClassList(extraClass);
-            var main = new Label(label);
-            main.AddToClassList("refit-card-label");
-            card.Add(main);
-            if (!string.IsNullOrEmpty(sublabel))
-            {
-                var sub = new Label(sublabel);
-                sub.AddToClassList("refit-card-sublabel");
-                card.Add(sub);
-            }
-            card.RegisterCallback<ClickEvent>(_ => onClick());
-            return card;
-        }
-
-        private Button Primary(string text, Action onClick)
-        {
-            var button = new Button(onClick) { text = text };
-            button.AddToClassList("refit-primary");
-            content.Add(button);
+            var button = new Button { text = glyph ?? string.Empty, tooltip = tooltip };
+            button.AddToClassList("refit-header-button");
+            Pressable(button);
+            ButtonInteraction.RegisterImmediateClick(button, onClick);
             return button;
         }
 
-        private void SummaryRow(string key, string value)
+        /// <summary>A flat button that dips on pointer down; the action runs on Unity's click.</summary>
+        private static Button FlatButton(string text, Action onClick, params string[] classes)
         {
-            var row = new VisualElement();
-            row.AddToClassList("refit-summary-row");
-            var k = new Label(key);
-            k.AddToClassList("refit-summary-key");
-            var v = new Label(value);
-            v.AddToClassList("refit-summary-value");
-            row.Add(k);
-            row.Add(v);
-            content.Add(row);
+            var button = new Button(onClick) { text = text };
+            button.AddToClassList("refit-button");
+            foreach (var name in classes) button.AddToClassList(name);
+            Pressable(button);
+            return button;
+        }
+
+        private static void Pressable(VisualElement element)
+        {
+            element.RegisterCallback<PointerDownEvent>(_ => element.AddToClassList("refit-pressed"), TrickleDown.TrickleDown);
+            element.RegisterCallback<PointerUpEvent>(_ => element.RemoveFromClassList("refit-pressed"), TrickleDown.TrickleDown);
+            element.RegisterCallback<PointerLeaveEvent>(_ => element.RemoveFromClassList("refit-pressed"));
+        }
+
+        /// <summary>An element that acts as soon as it is pressed (choices that are cheap and safe to apply at once).</summary>
+        private static void OnPress(VisualElement element, Action action)
+        {
+            element.RegisterCallback<PointerDownEvent>(evt =>
+            {
+                if (evt.button != 0 || !element.enabledInHierarchy) return;
+                element.AddToClassList("refit-pressed");
+                action();
+                evt.StopPropagation();
+            });
+            element.RegisterCallback<PointerUpEvent>(_ => element.RemoveFromClassList("refit-pressed"));
+            element.RegisterCallback<PointerLeaveEvent>(_ => element.RemoveFromClassList("refit-pressed"));
+            element.focusable = true;
+            element.RegisterCallback<KeyDownEvent>(evt =>
+            {
+                if (evt.keyCode == KeyCode.Return || evt.keyCode == KeyCode.Space) action();
+            });
+        }
+
+        private static Label Text(VisualElement parent, string text, params string[] classes)
+        {
+            var label = new Label(text);
+            foreach (var name in classes) label.AddToClassList(name);
+            parent.Add(label);
+            return label;
+        }
+
+        private static VisualElement Box(VisualElement parent, params string[] classes)
+        {
+            var element = new VisualElement();
+            foreach (var name in classes) element.AddToClassList(name);
+            parent.Add(element);
+            return element;
+        }
+
+        private void Help(string text) => Text(content, text, "refit-help");
+
+        private void SummaryRow(VisualElement parent, string key, string value)
+        {
+            var row = Box(parent, "refit-summary-row");
+            Text(row, key, "refit-summary-key");
+            Text(row, value, "refit-summary-value");
         }
 
         private static void AddMessage(VisualElement parent, ReFitMessage m)
         {
-            var label = new Label(m.text);
-            label.AddToClassList("refit-msg");
+            var row = Box(parent, "refit-note");
+            var dot = Box(row, "refit-note__dot");
+            dot.AddToClassList(m.severity == ReFitSeverity.Error ? "refit-note__dot--error"
+                : m.severity == ReFitSeverity.Warning ? "refit-note__dot--warning" : "refit-note__dot--info");
+            var label = Text(row, m.text, "refit-note__text", "refit-msg");
             label.AddToClassList(m.severity == ReFitSeverity.Error ? "refit-msg--error"
                 : m.severity == ReFitSeverity.Warning ? "refit-msg--warning" : "refit-msg--info");
-            parent.Add(label);
-        }
-
-        private static VisualElement CreateFooterCredit()
-        {
-            var credit = new VisualElement();
-            credit.AddToClassList("refit-credit");
-            ConfigureCreditLink(credit);
-            credit.Add(CreditLabel("by blackorbit", "refit-credit-text"));
-            credit.Add(CreditImage(BlackOrbitProfilePath, "refit-credit-profile", true, ScaleMode.ScaleAndCrop));
-            credit.Add(CreditLabel("support me on KoFi", "refit-credit-text"));
-            credit.Add(CreditImage(KofiSymbolPath, "refit-credit-kofi", false, ScaleMode.ScaleToFit));
-            return credit;
-        }
-
-        private static Label CreditLabel(string text, string className)
-        {
-            var label = new Label(text);
-            label.AddToClassList(className);
-            return label;
-        }
-
-        private static Image CreditImage(string path, string className, bool circular, ScaleMode scaleMode)
-        {
-            var image = new Image
-            {
-                image = LoadCreditTexture(path, circular),
-                scaleMode = scaleMode
-            };
-            image.AddToClassList(className);
-            return image;
-        }
-
-        private static void ConfigureCreditLink(VisualElement credit)
-        {
-            credit.tooltip = KofiUrl;
-            credit.RegisterCallback<MouseDownEvent>(_ => credit.AddToClassList("refit-credit--pressed"));
-            credit.RegisterCallback<MouseUpEvent>(_ => credit.RemoveFromClassList("refit-credit--pressed"));
-            credit.RegisterCallback<MouseLeaveEvent>(_ => credit.RemoveFromClassList("refit-credit--pressed"));
-            credit.RegisterCallback<ClickEvent>(OpenKofi);
-        }
-
-        private static void OpenKofi(ClickEvent evt)
-        {
-            Application.OpenURL(KofiUrl);
-            evt.StopPropagation();
-        }
-
-        private static Texture2D LoadCreditTexture(string path, bool circular)
-        {
-            string cacheKey = path + (circular ? "|circle" : "|plain");
-            if (CreditTextures.TryGetValue(cacheKey, out var cached)) return cached;
-
-            bool loadedFromFile;
-            var texture = LoadCreditTextureFromFile(path, out loadedFromFile) ?? AssetDatabase.LoadAssetAtPath<Texture2D>(path);
-            if (texture != null)
-            {
-                texture.wrapMode = TextureWrapMode.Clamp;
-                texture.filterMode = FilterMode.Bilinear;
-                if (circular)
-                {
-                    var circularTexture = ReFitCommissionClient.CreateCircularAvatarTexture(texture);
-                    if (circularTexture != null && !ReferenceEquals(circularTexture, texture))
-                    {
-                        if (loadedFromFile) DestroyImmediate(texture);
-                        texture = circularTexture;
-                    }
-                }
-            }
-
-            CreditTextures[cacheKey] = texture;
-            return texture;
-        }
-
-        private static Texture2D LoadCreditTextureFromFile(string path, out bool loadedFromFile)
-        {
-            loadedFromFile = false;
-            var projectRoot = Directory.GetParent(Application.dataPath)?.FullName;
-            var absolutePath = !string.IsNullOrEmpty(projectRoot) ? Path.Combine(projectRoot, path) : null;
-            if (string.IsNullOrEmpty(absolutePath) || !File.Exists(absolutePath))
-                return null;
-
-            var texture = new Texture2D(2, 2, TextureFormat.RGBA32, false)
-            {
-                hideFlags = HideFlags.HideAndDontSave,
-                name = Path.GetFileNameWithoutExtension(path)
-            };
-            if (!texture.LoadImage(File.ReadAllBytes(absolutePath)))
-            {
-                DestroyImmediate(texture);
-                return null;
-            }
-
-            texture.wrapMode = TextureWrapMode.Clamp;
-            texture.filterMode = FilterMode.Bilinear;
-            loadedFromFile = true;
-            return texture;
-        }
-
-        private sealed class TightnessIllustration : VisualElement
-        {
-            private const float NoTightWidth = 102f;
-            private const float TightWidth = 89f;
-            private const float ViewHeight = 218f;
-            private readonly bool tight;
-
-            public TightnessIllustration(bool tight)
-            {
-                this.tight = tight;
-                pickingMode = PickingMode.Ignore;
-                AddToClassList("refit-tightness-illustration");
-                style.width = tight ? TightWidth : NoTightWidth;
-                style.height = ViewHeight;
-                generateVisualContent += OnGenerateVisualContent;
-            }
-
-            private void OnGenerateVisualContent(MeshGenerationContext context)
-            {
-                var rect = contentRect;
-                if (rect.width <= 0f || rect.height <= 0f)
-                    return;
-
-                float viewWidth = tight ? TightWidth : NoTightWidth;
-                float scale = Mathf.Min(rect.width / viewWidth, rect.height / ViewHeight);
-                float offsetX = rect.x + (rect.width - viewWidth * scale) * 0.5f;
-                float offsetY = rect.y + (rect.height - ViewHeight * scale) * 0.5f;
-                var painter = context.painter2D;
-                painter.fillColor = new Color(217f / 255f, 217f / 255f, 217f / 255f, 1f);
-
-                Func<float, float, Vector2> point = (x, y) => new Vector2(offsetX + x * scale, offsetY + y * scale);
-                if (tight)
-                    DrawTightSvg(painter, point);
-                else
-                    DrawNoTightSvg(painter, point);
-            }
-
-            private static void DrawNoTightSvg(Painter2D painter, Func<float, float, Vector2> point)
-            {
-                FillPath(painter,
-                    p => p.MoveTo(point(39.6337f, 0f)),
-                    p => p.BezierCurveTo(point(32.9696f, 7.30301f), point(20.245f, 26.069f), point(20.245f, 42.7087f)),
-                    p => p.BezierCurveTo(point(20.245f, 59.3485f), point(39.6337f, 85.4174f), point(39.6337f, 85.4174f)),
-                    p => p.LineTo(point(32.1702f, 85.4174f)),
-                    p => p.BezierCurveTo(point(23.9509f, 78.5767f), point(13.5891f, 60.4578f), point(13.5891f, 42.7087f)),
-                    p => p.BezierCurveTo(point(13.5891f, 24.9597f), point(23.9509f, 6.84082f), point(32.1702f, 0.0000329479f)),
-                    p => p.LineTo(point(39.6337f, 0f)));
-
-                FillPath(painter,
-                    p => p.MoveTo(point(34.9679f, 42.7087f)),
-                    p => p.BezierCurveTo(point(34.9679f, 61.1234f), point(51.4065f, 78.854f), point(59.6258f, 85.4174f)),
-                    p => p.BezierCurveTo(point(67.8451f, 78.3918f), point(84.2837f, 60.0141f), point(84.2837f, 42.7087f)),
-                    p => p.BezierCurveTo(point(84.2837f, 25.4034f), point(67.8451f, 7.02567f), point(59.6258f, 0f)),
-                    p => p.BezierCurveTo(point(51.4065f, 6.56348f), point(34.9679f, 24.2941f), point(34.9679f, 42.7087f)));
-
-                FillPath(painter,
-                    p => p.MoveTo(point(39.9107f, 132.563f)),
-                    p => p.BezierCurveTo(point(33.2467f, 139.866f), point(6.65588f, 158.632f), point(6.65588f, 175.272f)),
-                    p => p.BezierCurveTo(point(6.65588f, 191.912f), point(39.9107f, 217.981f), point(39.9107f, 217.981f)),
-                    p => p.LineTo(point(32.4473f, 217.981f)),
-                    p => p.BezierCurveTo(point(24.228f, 211.14f), point(-0.0000305176f, 193.021f), point(-0.0000305176f, 175.272f)),
-                    p => p.BezierCurveTo(point(-0.0000305176f, 157.523f), point(24.228f, 139.404f), point(32.4473f, 132.564f)),
-                    p => p.LineTo(point(39.9107f, 132.563f)));
-
-                FillPath(painter,
-                    p => p.MoveTo(point(21.3788f, 175.272f)),
-                    p => p.BezierCurveTo(point(21.3788f, 193.687f), point(51.6835f, 211.417f), point(59.9028f, 217.981f)),
-                    p => p.BezierCurveTo(point(68.1221f, 210.955f), point(101.78f, 192.578f), point(101.78f, 175.272f)),
-                    p => p.BezierCurveTo(point(101.78f, 157.967f), point(68.1221f, 139.589f), point(59.9028f, 132.563f)),
-                    p => p.BezierCurveTo(point(51.6835f, 139.127f), point(21.3788f, 156.858f), point(21.3788f, 175.272f)));
-
-                FillPath(painter,
-                    p => p.MoveTo(point(47.4233f, 95.4014f)),
-                    p => p.LineTo(point(50.4739f, 95.4014f)),
-                    p => p.LineTo(point(50.4739f, 104.553f)),
-                    p => p.LineTo(point(58.5164f, 104.553f)),
-                    p => p.LineTo(point(48.8099f, 121.47f)),
-                    p => p.LineTo(point(38.826f, 104.553f)),
-                    p => p.LineTo(point(47.4233f, 104.553f)),
-                    p => p.LineTo(point(47.4233f, 95.4014f)));
-            }
-
-            private static void DrawTightSvg(Painter2D painter, Func<float, float, Vector2> point)
-            {
-                FillPath(painter,
-                    p => p.MoveTo(point(26.3217f, 132.563f)),
-                    p => p.BezierCurveTo(point(22.61f, 136.631f), point(20.6647f, 144.254f), point(16.3624f, 153.086f)),
-                    p => p.BezierCurveTo(point(12.9402f, 160.111f), point(6.65591f, 167.9f), point(6.65591f, 175.272f)),
-                    p => p.BezierCurveTo(point(6.65591f, 181.362f), point(13.0223f, 188.715f), point(16.3624f, 195.591f)),
-                    p => p.BezierCurveTo(point(22.1488f, 207.502f), point(26.3217f, 217.981f), point(26.3217f, 217.981f)),
-                    p => p.LineTo(point(18.8582f, 217.981f)),
-                    p => p.BezierCurveTo(point(13.857f, 213.818f), point(11.6921f, 205.48f), point(7.84106f, 195.591f)),
-                    p => p.BezierCurveTo(point(5.36313f, 189.227f), point(0f, 182.221f), point(0f, 175.272f)),
-                    p => p.BezierCurveTo(point(0f, 167.636f), point(5.70156f, 159.931f), point(8.60014f, 153.086f)),
-                    p => p.BezierCurveTo(point(12.4388f, 144.02f), point(14.1751f, 136.461f), point(18.8582f, 132.564f)),
-                    p => p.LineTo(point(26.3217f, 132.563f)));
-
-                FillPath(painter,
-                    p => p.MoveTo(point(7.78976f, 175.272f)),
-                    p => p.BezierCurveTo(point(7.78976f, 193.687f), point(38.0944f, 211.417f), point(46.3137f, 217.981f)),
-                    p => p.BezierCurveTo(point(54.533f, 210.955f), point(88.1908f, 192.578f), point(88.1908f, 175.272f)),
-                    p => p.BezierCurveTo(point(88.1908f, 157.967f), point(54.533f, 139.589f), point(46.3137f, 132.563f)),
-                    p => p.BezierCurveTo(point(38.0944f, 139.127f), point(7.78976f, 156.858f), point(7.78976f, 175.272f)));
-
-                FillPath(painter,
-                    p => p.MoveTo(point(28.2633f, 0f)),
-                    p => p.BezierCurveTo(point(21.5992f, 7.30301f), point(8.8746f, 26.069f), point(8.8746f, 42.7087f)),
-                    p => p.BezierCurveTo(point(8.8746f, 59.3485f), point(28.2633f, 85.4174f), point(28.2633f, 85.4174f)),
-                    p => p.LineTo(point(20.7998f, 85.4174f)),
-                    p => p.BezierCurveTo(point(12.5805f, 78.5767f), point(2.21869f, 60.4578f), point(2.21869f, 42.7087f)),
-                    p => p.BezierCurveTo(point(2.21869f, 24.9597f), point(12.5805f, 6.84082f), point(20.7998f, 0.0000329479f)),
-                    p => p.LineTo(point(28.2633f, 0f)));
-
-                FillPath(painter,
-                    p => p.MoveTo(point(23.5976f, 42.7087f)),
-                    p => p.BezierCurveTo(point(23.5976f, 61.1234f), point(40.0361f, 78.854f), point(48.2554f, 85.4174f)),
-                    p => p.BezierCurveTo(point(56.4747f, 78.3918f), point(72.9133f, 60.0141f), point(72.9133f, 42.7087f)),
-                    p => p.BezierCurveTo(point(72.9133f, 25.4034f), point(56.4747f, 7.02567f), point(48.2554f, 0f)),
-                    p => p.BezierCurveTo(point(40.0361f, 6.56348f), point(23.5976f, 24.2941f), point(23.5976f, 42.7087f)));
-
-                FillPath(painter,
-                    p => p.MoveTo(point(36.0528f, 95.4014f)),
-                    p => p.LineTo(point(39.1035f, 95.4014f)),
-                    p => p.LineTo(point(39.1035f, 104.553f)),
-                    p => p.LineTo(point(47.146f, 104.553f)),
-                    p => p.LineTo(point(37.4395f, 121.47f)),
-                    p => p.LineTo(point(27.4556f, 104.553f)),
-                    p => p.LineTo(point(36.0528f, 104.553f)),
-                    p => p.LineTo(point(36.0528f, 95.4014f)));
-            }
-
-            private static void FillPath(Painter2D painter, params Action<Painter2D>[] commands)
-            {
-                painter.BeginPath();
-                for (int i = 0; i < commands.Length; i++)
-                    commands[i](painter);
-                painter.ClosePath();
-                painter.Fill();
-            }
         }
 
         private string ModeLabel()
@@ -2175,51 +681,6 @@ namespace Orbiters.ReFit.Editor
                 case ReFitMode.MeshAndBlendshape: return "Fit the mesh + follow body blendshapes";
                 default: return mode.ToString();
             }
-        }
-
-        private static string DescribeAvatar(GameObject avatar)
-        {
-            var animator = HumanoidBoneMapper.FindHumanoidAnimator(avatar);
-            return animator != null ? "Humanoid avatar" : "Avatar";
-        }
-
-        private static List<GameObject> FindSceneAvatars()
-        {
-            var found = new List<GameObject>();
-            var seen = new HashSet<GameObject>();
-            for (int s = 0; s < SceneManager.sceneCount; s++)
-            {
-                var scene = SceneManager.GetSceneAt(s);
-                if (!scene.isLoaded) continue;
-                foreach (var root in scene.GetRootGameObjects())
-                {
-                    foreach (var component in root.GetComponentsInChildren<Component>(true))
-                    {
-                        if (component == null) continue;
-                        GameObject candidate = null;
-                        if (component is Animator animator && animator.avatar != null && animator.avatar.isValid && animator.avatar.isHuman)
-                            candidate = animator.gameObject;
-                        else if (component.GetType().Name == "VRCAvatarDescriptor")
-                            candidate = component.gameObject;
-                        if (candidate != null && seen.Add(candidate)) found.Add(candidate);
-                    }
-                }
-            }
-            return found;
-        }
-
-        private static SkinnedMeshRenderer AutoDetectBody(GameObject avatar, SkinnedMeshRenderer exclude)
-        {
-            if (avatar == null) return null;
-            SkinnedMeshRenderer best = null;
-            int bestVerts = -1;
-            foreach (var smr in avatar.GetComponentsInChildren<SkinnedMeshRenderer>(true))
-            {
-                if (smr == exclude || smr.sharedMesh == null) continue;
-                if (string.Equals(smr.name, "Body", StringComparison.OrdinalIgnoreCase)) return smr;
-                if (smr.sharedMesh.vertexCount > bestVerts) { bestVerts = smr.sharedMesh.vertexCount; best = smr; }
-            }
-            return best;
         }
     }
 }

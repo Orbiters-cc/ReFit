@@ -271,16 +271,24 @@ namespace Orbiters.ReFit
             public ReFitSurfaceCoverage.Cover?[] hiddenCovers;
             public SurfaceBvh stagedSourceBvh;
             public SurfaceBvh targetBvh;
+            // Each group's matching point on the target body for its source match (the same anatomical point), for debugging.
+            public SurfaceBinding[] chainedTargetBindings;
             public List<ShapeTask> shapes = new List<ShapeTask>();
             public bool assetIsLikelyUpperBodyGarment;
 
             public BodyRegion[] assetGroupRegions;
             public BodyRegion[] sourceTriRegions;
             public BodyRegion[] targetTriRegions;
+            // Every region of each triangle (SurfaceBindingSolver.RegionMask bits), for binding across transition bands.
+            public int[] sourceTriRegionMasks;
+            public int[] targetTriRegionMasks;
+            // For matches from the other body or the fitted clothing: a limb's region also accepts torso skin.
+            public int[] targetTriCrossMasks;
 
             // bone plan (resolved on the main thread; weights computed in the background)
             public Matrix4x4[] newBindposes;
             public int[] bodyBoneToNew;
+            public int[] sourceBoneToNew;
             public int[] assetBoneToNew;
             public bool[] assetBoneIsExtra;
             public BodyRegion[] newBoneRegions;
@@ -474,6 +482,11 @@ namespace Orbiters.ReFit
                 var sourceRegions = HumanoidBoneMapper.ClassifyBones(stage.sourceRoot, stage.sourceHumanMap);
                 var targetRegions = stage.sourceIsTarget ? sourceRegions : HumanoidBoneMapper.ClassifyBones(stage.targetRoot, stage.targetHumanMap);
                 state.targetTriRegions = TriangleRegions(state.targetBasis, targetRegions);
+                state.targetTriRegionMasks = TriangleRegionMasks(state.targetBasis, targetRegions);
+                state.targetTriCrossMasks = LimbsAcceptTorso(state.targetTriRegionMasks);
+                state.sourceTriRegionMasks = state.wantMesh && state.sourceBody != state.targetBasis
+                    ? TriangleRegionMasks(state.sourceBody, sourceRegions)
+                    : state.targetTriRegionMasks;
                 state.sourceTriRegions = state.wantMesh && state.sourceBody != state.targetBasis
                     ? TriangleRegions(state.sourceBody, sourceRegions)
                     : state.targetTriRegions;
@@ -485,9 +498,9 @@ namespace Orbiters.ReFit
                 if (state.replace)
                 {
                     progress?.Invoke(0.2f, "Resolving the target armature");
-                    state.replace = BuildBonePlan(stage, state.asset, state.targetBasis, state.comp,
-                        sourceRegions, targetRegions, report,
-                        out state.newBindposes, out state.bodyBoneToNew, out state.assetBoneToNew,
+                    state.replace = BuildBonePlan(stage, state.asset, state.targetBasis, state.sourceBody,
+                        state.comp, sourceRegions, targetRegions, report,
+                        out state.newBindposes, out state.bodyBoneToNew, out state.sourceBoneToNew, out state.assetBoneToNew,
                         out state.assetBoneIsExtra, out state.newBoneRegions);
                     if (!state.replace)
                         report.Warn("armature-replace-skipped", "Could not build the target bone plan; keeping the asset's original armature.");
@@ -978,8 +991,10 @@ namespace Orbiters.ReFit
             var firstSnap = state.wantMesh ? state.sourceBody : targetBasis;
             var firstBvh = state.wantMesh ? bvhSource : bvhTarget;
             var firstTriRegions = state.wantMesh ? state.sourceTriRegions : state.targetTriRegions;
+            var firstTriRegionMasks = state.wantMesh ? state.sourceTriRegionMasks : state.targetTriRegionMasks;
             var bindings = SurfaceBindingSolver.ComputeGroupBindings(
-                asset, firstSnap, firstBvh, settings, state.assetGroupRegions, firstTriRegions, state.Report, state.tubes.groups);
+                asset, firstSnap, firstBvh, settings, state.assetGroupRegions, firstTriRegions, state.Report, state.tubes.groups,
+                firstTriRegionMasks);
 
             // Chain onto the target surface
             var targetBindings = bindings;
@@ -996,12 +1011,13 @@ namespace Orbiters.ReFit
                     if (!localBindings[g].valid) { localTarget[g].valid = false; return; }
                     var nA = firstSnap.BaryNormal(localBindings[g].triangle, localBindings[g].bary);
                     var region = state.assetGroupRegions != null ? state.assetGroupRegions[g] : BodyRegion.Unknown;
-                    localTarget[g] = SurfaceBindingSolver.BindPoint(
-                        localBindings[g].point, targetBasis, bvhTarget, chainRange,
+                    localTarget[g] = SurfaceBindingSolver.ChainPoint(
+                        localBindings[g].point, nA, targetBasis, bvhTarget, chainRange,
                         region, settings.filterByBoneRegion ? state.targetTriRegions : null,
-                        nA, cosMax, settings.filterByNormal);
+                        cosMax, settings.filterByNormal, state.targetTriCrossMasks);
                 });
             }
+            state.chainedTargetBindings = targetBindings;
 
             // Falloff weight per group (asset distance to its base surface)
             var falloff = new float[groupCount];
@@ -1009,7 +1025,7 @@ namespace Orbiters.ReFit
                 falloff[g] = bindings[g].valid
                     ? DeltaField.Falloff(bindings[g].distance, settings.falloffStartDistance, settings.maxProjectionDistance)
                     : 0f;
-            var clearanceProfile = ReFitClearanceCorrection.BuildProfile(asset, firstSnap, bindings, settings);
+            var clearanceProfile = ReFitClearanceCorrection.BuildProfile(asset, firstSnap, bindings, settings, firstBvh);
             var metadataTransferBindings = BuildTransferBindingsFromMetadata(state, targetBasis);
             if (metadataTransferBindings != null)
             {
@@ -1240,8 +1256,10 @@ namespace Orbiters.ReFit
             if (state.replace)
             {
                 SetBackgroundProgress(state, 0.9f, "Transferring skin weights");
+                // The source match and its chained target match are the same anatomical point on both bodies.
                 state.newWeights = state.transferWeights
-                    ? WeightTransfer.Transfer(asset, targetBasis, transferBindings, state.bodyBoneToNew,
+                    ? WeightTransfer.Transfer(asset, state.sourceBody, bindings, state.sourceBoneToNew,
+                        targetBasis, targetBindings, state.bodyBoneToNew, falloff,
                         state.assetBoneToNew, state.assetBoneIsExtra, state.newBoneRegions, state.assetGroupRegions,
                         settings, state.Report, out state.weightDebug)
                     : RemapAllOriginal(asset, state.assetBoneToNew);
@@ -2375,15 +2393,14 @@ namespace Orbiters.ReFit
             Parallel.For(0, groupCount, g =>
             {
                 int rep = asset.groupRep[g];
-                var queryPoint = asset.worldVertices[rep] +
-                                 (primaryGroupDeltas != null && g < primaryGroupDeltas.Length
-                                     ? primaryGroupDeltas[g]
-                                     : Vector3.zero);
+                var delta = primaryGroupDeltas != null && g < primaryGroupDeltas.Length ? primaryGroupDeltas[g] : Vector3.zero;
+                var queryPoint = asset.worldVertices[rep] + delta;
                 var region = state.assetGroupRegions != null ? state.assetGroupRegions[g] : BodyRegion.Unknown;
+                bool useNormal = settings.filterByNormal && !lowerBodyCloth && !state.tubes.groups[g];
                 var binding = SurfaceBindingSolver.BindPoint(
                     queryPoint, targetBasis, bvhTarget, range,
                     region, settings.filterByBoneRegion ? state.targetTriRegions : null,
-                    asset.worldNormals[rep], cosMax, settings.filterByNormal && !lowerBodyCloth && !state.tubes.groups[g]);
+                    asset.worldNormals[rep], cosMax, useNormal, true, state.targetTriCrossMasks);
 
                 if (!binding.valid && fallbackBindings != null && g < fallbackBindings.Length)
                     binding = fallbackBindings[g];
@@ -2433,6 +2450,10 @@ namespace Orbiters.ReFit
                         : asset.localVertices[vertex],
                     targetHitLocalPoint = target.valid
                         ? asset.rendererWorldToLocal.MultiplyPoint3x4(target.point)
+                        : asset.localVertices[vertex],
+                    chainedTargetValid = state.chainedTargetBindings != null && g < state.chainedTargetBindings.Length && state.chainedTargetBindings[g].valid,
+                    chainedTargetLocalPoint = state.chainedTargetBindings != null && g < state.chainedTargetBindings.Length && state.chainedTargetBindings[g].valid
+                        ? asset.rendererWorldToLocal.MultiplyPoint3x4(state.chainedTargetBindings[g].point)
                         : asset.localVertices[vertex],
                     sourceTriangle = source.triangle,
                     targetTriangle = target.triangle,
@@ -2630,6 +2651,61 @@ namespace Orbiters.ReFit
                 perTri[t] = ra == rb || ra == rc ? ra : (rb == rc ? rb : ra);
             }
             return perTri;
+        }
+
+        // A region holding this share of a triangle's skinning makes the triangle part of it (a transition band).
+        private const float TriangleRegionShare = 0.25f;
+
+        /// <summary>Every region holding at least <see cref="TriangleRegionShare"/> of each triangle's skin weight.</summary>
+        private static int[] TriangleRegionMasks(MeshSnapshot body, Dictionary<Transform, BodyRegion> boneRegions)
+        {
+            int triCount = body.triangles.Length / 3;
+            var masks = new int[triCount];
+            if (body.rigid || body.boneWeights == null || body.boneWeights.Length != body.localVertices.Length) return masks;
+            var perBone = new BodyRegion[body.bones != null ? body.bones.Length : 0];
+            for (int k = 0; k < perBone.Length; k++)
+                perBone[k] = body.bones[k] != null && boneRegions.TryGetValue(body.bones[k], out var r) ? r : BodyRegion.Unknown;
+            Parallel.For(0, triCount, t =>
+            {
+                var shares = new float[6];
+                float total = 0f;
+                for (int corner = 0; corner < 3; corner++)
+                {
+                    var w = body.boneWeights[body.triangles[t * 3 + corner]];
+                    AddRegionShare(shares, ref total, perBone, w.boneIndex0, w.weight0);
+                    AddRegionShare(shares, ref total, perBone, w.boneIndex1, w.weight1);
+                    AddRegionShare(shares, ref total, perBone, w.boneIndex2, w.weight2);
+                    AddRegionShare(shares, ref total, perBone, w.boneIndex3, w.weight3);
+                }
+                int mask = 0;
+                if (total > 1e-6f)
+                    for (int region = 0; region < shares.Length; region++)
+                        if (shares[region] >= TriangleRegionShare * total) mask |= SurfaceBindingSolver.RegionMask((BodyRegion)region);
+                masks[t] = mask;
+            });
+            return masks;
+        }
+
+        /// <summary>
+        /// Region masks for matching across bodies: a triangle the torso holds also counts for every limb. Two bases can
+        /// split the same skin differently (a buttock weighted to the hips on one and to the thighs on the other), so a
+        /// limb's clothing may land on torso skin of the other body, never on another limb.
+        /// </summary>
+        private static int[] LimbsAcceptTorso(int[] masks)
+        {
+            int torso = SurfaceBindingSolver.RegionMask(BodyRegion.Torso);
+            int limbs = SurfaceBindingSolver.RegionMask(BodyRegion.LeftArm) | SurfaceBindingSolver.RegionMask(BodyRegion.RightArm) |
+                        SurfaceBindingSolver.RegionMask(BodyRegion.LeftLeg) | SurfaceBindingSolver.RegionMask(BodyRegion.RightLeg);
+            var result = new int[masks.Length];
+            for (int t = 0; t < masks.Length; t++) result[t] = (masks[t] & torso) != 0 ? masks[t] | limbs : masks[t];
+            return result;
+        }
+
+        private static void AddRegionShare(float[] shares, ref float total, BodyRegion[] perBone, int index, float weight)
+        {
+            if (weight <= 0f || index < 0 || index >= perBone.Length || perBone[index] == BodyRegion.Unknown) return;
+            shares[(int)perBone[index]] += weight;
+            total += weight;
         }
 
         private static BodyRegion[] VertexRegions(MeshSnapshot snap, BodyRegion[] perBone)

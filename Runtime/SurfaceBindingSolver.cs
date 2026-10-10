@@ -33,14 +33,20 @@ namespace Orbiters.ReFit
     public static class SurfaceBindingSolver
     {
         private const float NearEquivalentSurfaceEpsilon = 0.01f;
+        // A clothing surface facing the skin it covers (a lining, the inner side of a strap or waistband) keeps that skin
+        // unless a surface facing its own way is at most this much (or its own distance) farther.
+        private const float SkinFacingSlack = 0.02f;
 
         /// <summary>
         /// Binds every welding group of <paramref name="asset"/> to the surface of <paramref name="body"/>.
         /// <paramref name="assetGroupRegions"/> / <paramref name="bodyTriRegions"/> may be null to skip region filtering.
         /// </summary>
+        /// <param name="bodyTriRegionMasks">Optional: every region each triangle belongs to (see <see cref="RegionMask"/>),
+        /// so a transition band such as the hips' side accepts clothing of both regions. Null filters by dominant region.</param>
         public static SurfaceBinding[] ComputeGroupBindings(
             MeshSnapshot asset, MeshSnapshot body, SurfaceBvh bvh, ReFitSettings settings,
-            BodyRegion[] assetGroupRegions, BodyRegion[] bodyTriRegions, ReFitReport report, bool[] tubularGroups = null)
+            BodyRegion[] assetGroupRegions, BodyRegion[] bodyTriRegions, ReFitReport report, bool[] tubularGroups = null,
+            int[] bodyTriRegionMasks = null)
         {
             int groupCount = asset.GroupCount;
             var bindings = new SurfaceBinding[groupCount];
@@ -63,7 +69,7 @@ namespace Orbiters.ReFit
                 var hit = ClosestPointWithFallback(
                     p, body, bvh, queryRange, region, bodyTriRegions, n, cosMaxAngle,
                     useNormal && !lowerBodyCloth && !(tubularGroups != null && tubularGroups[g]), useRegion,
-                    out bool usedRelaxedFallback);
+                    out bool usedRelaxedFallback, true, bodyTriRegionMasks);
 
                 if (hit.found)
                 {
@@ -96,8 +102,12 @@ namespace Orbiters.ReFit
         /// <summary>
         /// Re-binds a world point to another surface (used to chain source-surface points onto the target surface).
         /// </summary>
+        /// <param name="clothNormal">The reference normal is a clothing normal (not a body normal): a clothing surface facing
+        /// the near skin keeps it (see <see cref="ComputeGroupBindings"/>).</param>
+        /// <param name="bodyTriRegionMasks">Optional: every region each triangle belongs to (see <see cref="RegionMask"/>).</param>
         public static SurfaceBinding BindPoint(Vector3 point, MeshSnapshot body, SurfaceBvh bvh, float maxDistance,
-            BodyRegion region, BodyRegion[] bodyTriRegions, Vector3 referenceNormal, float cosMaxAngle, bool useNormal)
+            BodyRegion region, BodyRegion[] bodyTriRegions, Vector3 referenceNormal, float cosMaxAngle, bool useNormal,
+            bool clothNormal = false, int[] bodyTriRegionMasks = null)
         {
             bool useRegion = bodyTriRegions != null && region != BodyRegion.Unknown;
             var nearEquivalent = bvh.ClosestPoint(point, Mathf.Min(maxDistance, NearEquivalentSurfaceEpsilon), null);
@@ -119,7 +129,7 @@ namespace Orbiters.ReFit
 
             var hit = ClosestPointWithFallback(
                 point, body, bvh, maxDistance, region, bodyTriRegions, referenceNormal, cosMaxAngle, useNormal, useRegion,
-                out bool usedRelaxedFallback);
+                out bool usedRelaxedFallback, clothNormal, bodyTriRegionMasks);
             return new SurfaceBinding
             {
                 valid = hit.found,
@@ -134,6 +144,54 @@ namespace Orbiters.ReFit
             };
         }
 
+        /// <summary>The bit of a region in a triangle region mask (0 for <see cref="BodyRegion.Unknown"/>).</summary>
+        public static int RegionMask(BodyRegion region) => region == BodyRegion.Unknown ? 0 : 1 << (int)region;
+
+        private static bool Compatible(BodyRegion region, int triangle, BodyRegion[] bodyTriRegions, int[] masks)
+        {
+            if (masks == null) return HumanoidBoneMapper.RegionsCompatible(region, bodyTriRegions[triangle]);
+            int mask = masks[triangle];
+            return region == BodyRegion.Unknown || mask == 0 || (mask & RegionMask(region)) != 0;
+        }
+
+        // How much farther than the nearest compatible point the surface along the normal may be (factor, then slack).
+        private const float ProjectionReach = 3f;
+        private const float ProjectionSlack = 0.02f;
+
+        /// <summary>
+        /// The point of another body matching a body surface point (source to target). Where the bodies overlap (within
+        /// a centimeter) it is the nearest point. Elsewhere it is the surface met along the normal, outward where the other
+        /// body is larger and inward where it is smaller, on faces turned the same way (and of a compatible region),
+        /// unless that is much farther than the nearest compatible point: a point on a grown buttock or thigh stays on it
+        /// instead of jumping to the nearest crease.
+        /// </summary>
+        /// <param name="normal">Unit surface normal at <paramref name="point"/>.</param>
+        public static SurfaceBinding ChainPoint(Vector3 point, Vector3 normal, MeshSnapshot body, SurfaceBvh bvh, float maxDistance,
+            BodyRegion region, BodyRegion[] bodyTriRegions, float cosMaxAngle, bool useNormal, int[] bodyTriRegionMasks = null)
+        {
+            var nearest = BindPoint(point, body, bvh, maxDistance, region, bodyTriRegions, normal, cosMaxAngle, useNormal, false, bodyTriRegionMasks);
+            if (nearest.valid && nearest.distance <= NearEquivalentSurfaceEpsilon) return nearest;
+            bool useRegion = bodyTriRegions != null && region != BodyRegion.Unknown;
+            Func<int, bool> facing = t => (!useRegion || Compatible(region, t, bodyTriRegions, bodyTriRegionMasks)) &&
+                                          Vector3.Dot(normal, body.FaceNormal(t)) >= cosMaxAngle;
+            float reach = nearest.valid ? Mathf.Min(maxDistance, nearest.distance * ProjectionReach + ProjectionSlack) : maxDistance;
+            var outward = bvh.Raycast(point, normal, reach, facing);
+            var inward = bvh.Raycast(point, -normal, outward.found ? outward.distance : reach, facing);
+            var along = inward.found ? inward : outward;
+            if (!along.found) return nearest;
+            return new SurfaceBinding
+            {
+                valid = true,
+                triangle = along.triangle,
+                bary = along.bary,
+                point = along.position,
+                distance = along.distance,
+                requestedRegion = region,
+                hitRegion = TriangleRegion(along.triangle, bodyTriRegions),
+                normalDot = Vector3.Dot(normal, body.FaceNormal(along.triangle))
+            };
+        }
+
         private static BodyRegion TriangleRegion(int triangle, BodyRegion[] bodyTriRegions)
         {
             if (bodyTriRegions == null || triangle < 0 || triangle >= bodyTriRegions.Length)
@@ -143,7 +201,7 @@ namespace Orbiters.ReFit
 
         private static SurfaceBvh.Hit ClosestPointWithFallback(Vector3 point, MeshSnapshot body, SurfaceBvh bvh, float maxDistance,
             BodyRegion region, BodyRegion[] bodyTriRegions, Vector3 referenceNormal, float cosMaxAngle,
-            bool useNormal, bool useRegion, out bool usedRelaxedFallback)
+            bool useNormal, bool useRegion, out bool usedRelaxedFallback, bool clothNormal, int[] masks)
         {
             usedRelaxedFallback = false;
 
@@ -152,19 +210,29 @@ namespace Orbiters.ReFit
             {
                 fullFilter = t =>
                 {
-                    if (useRegion && !HumanoidBoneMapper.RegionsCompatible(region, bodyTriRegions[t])) return false;
+                    if (useRegion && !Compatible(region, t, bodyTriRegions, masks)) return false;
                     if (useNormal && Vector3.Dot(referenceNormal, body.FaceNormal(t)) < cosMaxAngle) return false;
                     return true;
                 };
             }
 
             var hit = bvh.ClosestPoint(point, maxDistance, fullFilter);
+            Func<int, bool> regionOnly = useRegion ? t => Compatible(region, t, bodyTriRegions, masks) : (Func<int, bool>)null;
+            if (useNormal && clothNormal)
+            {
+                // The shading normal of a surface facing the skin points into that skin. Matching it to faces turned the
+                // same way finds the far side of the limb or another body part; keep the skin it faces when nothing
+                // turned its way is about as close.
+                var near = bvh.ClosestPoint(point, maxDistance, regionOnly);
+                if (near.found && Vector3.Dot(-referenceNormal, body.FaceNormal(near.triangle)) >= cosMaxAngle &&
+                    (!hit.found || hit.distance > near.distance + Mathf.Max(SkinFacingSlack, near.distance)))
+                    return near;
+            }
             if (hit.found || fullFilter == null)
                 return hit;
 
             if (useRegion && useNormal)
             {
-                Func<int, bool> regionOnly = t => HumanoidBoneMapper.RegionsCompatible(region, bodyTriRegions[t]);
                 hit = bvh.ClosestPoint(point, maxDistance, regionOnly);
                 if (hit.found)
                 {

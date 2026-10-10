@@ -219,8 +219,8 @@ namespace Orbiters.ReFit.Editor.Tests
                     "Armature replacement materializes child-first bone plans without hierarchy drift",
                     ArmatureReplacement_ChildFirstPlan_MaterializesWithoutDrift);
                 RunCase(failures,
-                    "Weight transfer preserves mapped original weights when projections cross regions",
-                    WeightTransfer_PreservesMappedOriginalWeightsWhenProjectionCrossesRegions);
+                    "Weight transfer follows the bodies' skinning change within compatible regions",
+                    WeightTransfer_FollowsBodySkinningChangeWithinCompatibleRegions);
                 RunCase(failures,
                     "Target-space accessory keeps source bone regions for projection filtering",
                     ProjectionDebug_TargetSpaceAccessoryClassifiesAssetRegions);
@@ -230,6 +230,15 @@ namespace Orbiters.ReFit.Editor.Tests
                 RunCase(failures,
                     "Target surface chaining prefers near equivalent hits before normal filtering",
                     SurfaceBinding_TargetChainPrefersNearEquivalentHitBeforeNormalFilter);
+                RunCase(failures,
+                    "Target surface chaining follows the normal onto a grown surface past a nearer crease",
+                    SurfaceBinding_ChainFollowsNormalPastNearerCrease);
+                RunCase(failures,
+                    "Reported jockstrap keeps the Ultipaw crotch clear at rest, spread and crouched",
+                    ReportedJockstrap_UltipawCrotchStaysClearInPoses);
+                RunCase(failures,
+                    "Reported Wickerbeast onesie covers the ThiccWiker's thighs, crotch and buttocks",
+                    ReportedOnesie_ThiccWikerCovered);
                 RunCase(failures,
                     "Wizard debug mode captures projection data even when rays are hidden",
                     ReFitWizard_DebugModeCapturesProjectionDataWhenGizmoHidden);
@@ -2547,71 +2556,78 @@ namespace Orbiters.ReFit.Editor.Tests
             }
         }
 
-        private static void WeightTransfer_PreservesMappedOriginalWeightsWhenProjectionCrossesRegions()
+        private static void WeightTransfer_FollowsBodySkinningChangeWithinCompatibleRegions()
         {
-            var asset = new MeshSnapshot
-            {
-                localVertices = new[] { Vector3.zero, Vector3.right, Vector3.up },
-                groupRep = new[] { 0, 1, 2 },
-                groupOfVertex = new[] { 0, 1, 2 },
-                boneWeights = new[]
-                {
-                    MakeWeight(0, 1f),
-                    MakeWeight(0, 1f),
-                    MakeWeight(2, 1f)
-                },
-                rigid = false
-            };
-            var body = new MeshSnapshot
-            {
-                triangles = new[] { 0, 1, 2 },
-                boneWeights = new[]
-                {
-                    MakeWeight(3, 1f), // bad arm -> leg projection
-                    MakeWeight(1, 1f), // compatible arm transition
-                    MakeWeight(4, 1f)  // bad left-leg -> right-leg projection
-                },
-                rigid = false
-            };
-            var bindings = new[]
-            {
-                Binding(new Vector3(1f, 0f, 0f), BodyRegion.LeftLeg),
-                Binding(new Vector3(0f, 1f, 0f), BodyRegion.LeftArm),
-                Binding(new Vector3(0f, 0f, 1f), BodyRegion.RightLeg)
-            };
+            // New bones: 0/1 left arm, 2/3 left leg, 4 right leg, 5 hips.
             var boneRegions = new[]
             {
-                BodyRegion.LeftArm,
-                BodyRegion.LeftArm,
-                BodyRegion.LeftLeg,
-                BodyRegion.LeftLeg,
-                BodyRegion.RightLeg
+                BodyRegion.LeftArm, BodyRegion.LeftArm, BodyRegion.LeftLeg, BodyRegion.LeftLeg, BodyRegion.RightLeg, BodyRegion.Torso
             };
+            var clothing = new[]
+            {
+                MakeWeight(0, 1f),          // arm vertex whose match moved onto a leg: a wrong match
+                MakeWeight(0, 1f),          // arm vertex where the target hands skin to the lower arm
+                MakeWeight(2, 1f),          // left-leg vertex matched to right-leg skin: a wrong match
+                MakeWeight(5, 1f),          // hips vertex where the target hands groin skin to the left thigh
+                MakeWeight(0, .7f, 1, .3f)  // both bodies agree: the creator's weights stay as authored
+            };
+            var sourceSkin = new[] { MakeWeight(0, 1f), MakeWeight(0, 1f), MakeWeight(2, 1f), MakeWeight(5, 1f), MakeWeight(1, 1f) };
+            var targetSkin = new[] { MakeWeight(3, 1f), MakeWeight(1, .6f, 0, .4f), MakeWeight(4, 1f), MakeWeight(5, .5f, 2, .5f), MakeWeight(1, 1f) };
+            int count = clothing.Length;
+            var asset = new MeshSnapshot
+            {
+                localVertices = new Vector3[count],
+                groupRep = new int[count],
+                groupOfVertex = new int[count],
+                groupAdjacency = new List<int>[count],
+                boneWeights = clothing,
+                rigid = false
+            };
+            var sourceBindings = new SurfaceBinding[count];
+            var targetBindings = new SurfaceBinding[count];
+            var triangles = new int[count * 3];
+            for (int i = 0; i < count; i++)
+            {
+                asset.groupRep[i] = i;
+                asset.groupOfVertex[i] = i;
+                asset.groupAdjacency[i] = new List<int>();
+                triangles[i * 3] = i; triangles[i * 3 + 1] = i; triangles[i * 3 + 2] = i;
+                sourceBindings[i] = Binding(new Vector3(1f, 0f, 0f), BodyRegion.Unknown);
+                sourceBindings[i].triangle = i;
+                targetBindings[i] = sourceBindings[i];
+            }
+            var source = new MeshSnapshot { triangles = triangles, boneWeights = sourceSkin, rigid = false };
+            var target = new MeshSnapshot { triangles = triangles, boneWeights = targetSkin, rigid = false };
+            var identity = new[] { 0, 1, 2, 3, 4, 5 };
+            var confidence = new float[count];
+            for (int i = 0; i < count; i++) confidence[i] = 1f;
 
-            var weights = WeightTransfer.Transfer(asset, body, bindings,
-                new[] { 3, 1, 4, 3, 4 },
-                new[] { 0, 1, 2, 3, 4 },
-                new[] { false, false, false, false, false },
-                boneRegions, new[] { BodyRegion.LeftArm, BodyRegion.LeftArm, BodyRegion.LeftLeg },
-                new ReFitSettings { keepExtraBoneVertices = false },
+            var weights = WeightTransfer.Transfer(asset, source, sourceBindings, identity, target, targetBindings, identity,
+                confidence, identity, new bool[6], boneRegions, null, new ReFitSettings { keepExtraBoneVertices = false },
                 new ReFitReport(), out var debug);
 
             AssertGreater(WeightOf(weights[0], 0), 0.99f,
-                "An arm vertex accepted an incompatible leg projection instead of preserving the mapped original arm weight.");
+                "An arm vertex followed a change of skinning onto a leg instead of keeping its mapped arm weight.");
             AssertTrue(debug.decisionsByVertex[0] == ReFitWeightDecision.Original,
-                $"Expected incompatible arm/leg projection to use Original, got {debug.decisionsByVertex[0]}.");
+                $"Expected the arm/leg change to be rejected, got {debug.decisionsByVertex[0]}.");
 
-            AssertGreater(WeightOf(weights[1], 0), 0.6f,
-                "Compatible arm projection should keep a comparable share of the original mapped arm weight.");
-            AssertGreater(WeightOf(weights[1], 1), 0.15f,
-                "Compatible arm projection should still contribute target arm weight.");
+            AssertTrue(Mathf.Abs(WeightOf(weights[1], 1) - 0.6f) < 0.01f && Mathf.Abs(WeightOf(weights[1], 0) - 0.4f) < 0.01f,
+                $"An arm vertex did not follow the target's arm hand-over (got {WeightOf(weights[1], 0):0.###}/{WeightOf(weights[1], 1):0.###}).");
             AssertTrue(debug.decisionsByVertex[1] == ReFitWeightDecision.Blended,
-                $"Expected compatible arm projection to be blended, got {debug.decisionsByVertex[1]}.");
+                $"Expected the compatible arm change to be applied, got {debug.decisionsByVertex[1]}.");
 
             AssertGreater(WeightOf(weights[2], 2), 0.99f,
-                "A left-leg vertex accepted a right-leg projection instead of preserving its mapped original leg weight.");
+                "A left-leg vertex followed a change onto the right leg instead of keeping its mapped leg weight.");
             AssertTrue(debug.decisionsByVertex[2] == ReFitWeightDecision.Original,
-                $"Expected left/right leg projection to use Original, got {debug.decisionsByVertex[2]}.");
+                $"Expected the left/right leg change to be rejected, got {debug.decisionsByVertex[2]}.");
+
+            AssertTrue(Mathf.Abs(WeightOf(weights[3], 5) - 0.5f) < 0.01f && Mathf.Abs(WeightOf(weights[3], 2) - 0.5f) < 0.01f,
+                $"A hips vertex over groin skin did not follow the target's hips-to-thigh hand-over (got {WeightOf(weights[3], 5):0.###}/{WeightOf(weights[3], 2):0.###}).");
+
+            AssertTrue(Mathf.Abs(WeightOf(weights[4], 0) - 0.7f) < 0.001f && Mathf.Abs(WeightOf(weights[4], 1) - 0.3f) < 0.001f,
+                "Weights changed where both bodies' skinning agrees.");
+            AssertTrue(debug.decisionsByVertex[4] == ReFitWeightDecision.Original,
+                $"Expected unchanged clothing weights where the bodies agree, got {debug.decisionsByVertex[4]}.");
         }
 
         private static void ArmatureReplacement_LeafTailPrefersShinOverFoot()
@@ -2702,6 +2718,66 @@ namespace Orbiters.ReFit.Editor.Tests
                     DestroyComputationMesh(comp);
                 }
             }
+        }
+
+        private static void SurfaceBinding_ChainFollowsNormalPastNearerCrease()
+        {
+            // The source point sits at the origin on a surface facing +Z. The target grew 15 cm outward there, and a
+            // crease of the target (facing the same way) passes 6 cm to the side: nearer, but not the same place.
+            var body = new MeshSnapshot
+            {
+                worldVertices = new[]
+                {
+                    new Vector3(-1f, -1f, 0.15f), new Vector3(1f, -1f, 0.15f), new Vector3(-1f, 1f, 0.15f), new Vector3(1f, 1f, 0.15f),
+                    new Vector3(0.06f, -0.1f, 0f), new Vector3(0.3f, 0f, 0f), new Vector3(0.06f, 0.1f, 0f)
+                },
+                triangles = new[] { 0, 1, 2, 2, 1, 3, 4, 5, 6 }
+            };
+            var bvh = SurfaceBvh.Build(body);
+            float cos = Mathf.Cos(80f * Mathf.Deg2Rad);
+            var grown = SurfaceBindingSolver.ChainPoint(Vector3.zero, Vector3.forward, body, bvh, 0.5f, BodyRegion.Torso,
+                new[] { BodyRegion.Torso, BodyRegion.Torso, BodyRegion.Torso }, cos, true);
+            AssertTrue(grown.valid, "The chained target point was not found.");
+            AssertTrue(Mathf.Abs(grown.point.z - 0.15f) < 0.001f && grown.point.x * grown.point.x + grown.point.y * grown.point.y < 1e-6f,
+                $"The chained point should be on the grown surface along the normal, not the nearer crease; it was {grown.point:F3}.");
+
+            var overlapping = SurfaceBindingSolver.ChainPoint(new Vector3(0.02f, 0f, 0.145f), Vector3.forward, body, bvh, 0.5f, BodyRegion.Torso,
+                new[] { BodyRegion.Torso, BodyRegion.Torso, BodyRegion.Torso }, cos, true);
+            AssertTrue(overlapping.valid && overlapping.distance <= 0.01f,
+                "Where the bodies overlap the chained point must stay the nearest one.");
+        }
+
+        private static void ReportedJockstrap_UltipawCrotchStaysClearInPoses()
+        {
+            if (!ReFitCaseValidation.Available(ReFitCaseValidation.Jockstrap, out string missing))
+                throw new SkippedTestException($"[ReFit Tests] Skipping the reported jockstrap replay; missing '{missing}'.");
+            var result = ReFitCaseValidation.Run(ReFitCaseValidation.Jockstrap, "deterministic", true, "none");
+            var rest = result.metrics["rest"];
+            var spread = result.metrics["spread"];
+            var crouch = result.metrics["crouch"];
+            // Before: 5 rest / 487 spread / 916 crouched samples more than 3 mm inside the body, up to 65 mm deep, and a pouch torn
+            // by blotches of thigh weight (inspect Temp/ReFitTests/cases renders with render "all" for the look).
+            AssertLessOrEqual(rest.inside3mm, 8, $"Jockstrap clips at rest: {rest.inside3mm} samples over 3 mm inside, worst {rest.worstMm:F1} mm.");
+            AssertLessOrEqual(rest.worstMm, 10f, $"Jockstrap clips {rest.worstMm:F1} mm deep at rest.");
+            AssertLessOrEqual(spread.inside3mm, 20, $"Jockstrap clips with spread thighs: {spread.inside3mm} samples over 3 mm inside, worst {spread.worstMm:F1} mm.");
+            AssertLessOrEqual(crouch.inside3mm, 200, $"Jockstrap clips crouched: {crouch.inside3mm} samples over 3 mm inside, worst {crouch.worstMm:F1} mm.");
+            AssertLessOrEqual(crouch.worstMm, 25f, $"Jockstrap clips {crouch.worstMm:F1} mm deep crouched.");
+            AssertLessOrEqual(result.oppositeLegShare, 0.01f, $"{result.oppositeLegShare:P1} of the jockstrap's leg weight is on the other side's leg.");
+            // Before: the snug surface guard drove the waistband's ends at the hips 15 mm out of the band (11 vertices, edges
+            // stretched 23 times), lifting edges that already sagged into the hips as authored.
+            AssertLessOrEqual(rest.spikes, 0, $"Jockstrap has {rest.spikes} vertices pulled out of its surface at rest, worst {rest.spikeMm:F1} mm.");
+            AssertLessOrEqual(rest.edgeMax, 8f, $"Jockstrap edges stretch {rest.edgeMax:F1} times at rest.");
+        }
+
+        private static void ReportedOnesie_ThiccWikerCovered()
+        {
+            if (!ReFitCaseValidation.Available(ReFitCaseValidation.Onesie, out string missing))
+                throw new SkippedTestException($"[ReFit Tests] Skipping the reported onesie replay; missing '{missing}'.");
+            var result = ReFitCaseValidation.Run(ReFitCaseValidation.Onesie, "deterministic", true, "none");
+            var rest = result.metrics["rest"];
+            // Before: the buttocks, inner thighs and crotch showed through (2168 samples over 3 mm inside, up to 98 mm deep).
+            AssertLessOrEqual(rest.inside3mm, 1250, $"Onesie clips at rest: {rest.inside3mm} samples over 3 mm inside, worst {rest.worstMm:F1} mm.");
+            AssertLessOrEqual(rest.worstMm, 55f, $"Onesie clips {rest.worstMm:F1} mm deep at rest.");
         }
 
         private static void SurfaceBinding_TargetChainPrefersNearEquivalentHitBeforeNormalFilter()

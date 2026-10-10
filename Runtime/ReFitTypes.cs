@@ -468,6 +468,9 @@ namespace Orbiters.ReFit
         public Vector3 assetLocalPoint;
         public Vector3 sourceHitLocalPoint;
         public Vector3 targetHitLocalPoint;
+        /// <summary>The target body point matched to the source hit (same anatomical point), from which the fit is measured.</summary>
+        public Vector3 chainedTargetLocalPoint;
+        public bool chainedTargetValid;
         public int sourceTriangle = -1;
         public int targetTriangle = -1;
         public Vector3 sourceBarycentric;

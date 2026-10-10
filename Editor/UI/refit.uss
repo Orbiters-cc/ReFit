@@ -1,560 +1,272 @@
-.refit-root {
-    flex-grow: 1;
-    background-color: #2d2d2d;
-}
+/* ReFit in the Orbiters tools' look (My Avatar, Logger, the photoshoot): the 3D stage on the left, the page on the
+   right (stacked when narrow); dark frames with 16 px corners, 12 px rows, pill chips, the #00DA6D accent, flat surfaces
+   without stray borders. Everything presses in on pointer down (.refit-pressed). */
 
-.refit-header {
-    flex-direction: row;
-    justify-content: center;
-    align-items: center;
-    background-color: #383838;
-    height: 80px;
-    flex-shrink: 0;
-}
+.refit-root { flex-grow: 1; background-color: #2b2b2b; }
+.refit-glow { position: absolute; left: 0; top: 0; right: 0; bottom: 0; }
 
-.refit-page-content > * { flex-shrink: 0; }
-#refit-commission-section { width: 100%; max-width: 460px; align-self: center; margin-top: 24px; }
+/* ---- Header -------------------------------------------------------------------------------------------------------- */
+.refit-header { flex-direction: row; align-items: center; height: 58px; flex-shrink: 0; padding: 0 14px 0 14px; }
+/* Centred over the whole header, whatever sits at its edges. */
+.refit-brand { position: absolute; left: 0; right: 0; top: 0; bottom: 0; flex-direction: row; align-items: center; justify-content: center; }
+.refit-logo { margin-right: 10px; }
+.refit-logo-bar { position: absolute; background-color: #eaeaea; }
+.refit-title { margin: 0; padding: 0; font-size: 20px; color: #ffffff; -unity-font-style: bold; letter-spacing: 0.3px; }
+.refit-beta-badge { margin-left: 8px; }
+.refit-header-button { width: 30px; height: 30px; min-width: 30px; margin: 0; padding: 0; border-width: 0; border-radius: 15px; background-color: rgba(255, 255, 255, 0.06); color: #d9d9d9; font-size: 20px; -unity-text-align: middle-center; align-items: center; justify-content: center; transition-property: background-color, scale; transition-duration: 0.14s, 0.2s; transition-timing-function: ease-out, ease-out-back; cursor: link; }
+.refit-header-button:hover { background-color: rgba(255, 255, 255, 0.12); color: #ffffff; }
+.refit-header-button--on { background-color: rgba(0, 218, 109, 0.16); }
+.refit-header-button:disabled { opacity: 0.4; }
+.refit-header-button--back { padding-bottom: 3px; }
+.refit-header-icon { width: 16px; height: 16px; --icon-color: #d9d9d9; }
+.refit-header-button--on .refit-header-icon { --icon-color: #00DA6D; }
+
+/* ---- Columns: the stage on the left, the page on the right ------------------------------------------------------- */
+.refit-body { flex-grow: 1; flex-direction: row; min-height: 0; }
+.refit-stage-column { flex-grow: 1; flex-shrink: 1; min-width: 260px; padding: 0 0 16px 16px; }
+.refit-panel { width: 440px; flex-shrink: 0; min-height: 0; }
+.refit-root--narrow .refit-body { flex-direction: column; }
+.refit-root--narrow .refit-panel { width: auto; flex-grow: 1; }
+.refit-scroll { flex-grow: 1; flex-shrink: 1; flex-basis: 0; min-height: 0; }
+.refit-page-content { padding: 0 16px 10px 16px; }
+.refit-credit { margin: 0 0 10px 0; padding-top: 6px; }
+
+/* ---- Shared ------------------------------------------------------------------------------------------------------- */
+.refit-pressed { scale: 0.96 0.96; }
+.refit-grow { flex-grow: 1; }
+.refit-page-title { margin: 6px 2px 10px 2px; padding: 0; font-size: 16px; color: #ffffff; -unity-font-style: bold; }
+.refit-section { margin: 0; padding: 0; color: #ffffff; font-size: 13px; -unity-font-style: bold; }
+.refit-section-block { margin-top: 18px; }
+.refit-section-heading { flex-direction: row; align-items: center; justify-content: space-between; min-height: 26px; margin-bottom: 8px; }
+.refit-section-heading > .refit-section { flex-shrink: 0; margin-right: 12px; }
+.refit-help { margin: 4px 2px 6px 2px; padding: 0; color: #8f8f8f; font-size: 11px; white-space: normal; }
+.refit-caption { margin: 0 8px 0 2px; padding: 0; color: #8f8f8f; font-size: 11px; }
+.refit-pill { margin: 0 0 0 8px; padding: 1px 7px; border-radius: 9px; font-size: 10px; -unity-font-style: bold; color: #00DA6D; background-color: rgba(0, 218, 109, 0.12); }
+.refit-field { margin: 6px 0 2px 0; }
+.refit-field .unity-base-field__input, .refit-file-field .unity-base-field__input { border-radius: 8px; border-width: 0; background-color: #1d1d1d; min-height: 24px; }
+
+.refit-button { height: 30px; min-height: 30px; margin: 0 6px 0 0; padding: 0 14px; border-width: 0; border-radius: 7px; background-color: #3a3a3a; color: #e6e6e6; font-size: 11px; -unity-font-style: normal; transition-property: background-color, scale; transition-duration: 0.14s, 0.2s; transition-timing-function: ease-out, ease-out-back; cursor: link; }
+.refit-button:hover { background-color: #454545; color: #ffffff; }
+.refit-button:disabled { opacity: 0.45; }
+.refit-button--ghost { background-color: rgba(255, 255, 255, 0.06); }
+.refit-button--ghost:hover { background-color: rgba(255, 255, 255, 0.12); }
+.refit-button--primary { background-color: #00DA6D; color: #ffffff; -unity-font-style: bold; margin-right: 0; padding: 0 18px; }
+.refit-button--primary:hover { background-color: #19e27d; color: #ffffff; }
+.refit-button--small { height: 24px; min-height: 24px; padding: 0 10px; margin: 0 0 0 6px; border-radius: 6px; background-color: rgba(255, 255, 255, 0.06); }
+.refit-button--small:hover { background-color: rgba(255, 255, 255, 0.12); }
+.refit-link { align-self: center; height: 24px; min-height: 24px; margin: 0; padding: 0 10px; border-radius: 6px; background-color: rgba(0, 0, 0, 0); color: #9a9a9a; }
+.refit-link:hover { background-color: rgba(255, 255, 255, 0.08); color: #e6e6e6; }
+.refit-links { flex-direction: row; justify-content: center; margin-top: 6px; }
+
+/* ---- Stage: the avatar wearing it, then before / after ------------------------------------------------------------ */
+.refit-stage { position: relative; flex-grow: 1; border-radius: 16px; overflow: hidden; background-color: #1a1a1a; border-width: 1px; border-color: rgba(255, 255, 255, 0.05); cursor: pan; }
+.refit-stage--inline { flex-grow: 0; flex-shrink: 0; height: 320px; margin-bottom: 4px; }
+.refit-stage--empty { cursor: arrow; }
+.refit-stage--dragging { cursor: orbit; }
+.refit-stage--splitting { cursor: resize-horizontal; }
+.refit-stage__pane { position: absolute; left: 0; top: 0; bottom: 0; overflow: hidden; }
+.refit-stage__pane--after { right: 0; }
+.refit-stage__image { position: absolute; left: 0; top: 0; bottom: 0; width: 100%; }
+.refit-stage__hint { position: absolute; top: 12px; align-self: center; height: 22px; margin: 0; padding: 0 10px; border-radius: 11px; background-color: rgba(16, 16, 16, 0.62); color: rgba(255, 255, 255, 0.7); font-size: 10px; -unity-text-align: middle-center; transition-property: opacity; transition-duration: 0.3s; }
+.refit-stage--comparing .refit-stage__hint, .refit-stage--dragging .refit-stage__hint { opacity: 0; }
+.refit-stage__handle { position: absolute; top: 0; bottom: 0; width: 0; align-items: center; justify-content: center; }
+.refit-stage__line { position: absolute; top: 0; bottom: 0; left: -1px; width: 2px; background-color: rgba(255, 255, 255, 0.85); }
+.refit-stage__knob { position: absolute; left: -17px; width: 34px; height: 34px; border-radius: 17px; background-color: #ffffff; align-items: center; justify-content: center; transition-property: scale; transition-duration: 0.18s; transition-timing-function: ease-out-back; }
+.refit-stage--dragging .refit-stage__knob { scale: 1.12 1.12; }
+.refit-stage__knob-arrows { margin: 0; padding: 0 0 2px 0; color: #1a1a1a; font-size: 15px; -unity-font-style: bold; -unity-text-align: middle-center; }
+.refit-stage__tag { position: absolute; top: 12px; height: 22px; padding: 0 10px; border-radius: 11px; background-color: rgba(16, 16, 16, 0.72); color: #f2f2f2; font-size: 10px; -unity-font-style: bold; letter-spacing: 1px; -unity-text-align: middle-center; }
+.refit-stage__tag--before { left: 12px; }
+.refit-stage__tag--after { right: 12px; color: #00DA6D; }
+.refit-stage__overlay { position: absolute; left: 0; right: 0; bottom: 12px; align-items: center; }
+.refit-stage__views { width: 212px; background-color: rgba(16, 16, 16, 0.8); }
+.refit-stage__empty { position: absolute; left: 0; top: 0; right: 0; bottom: 0; align-items: center; justify-content: center; padding: 0 30px; }
+.refit-stage__empty-icon { width: 46px; height: 46px; margin-bottom: 12px; --icon-color: #5c5c5c; }
+.refit-stage__empty-title { margin: 0; padding: 0; color: #ffffff; font-size: 14px; -unity-font-style: bold; -unity-text-align: middle-center; white-space: normal; }
+.refit-stage__empty-hint { margin: 6px 0 0 0; padding: 0; color: #8f8f8f; font-size: 11px; -unity-text-align: middle-center; white-space: normal; }
+.refit-stage--drop { border-color: #00DA6D; background-color: #1b2420; }
+.refit-stage__busy { position: absolute; left: 12px; bottom: 54px; height: 22px; padding: 0 10px; border-radius: 11px; background-color: rgba(16, 16, 16, 0.72); color: #f2f2f2; font-size: 10px; -unity-font-style: bold; -unity-text-align: middle-center; opacity: 0; transition-property: opacity; transition-duration: 0.2s; }
+.refit-stage__busy--shown { opacity: 1; }
+
+/* ---- Clothing strip and avatar chips ------------------------------------------------------------------------------ */
+.refit-avatar-row { flex-direction: row; justify-content: flex-end; flex-shrink: 1; min-width: 0; overflow: hidden; }
+.refit-pieces { height: 112px; }
+.refit-pieces .unity-scroll-view__content-container { flex-direction: row; padding-bottom: 2px; }
+.refit-pieces .unity-scroller--horizontal { height: 6px; }
+.refit-piece { width: 92px; height: 104px; margin-right: 8px; padding: 6px; border-radius: 14px; background-color: #242424; border-width: 2px; border-color: rgba(0, 0, 0, 0); transition-property: background-color, border-color, scale; transition-duration: 0.14s, 0.14s, 0.2s; transition-timing-function: ease-out, ease-out, ease-out-back; cursor: link; }
+.refit-piece:hover { background-color: #2a2a2a; }
+.refit-piece--selected, .refit-piece--selected:hover { border-color: #00DA6D; background-color: #1d2a23; }
+.refit-piece--hidden { opacity: 0.55; }
+.refit-piece__picture { width: 76px; height: 70px; border-radius: 10px; background-color: #212123; opacity: 0.5; transition-property: opacity; transition-duration: 0.3s; }
+.refit-piece__picture--in, .refit-piece--selected .refit-piece__picture { opacity: 1; }
+.refit-piece__name { margin: 6px 0 0 0; padding: 0; color: #d9d9d9; font-size: 10px; -unity-text-align: middle-center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.refit-piece--selected .refit-piece__name { color: #ffffff; -unity-font-style: bold; }
+.refit-piece__check { position: absolute; right: 6px; top: 6px; width: 18px; height: 18px; border-radius: 9px; background-color: #00DA6D; --icon-color: #ffffff; opacity: 0; }
+.refit-piece--selected .refit-piece__check { opacity: 1; }
+.refit-pieces-footer { flex-direction: row; align-items: center; margin-top: 6px; }
+.refit-file-field { flex-grow: 1; flex-shrink: 1; margin: 0; }
+
+.refit-chip { flex-direction: row; align-items: center; flex-shrink: 0; height: 26px; margin: 2px 4px 2px 0; padding: 0 10px 0 8px; border-radius: 13px; background-color: #2e2e2e; transition-property: background-color, scale; transition-duration: 0.12s, 0.18s; transition-timing-function: ease-out, ease-out-back; cursor: link; }
+.refit-chip:hover { background-color: #363636; }
+.refit-chip__text { margin: 0; padding: 0; color: #d0d0d0; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.refit-chip--avatar .refit-chip__text { max-width: 150px; }
+.refit-chip__icon { width: 12px; height: 12px; margin-right: 5px; --icon-color: #8c8c8c; }
+.refit-chip__remove { width: 10px; height: 10px; margin-left: 6px; --icon-color: #7a7a7a; }
+.refit-chip:hover .refit-chip__remove { --icon-color: #e6e6e6; }
+.refit-chip--avatar { margin: 0 0 0 6px; }
+.refit-chip--more { padding: 0 9px; }
+.refit-chip--selected { background-color: rgba(0, 218, 109, 0.14); cursor: arrow; }
+.refit-chip--selected .refit-chip__text { color: #00DA6D; -unity-font-style: bold; }
+.refit-chip--selected .refit-chip__icon { --icon-color: #00DA6D; }
+.refit-chip--shape { background-color: rgba(0, 218, 109, 0.12); padding-left: 10px; }
+.refit-chip--shape .refit-chip__text { color: #c6f7dc; }
+.refit-chip--shape:hover { background-color: rgba(0, 218, 109, 0.2); }
+.refit-chip--add { background-color: rgba(255, 255, 255, 0.06); }
+.refit-chip--suggested { height: 22px; background-color: rgba(255, 255, 255, 0.04); }
+.refit-chip--suggested .refit-chip__text { color: #9a9a9a; font-size: 10px; }
+.refit-chip--suggested.refit-chip--selected { background-color: rgba(0, 218, 109, 0.14); }
+.refit-chip--suggested.refit-chip--selected .refit-chip__text { color: #00DA6D; }
+.refit-chip--generated { cursor: arrow; background-color: rgba(138, 125, 255, 0.14); }
+.refit-chip--generated .refit-chip__text { color: #c9c2ff; }
+
+/* ---- Setup card -------------------------------------------------------------------------------------------------- */
+.refit-card { margin-top: 12px; padding: 14px 16px 14px 16px; border-radius: 16px; background-color: #242424; border-width: 1px; border-color: rgba(255, 255, 255, 0.05); }
+.refit-setup__row { flex-direction: row; align-items: center; min-height: 32px; margin-top: 10px; }
+.refit-setup__row:first-child { margin-top: 0; }
+.refit-setup__label { width: 104px; flex-shrink: 0; margin: 0; padding: 0; color: #9a9a9a; font-size: 11px; -unity-font-style: bold; }
+.refit-setup__control { flex-grow: 1; flex-shrink: 1; min-width: 0; background-color: #1d1d1d; }
+.refit-setup__switch { margin-left: 0; }
+.refit-setup__caption { margin: 4px 0 0 104px; padding: 0; color: #858585; font-size: 10px; white-space: normal; }
+.refit-setup__picker { margin-left: 104px; }
+.refit-shapes { flex-direction: row; flex-wrap: wrap; flex-grow: 1; flex-shrink: 1; min-width: 0; }
+.refit-suggestions { flex-direction: row; flex-wrap: wrap; align-items: center; margin: 4px 0 0 104px; }
+.refit-suggestions__label { margin: 0 6px 0 0; padding: 0; color: #767676; font-size: 10px; -unity-font-style: bold; }
+.refit-shape-picker { margin-top: 8px; padding: 8px; border-radius: 12px; background-color: #1f1f1f; }
+
+/* ---- The button and its checks ---------------------------------------------------------------------------------- */
+.refit-primary { height: 40px; min-height: 40px; margin: 14px 0 0 0; padding: 0; border-width: 0; border-radius: 8px; background-color: rgba(0, 0, 0, 0); font-size: 13px; -unity-font-style: bold; transition-property: scale; transition-duration: 0.2s; transition-timing-function: ease-out-back; cursor: link; }
+.refit-primary:disabled { opacity: 0.4; }
+.refit-progress-button { position: relative; overflow: hidden; }
+.refit-progress-button:hover { background-color: rgba(0, 0, 0, 0); }
+.refit-progress-button__track { position: absolute; left: 0; right: 0; top: 0; bottom: 0; border-radius: 8px; overflow: hidden; }
+.refit-progress-button__fill { position: absolute; left: 0; top: 0; bottom: 0; width: 100%; border-radius: 0; }
+.refit-progress-button__label { position: absolute; left: 0; right: 0; top: 0; bottom: 0; color: #ffffff; font-size: 13px; -unity-font-style: bold; -unity-text-align: middle-center; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; padding: 0 20px; }
+.refit-progress-button:hover .refit-progress-button__track { opacity: 0.92; }
+.refit-checks { margin-top: 8px; align-items: center; }
+.refit-checks__hint { margin: 0; padding: 0; color: #8f8f8f; font-size: 11px; -unity-text-align: middle-center; white-space: normal; }
+.refit-checks__ready { margin: 0; padding: 0; color: #00DA6D; font-size: 11px; -unity-text-align: middle-center; white-space: normal; }
+.refit-checks .refit-note { align-self: stretch; }
+
+.refit-note { flex-direction: row; align-items: center; min-height: 26px; padding: 4px 10px; margin-top: 4px; border-radius: 12px; background-color: #2a2a2a; }
+.refit-note__dot { width: 8px; height: 8px; border-radius: 4px; margin-right: 8px; flex-shrink: 0; background-color: #6f6f6f; }
+.refit-note__dot--warning { background-color: #ffb020; }
+.refit-note__dot--error { background-color: #ff6b5e; }
+.refit-note__dot--info { background-color: #8a7dff; }
+.refit-note__text { flex-grow: 1; flex-shrink: 1; margin: 0; padding: 0; font-size: 11px; color: #d0d0d0; white-space: normal; }
+
+/* ---- Result ------------------------------------------------------------------------------------------------------ */
+.refit-result__heading { flex-direction: row; align-items: center; }
+.refit-result__dot { width: 10px; height: 10px; border-radius: 5px; margin-right: 10px; flex-shrink: 0; }
+.refit-result__dot--ok { background-color: #00DA6D; }
+.refit-result__dot--failed { background-color: #ff6b5e; }
+.refit-result__title { margin: 0; padding: 0; color: #ffffff; font-size: 14px; -unity-font-style: bold; white-space: normal; flex-shrink: 1; }
+.refit-result .refit-setup__caption { margin-left: 20px; }
+.refit-result__shapes { margin: 8px 0 2px 0; }
+.refit-result__actions { flex-direction: row; align-items: center; margin-top: 12px; }
+.refit-summary-row { flex-direction: row; margin-top: 4px; }
+.refit-summary-key { width: 60px; flex-shrink: 0; margin: 0; padding: 0; color: #858585; font-size: 10px; }
+.refit-summary-value { flex-grow: 1; flex-shrink: 1; margin: 0; padding: 0; color: #c8c8c8; font-size: 10px; white-space: normal; }
+.refit-slider { margin: 10px 0 0 0; }
+
+/* ---- Re-fitted list ---------------------------------------------------------------------------------------------- */
+.refit-row { flex-direction: row; align-items: center; min-height: 34px; padding: 0 6px 0 12px; margin-top: 4px; border-radius: 12px; background-color: #242424; }
+.refit-row__dot { width: 8px; height: 8px; border-radius: 4px; margin-right: 10px; flex-shrink: 0; background-color: #00DA6D; }
+.refit-row__name { flex-grow: 1; flex-shrink: 1; min-width: 0; margin: 0; padding: 0; color: #e6e6e6; font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* ---- Settings page ----------------------------------------------------------------------------------------------- */
+.refit-section-block > .refit-section { margin-bottom: 8px; }
+.refit-settings-card { padding: 14px 16px 12px 16px; }
+.refit-settings-card__title { margin: 0 0 8px 0; }
+.refit-subsection { margin: 14px 0 4px 0; padding: 0; color: #d0d0d0; font-size: 12px; -unity-font-style: bold; }
+.refit-settings-card .unity-base-field { margin: 3px 0; min-height: 22px; }
+.refit-settings-card .unity-base-field__label { color: #b4b4b4; min-width: 0; width: 58%; flex-shrink: 1; white-space: normal; }
+.refit-settings-card .unity-base-field__input { flex-grow: 1; min-width: 44px; }
+.refit-settings-card .unity-base-field__input { border-radius: 6px; border-width: 0; background-color: #1d1d1d; }
+.refit-settings-card .unity-toggle__input { background-color: rgba(0, 0, 0, 0); }
+.refit-settings-card .unity-toggle__checkmark { width: 16px; height: 16px; border-width: 1px; border-radius: 4px; border-color: #454545; background-color: #1d1d1d; -unity-background-image-tint-color: rgba(0, 0, 0, 0); }
+.refit-settings-card Toggle:checked .unity-toggle__checkmark { border-color: #00DA6D; background-color: #00DA6D; -unity-background-image-tint-color: #ffffff; }
+.refit-settings-card Toggle:hover .unity-toggle__checkmark { border-color: #6a6a6a; }
+.refit-settings-card Toggle:checked:hover .unity-toggle__checkmark { border-color: #19e27d; background-color: #19e27d; }
+.refit-settings-card .unity-slider .unity-base-slider__input { margin-right: 8px; }
+.refit-settings-card .unity-slider FloatField { width: 54px; min-width: 54px; flex-grow: 0; margin: 0; }
+.refit-settings-card .unity-enum-field__input, .refit-settings-card .unity-base-popup-field__input { background-color: #2a2c31; }
+.refit-settings-card .unity-slider .unity-base-field__input { background-color: rgba(0, 0, 0, 0); }
+.refit-settings-card .refit-help { margin: 0 0 8px 0; }
+.refit-settings__action { align-self: flex-start; margin-top: 8px; }
+
+/* ---- Commissions (rows in progress, creators after a result) ---------------------------------------------------- */
+#refit-commission-section { width: 100%; }
 .refit-commission-section-heading { flex-direction: row; align-items: center; justify-content: space-between; margin-bottom: 4px; }
 .refit-commission-section-heading .refit-section { margin: 0; flex-shrink: 1; }
-.refit-commission-section-heading .refit-commission-refresh { margin: 0 0 0 10px; flex-shrink: 0; }
-#refit-active-commissions { width: 100%; }
-.refit-commission-row {
-    margin: 0; padding: 7px 4px; border-width: 0; border-bottom-width: 1px;
-    border-bottom-color: #444444; border-radius: 0; background-color: transparent;
-    flex-shrink: 0; align-items: stretch;
-}
-.refit-commission-row:hover { background-color: #343434; }
-.refit-commission-row:active { background-color: #454545; }
+.refit-commission-row { margin: 4px 0 0 0; padding: 9px 12px 10px 12px; border-width: 0; border-radius: 12px; background-color: #242424; flex-direction: column; align-items: stretch; transition-property: background-color, scale; transition-duration: 0.12s, 0.18s; cursor: link; }
+.refit-commission-row:hover { background-color: #2a2a2a; }
+.refit-commission-row:active { scale: 0.98 0.98; }
 .refit-commission-heading { flex-direction: row; align-items: center; min-width: 0; }
-.refit-commission-row .refit-commission-name { flex-grow: 1; flex-shrink: 1; min-width: 0; color: #eeeeee; -unity-font-style: bold; overflow: hidden; text-overflow: ellipsis; }
+.refit-commission-row .refit-commission-name { flex-grow: 1; flex-shrink: 1; min-width: 0; color: #eeeeee; font-size: 12px; -unity-font-style: bold; overflow: hidden; text-overflow: ellipsis; }
 .refit-commission-creator { flex-direction: row; align-items: center; flex-shrink: 0; max-width: 24%; margin-left: 10px; }
 .refit-commission-creator-name { min-width: 0; flex-shrink: 1; color: #aaaaaa; font-size: 11px; overflow: hidden; text-overflow: ellipsis; }
-.refit-commission-row .refit-commission-avatar { width: 16px; height: 16px; flex-shrink: 0; border-radius: 8px; background-color: #494949; margin-right: 6px; }
+.refit-commission-row .refit-commission-avatar { width: 16px; height: 16px; flex-shrink: 0; border-radius: 8px; background-color: #3a3a3a; margin-right: 6px; }
 .refit-commission-status { color: #aaaaaa; margin: 0 0 0 10px; max-width: 45%; min-width: 0; flex-shrink: 1; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; -unity-text-align: middle-left; }
-.refit-commission-track { height: 4px; margin-top: 6px; background-color: #45454b; border-radius: 2px; overflow: hidden; }
-.refit-commission-fill { height: 4px; background-color: #008cf0; border-radius: 2px; }
-.refit-commission-refresh, .refit-commission-more { background-image: none; background-color: #494949; color: #eeeeee; border-width: 0; border-radius: 5px; margin-top: 8px; }
-.refit-commission-refresh:hover, .refit-commission-more:hover { background-color: #575757; }
-.refit-commission-refresh:active, .refit-commission-more:active { background-color: #626262; }
+.refit-commission-track { height: 4px; margin-top: 8px; background-color: #333333; border-radius: 2px; overflow: hidden; }
+.refit-commission-fill { height: 4px; background-color: #00DA6D; border-radius: 2px; }
+.refit-commission-refresh, .refit-commission-more { background-image: none; background-color: rgba(255, 255, 255, 0.06); color: #e6e6e6; border-width: 0; border-radius: 7px; margin-top: 8px; cursor: link; }
+.refit-commission-refresh:hover, .refit-commission-more:hover { background-color: rgba(255, 255, 255, 0.12); }
+.refit-commission-refresh:active, .refit-commission-more:active { scale: 0.94 0.94; }
 .refit-commission-refresh:disabled, .refit-commission-more:disabled { opacity: 0.5; }
-.refit-commission-refresh { width: 28px; height: 28px; padding: 6px; }
-.refit-commission-more { height: 28px; padding: 4px 10px; }
+.refit-commission-refresh { width: 28px; height: 28px; padding: 6px; margin-top: 0; }
+.refit-commission-more { height: 28px; padding: 4px 12px; align-self: center; }
 .refit-commission-refresh Image { width: 16px; height: 16px; }
 
-.refit-brand { flex-direction: row; align-items: center; }
-.refit-header .refit-nav {
-    position: absolute;
-    left: 18px;
-    right: 18px;
-    top: 27px;
-    height: 26px;
-}
-.refit-header .refit-header-button { background-color: #494949; color: #eeeeee; }
-.refit-header .refit-header-button:hover { background-color: #575757; }
-
-.refit-title {
-    color: #ffffff;
-    font-size: 34px;
-    -unity-font-style: normal;
-    margin-left: 20px;
-}
-
-.refit-beta-badge {
-    color: #ffc400;
-    font-size: 12px;
-    -unity-font-style: normal;
-    -unity-text-align: middle-center;
-    background-color: transparent;
-    border-color: #ffc400;
-    border-width: 1px;
-    border-radius: 12px;
-    width: 58px;
-    height: 24px;
-    margin-left: 18px;
-    margin-right: 0;
-    margin-top: 0;
-    margin-bottom: 0;
-    padding: 0;
-    flex-shrink: 0;
-}
-
-.refit-body {
-    flex-grow: 1;
-    padding: 18px 20px 18px 20px;
-}
-
-.refit-question {
-    color: #e6e6e6;
-    font-size: 14px;
-    -unity-text-align: middle-center;
-    margin-top: 20px;
-    margin-bottom: 28px;
-    white-space: normal;
-}
-
-.refit-cards {
-    flex-direction: row;
-    justify-content: center;
-    flex-wrap: wrap;
-}
-
-.refit-card {
-    width: 190px;
-    height: 190px;
-    margin: 12px;
-    background-color: #2f2f2f;
-    border-width: 1px;
-    border-color: #6a6a6a;
-    border-radius: 10px;
-    justify-content: center;
-    align-items: center;
-    cursor: link;
-    padding: 10px;
-}
-
-.refit-card:hover {
-    background-color: #3a3a3a;
-    border-color: #9a9a9a;
-}
-
-.refit-card--small {
-    width: 170px;
-    height: 110px;
-}
-
-.refit-card--list {
-    width: 360px;
-    height: 56px;
-    margin: 5px;
-    flex-direction: row;
-    justify-content: flex-start;
-    padding-left: 14px;
-}
-
-.refit-card-label {
-    color: #e6e6e6;
-    font-size: 13px;
-    -unity-text-align: middle-center;
-    white-space: normal;
-}
-
-.refit-card-sublabel {
-    color: #999999;
-    font-size: 11px;
-    -unity-text-align: middle-center;
-    white-space: normal;
-    margin-top: 4px;
-}
-
-.refit-nav {
-    flex-direction: row;
-    align-items: center;
-    flex-shrink: 0;
-    margin-bottom: 4px;
-}
-
-.refit-back {
-    height: 24px;
-    background-color: #494949;
-    color: #dddddd;
-    border-width: 0;
-    border-radius: 8px;
-    padding: 2px 12px 2px 12px;
-    cursor: link;
-}
-
-.refit-back:hover {
-    background-color: #5a5a5a;
-}
-
-.refit-breadcrumb {
-    color: #8a8a8a;
-    font-size: 11px;
-    margin-left: 10px;
-}
-
-.refit-field {
-    margin-top: 8px;
-    margin-bottom: 8px;
-}
-
-.refit-field Label {
-    color: #cccccc;
-    min-width: 150px;
-}
-
-.refit-help {
-    color: #999999;
-    font-size: 11px;
-    white-space: normal;
-    margin-top: 4px;
-    margin-bottom: 10px;
-}
-
-.refit-section {
-    color: #c8c8c8;
-    font-size: 12px;
-    -unity-font-style: bold;
-    margin-top: 14px;
-    margin-bottom: 6px;
-}
-
-.refit-primary {
-    height: 38px;
-    border-radius: 8px;
-    border-width: 0;
-    background-color: #00DA6D;
-    color: #ffffff;
-    font-size: 14px;
-    -unity-font-style: bold;
-    margin-top: 14px;
-    cursor: link;
-}
-
-.refit-primary:hover {
-    background-color: #15ee80;
-}
-
-.refit-primary:disabled {
-    opacity: 0.55;
-}
-
-.refit-progress-button {
-    position: relative;
-    padding-left: 0;
-    padding-right: 0;
-    background-color: rgba(0, 0, 0, 0);
-    overflow: hidden;
-}
-
-.refit-progress-button:hover {
-    background-color: transparent;
-}
-
-.refit-progress-button__track {
-    position: absolute;
-    left: 0;
-    right: 0;
-    top: 0;
-    bottom: 0;
-    border-radius: 8px;
-    overflow: hidden;
-}
-
-.refit-progress-button__fill {
-    position: absolute;
-    left: 0;
-    top: 0;
-    bottom: 0;
-    width: 100%;
-    border-radius: 8px;
-}
-
-.refit-progress-button__label {
-    position: absolute;
-    left: 0;
-    right: 0;
-    top: 0;
-    bottom: 0;
-    color: #ffffff;
-    -unity-font-style: bold;
-    -unity-text-align: middle-center;
-    white-space: normal;
-}
-
-.refit-tightness-layout {
-    flex-direction: row;
-    justify-content: center;
-    align-items: center;
-    margin-top: 10px;
-    margin-bottom: 28px;
-}
-
-.refit-tightness-option {
-    width: 150px;
-    align-items: center;
-}
-
-.refit-tightness-title {
-    color: #eeeeee;
-    font-size: 13px;
-    -unity-font-style: bold;
-    -unity-text-align: middle-center;
-    margin-bottom: 10px;
-}
-
-.refit-tightness-caption {
-    color: #aaaaaa;
-    font-size: 11px;
-    -unity-text-align: middle-center;
-    margin-top: 8px;
-    white-space: normal;
-}
-
-.refit-tightness-slider-column {
-    width: 230px;
-    justify-content: center;
-    align-items: stretch;
-    padding-left: 18px;
-    padding-right: 18px;
-}
-
-.refit-tightness-slider {
-    margin-top: 118px;
-}
-
-.refit-tightness-slider Label {
-    display: none;
-    min-width: 0;
-    width: 0;
-}
-
-.refit-tightness-footer {
-    flex-direction: row;
-    justify-content: center;
-    align-items: center;
-    margin-top: 6px;
-}
-
-.refit-tightness-next {
-    width: 150px;
-}
-
-.refit-summary-row {
-    flex-direction: row;
-    margin-top: 2px;
-}
-
-.refit-summary-key {
-    color: #999999;
-    width: 150px;
-}
-
-.refit-summary-value {
-    color: #e6e6e6;
-    flex-shrink: 1;
-    white-space: normal;
-}
-
-.refit-msg {
-    border-radius: 6px;
-    padding: 6px 10px 6px 10px;
-    margin-top: 4px;
-    white-space: normal;
-    font-size: 11px;
-}
-
-.refit-msg--info {
-    background-color: #31414f;
-    color: #b8d4e8;
-}
-
-.refit-msg--warning {
-    background-color: #4f4531;
-    color: #e8d6a8;
-}
-
-.refit-msg--error {
-    background-color: #4f3131;
-    color: #e8b0b0;
-}
-
-.refit-scroll {
-    flex-grow: 1;
-}
-
-.refit-credit {
-    flex-direction: row;
-    justify-content: center;
-    align-items: center;
-    flex-shrink: 0;
-    margin-top: 10px;
-    padding-top: 8px;
-    cursor: link;
-}
-
-.refit-credit:hover {
-    opacity: 0.86;
-}
-
-.refit-credit:active {
-    opacity: 0.66;
-}
-
-.refit-credit--pressed {
-    opacity: 0.66;
-}
-
-.refit-credit-text {
-    color: #b8b8b8;
-    font-size: 10px;
-    margin-left: 4px;
-    margin-right: 4px;
-    white-space: normal;
-    cursor: link;
-}
-
-.refit-credit-profile {
-    width: 20px;
-    height: 20px;
-    border-radius: 10px;
-    margin-left: 2px;
-    margin-right: 8px;
-    overflow: hidden;
-    cursor: link;
-}
-
-.refit-credit-kofi {
-    width: 22px;
-    height: 18px;
-    margin-left: 2px;
-    cursor: link;
-}
-
-.refit-commission-section {
-    margin-top: 28px;
-    padding-top: 26px;
-    align-items: center;
-}
-
-.refit-commission-title {
-    color: #eeeeee;
-    font-size: 16px;
-    -unity-font-style: bold;
-    -unity-text-align: middle-center;
-}
-
-.refit-commission-subtitle {
-    color: #bbbbbb;
-    font-size: 16px;
-    margin-top: 18px;
-    margin-bottom: 27px;
-    -unity-text-align: middle-center;
-}
-
-.refit-commission-carousel {
-    position: relative;
-    width: 100%;
-    height: 109px;
-}
-
-.refit-commission-scroll {
-    width: 100%;
-    height: 109px;
-}
-
-.refit-commission-scroll .unity-scroll-view__content-container {
-    flex-direction: row;
-    align-items: flex-start;
-    padding-left: 14px;
-}
-
-.refit-commission-card {
-    width: 234px;
-    height: 109px;
-    flex-shrink: 0;
-    margin-right: 22px;
-    padding: 0;
-    background-color: #202020;
-    border-width: 0;
-    border-radius: 12px;
-    overflow: hidden;
-    white-space: normal;
-}
-
-.refit-commission-card:hover {
-    border-color: #8b8b8b;
-    background-color: #2b2b2b;
-}
-
-.refit-commission-card:active {
-    background-color: #454545;
-}
-
-.refit-commission-banner {
-    width: 100%;
-    height: 64px;
-    flex-shrink: 0;
-    background-color: #393939;
-}
-
-.refit-commission-identity {
-    height: 45px;
-    padding-left: 10px;
-    padding-right: 10px;
-    flex-direction: row;
-    align-items: center;
-}
-
-.refit-commission-avatar {
-    width: 28px;
-    height: 28px;
-    flex-shrink: 0;
-    border-radius: 14px;
-    margin-right: 8px;
-    background-color: #4d4d4d;
-    overflow: hidden;
-}
-
-.refit-commission-avatar-image {
-    width: 100%;
-    height: 100%;
-    min-width: 100%;
-    min-height: 100%;
-    flex-grow: 0;
-    flex-shrink: 0;
-}
-
-.refit-commission-name {
-    flex-grow: 1;
-    flex-shrink: 1;
-    min-width: 0;
-    color: #f0f0f0;
-    font-size: 12px;
-    -unity-font-style: bold;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    -unity-text-align: middle-left;
-}
-
-.refit-commission-price {
-    flex-shrink: 0;
-    max-width: 100px;
-    margin-left: 6px;
-    font-size: 11px;
-    color: #cccccc;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    -unity-text-align: middle-right;
-}
-
-.refit-commission-carousel-next {
-    position: absolute;
-    right: 8px;
-    top: 33px;
-    width: 44px;
-    height: 44px;
-    min-width: 44px;
-    min-height: 44px;
-    padding: 0;
-    border-width: 1px;
-    border-color: #8a8a8a;
-    border-radius: 22px;
-    background-color: #3a3a3a;
-    color: #ffffff;
-    font-size: 25px;
-    -unity-font-style: normal;
-    -unity-text-align: middle-center;
-}
-
-.refit-commission-carousel-next:hover {
-    background-color: #4a4a4a;
-    border-color: #b8b8b8;
-}
-
-.refit-logo-bar {
-    position: absolute;
-    background-color: #D9D9D9;
-}
+.refit-commission-section { margin-top: 12px; padding: 16px 0 16px 0; border-radius: 16px; background-color: #242424; border-width: 1px; border-color: rgba(255, 255, 255, 0.05); align-items: stretch; }
+.refit-commission-title { margin: 0 16px; padding: 0; color: #ffffff; font-size: 13px; -unity-font-style: bold; }
+.refit-commission-subtitle { margin: 4px 16px 12px 16px; padding: 0; color: #8f8f8f; font-size: 11px; white-space: normal; }
+.refit-commission-section > .refit-help, .refit-commission-section > .refit-msg, .refit-commission-section > .refit-button { margin-left: 16px; margin-right: 16px; }
+.refit-commission-grid { flex-direction: row; flex-wrap: wrap; justify-content: space-between; margin: 0 16px; }
+.refit-commission-grid > .refit-commission-card { width: 48.5%; min-width: 0; margin: 0 0 10px 0; }
+.refit-commission-grid > .refit-commission-card:last-child { margin-bottom: 0; }
+.refit-commission-card { width: 220px; height: 109px; flex-shrink: 0; margin: 0 10px 0 0; padding: 0; background-color: #2c2c2c; border-width: 0; border-radius: 12px; overflow: hidden; white-space: normal; transition-property: background-color, scale; transition-duration: 0.12s, 0.18s; transition-timing-function: ease-out, ease-out-back; cursor: link; }
+.refit-commission-card:hover { background-color: #363636; }
+.refit-commission-card:active { scale: 0.97 0.97; }
+.refit-commission-banner { width: 100%; height: 64px; flex-shrink: 0; background-color: #383838; }
+.refit-commission-identity { height: 45px; padding-left: 10px; padding-right: 10px; flex-direction: row; align-items: center; }
+.refit-commission-avatar { width: 28px; height: 28px; flex-shrink: 0; border-radius: 14px; margin-right: 8px; background-color: #3a3a3a; overflow: hidden; }
+.refit-commission-avatar-image { width: 100%; height: 100%; min-width: 100%; min-height: 100%; flex-grow: 0; flex-shrink: 0; }
+.refit-commission-text { flex-grow: 1; flex-shrink: 1; min-width: 0; justify-content: center; }
+.refit-commission-text > Label { margin: 0; padding: 0; }
+.refit-commission-text > .refit-commission-price { margin-top: 1px; }
+.refit-commission-name { min-width: 0; color: #f0f0f0; font-size: 12px; -unity-font-style: bold; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; -unity-text-align: middle-left; }
+.refit-commission-price { min-width: 0; font-size: 11px; color: #9a9a9a; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; -unity-text-align: middle-left; }
+
+.refit-msg { white-space: normal; }
+.refit-msg--warning { color: #ffcf73; }
+.refit-msg--error { color: #ff9a8f; }
+.refit-msg--info { color: #c8c8c8; }
+
+/* ---- Body shapes picker (Orbiters Toolkit's, in the window's look) ----------------------------------------------- */
+.refit-shape-picker { margin-top: 10px; padding: 10px; border-radius: 12px; background-color: #1f1f1f; border-width: 0; }
+.refit-shape-picker .orbiters-shape-search { margin: 0 0 10px 0; height: 30px; min-height: 30px; padding: 0 4px; border-width: 0; border-radius: 15px; background-color: #2c2c2c; }
+.refit-shape-picker .orbiters-shape-search .unity-text-field__input { min-height: 24px; padding: 3px 8px; border-radius: 12px; color: #e6e6e6; font-size: 11px; }
+.refit-shape-picker .orbiters-shape-search .unity-text-field__input:focus { background-color: #333333; }
+.refit-shape-picker .unity-toolbar-search-field__search-button, .refit-shape-picker .unity-search-field-base__search-button { margin-left: 6px; opacity: 0.6; }
+.refit-shape-picker .orbiters-shape-toolbar { margin-bottom: 8px; }
+.refit-shape-picker .orbiters-shape-count { margin: 0 8px 0 2px; padding: 0; color: #8f8f8f; font-size: 11px; }
+.refit-shape-picker .orbiters-shape-action { height: 24px; min-height: 24px; margin: 0 0 0 6px; padding: 0 10px; border-width: 0; border-radius: 6px; background-color: rgba(255, 255, 255, 0.06); color: #d0d0d0; font-size: 11px; transition-property: background-color, scale; transition-duration: 0.12s, 0.18s; }
+.refit-shape-picker .orbiters-shape-action:hover { background-color: rgba(255, 255, 255, 0.12); color: #ffffff; }
+.refit-shape-picker .orbiters-shape-action:active { scale: 0.96 0.96; }
+.refit-shape-picker .orbiters-shape-suggestion { height: 24px; min-height: 24px; margin: 0 4px 4px 0; padding: 0 10px; border-width: 0; border-radius: 12px; background-color: #2e2e2e; color: #d0d0d0; font-size: 11px; white-space: nowrap; transition-property: background-color, scale; transition-duration: 0.12s, 0.18s; }
+.refit-shape-picker .orbiters-shape-suggestion:hover { background-color: #363636; color: #ffffff; }
+.refit-shape-picker .orbiters-shape-suggestion:active { scale: 0.95 0.95; background-color: #3a3a3a; }
+.refit-shape-picker .orbiters-shape-suggestion--selected, .refit-shape-picker .orbiters-shape-suggestion--selected:hover { background-color: rgba(0, 218, 109, 0.14); color: #00DA6D; }
+.refit-shape-picker .orbiters-shape-scroll { margin-bottom: 6px; }
+.refit-shape-picker .orbiters-selection-scroll { padding-top: 8px; border-top-width: 1px; border-color: rgba(255, 255, 255, 0.05); }
+.refit-shape-picker .orbiters-help { margin: 2px 2px 8px 2px; color: #8f8f8f; }
+.refit-shape-picker .unity-scroller--vertical { width: 6px; }

@@ -155,6 +155,82 @@ namespace Orbiters.ReFit
             return hit;
         }
 
+        /// <summary>
+        /// First triangle (either side) crossed by the ray from <paramref name="origin"/> along the unit
+        /// <paramref name="direction"/> within <paramref name="maxDistance"/>, optionally passing <paramref name="filter"/>.
+        /// </summary>
+        public Hit Raycast(Vector3 origin, Vector3 direction, float maxDistance, Func<int, bool> filter = null)
+        {
+            var hit = new Hit { found = false, distance = maxDistance, triangle = -1 };
+            if (nodeCount == 0) return hit;
+            var inverse = new Vector3(Inverse(direction.x), Inverse(direction.y), Inverse(direction.z));
+            float best = maxDistance;
+            Span<int> stack = stackalloc int[64];
+            int sp = 0;
+            stack[sp++] = 0;
+            while (sp > 0)
+            {
+                var node = nodes[stack[--sp]];
+                if (!RayEntersBounds(origin, inverse, node.boundsMin, node.boundsMax, best)) continue;
+                if (node.left < 0)
+                {
+                    for (int i = node.start; i < node.start + node.count; i++)
+                    {
+                        int t = triOrder[i];
+                        if (filter != null && !filter(t)) continue;
+                        if (!RayTriangle(origin, direction, a[t], b[t], c[t], out float distance, out var bary) || distance >= best) continue;
+                        best = distance;
+                        hit.found = true;
+                        hit.triangle = t;
+                        hit.bary = bary;
+                        hit.position = origin + direction * distance;
+                    }
+                }
+                else
+                {
+                    stack[sp++] = node.left;
+                    stack[sp++] = node.right;
+                }
+            }
+            if (hit.found) hit.distance = best;
+            return hit;
+        }
+
+        private static float Inverse(float value) => 1f / (Mathf.Abs(value) > 1e-12f ? value : (value < 0f ? -1e-12f : 1e-12f));
+
+        private static bool RayEntersBounds(Vector3 origin, Vector3 inverse, Vector3 min, Vector3 max, float maxDistance)
+        {
+            float t1 = (min.x - origin.x) * inverse.x, t2 = (max.x - origin.x) * inverse.x;
+            float near = Mathf.Min(t1, t2), far = Mathf.Max(t1, t2);
+            t1 = (min.y - origin.y) * inverse.y; t2 = (max.y - origin.y) * inverse.y;
+            near = Mathf.Max(near, Mathf.Min(t1, t2)); far = Mathf.Min(far, Mathf.Max(t1, t2));
+            t1 = (min.z - origin.z) * inverse.z; t2 = (max.z - origin.z) * inverse.z;
+            near = Mathf.Max(near, Mathf.Min(t1, t2)); far = Mathf.Min(far, Mathf.Max(t1, t2));
+            return far >= Mathf.Max(near, 0f) && near <= maxDistance;
+        }
+
+        // Moller-Trumbore, both faces; barycentric coordinates in the order of the triangle's corners.
+        private static bool RayTriangle(Vector3 origin, Vector3 direction, Vector3 a, Vector3 b, Vector3 c, out float distance, out Vector3 bary)
+        {
+            distance = 0f; bary = default;
+            var e1 = b - a;
+            var e2 = c - a;
+            var p = Vector3.Cross(direction, e2);
+            float det = Vector3.Dot(e1, p);
+            if (Mathf.Abs(det) < 1e-12f) return false;
+            float inv = 1f / det;
+            var s = origin - a;
+            float u = Vector3.Dot(s, p) * inv;
+            if (u < 0f || u > 1f) return false;
+            var q = Vector3.Cross(s, e1);
+            float v = Vector3.Dot(direction, q) * inv;
+            if (v < 0f || u + v > 1f) return false;
+            distance = Vector3.Dot(e2, q) * inv;
+            if (distance < 0f) return false;
+            bary = new Vector3(1f - u - v, u, v);
+            return true;
+        }
+
         private static float SqrDistanceToBounds(Vector3 p, Vector3 min, Vector3 max)
         {
             float dx = Mathf.Max(Mathf.Max(min.x - p.x, 0f), p.x - max.x);

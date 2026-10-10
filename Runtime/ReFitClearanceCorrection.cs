@@ -14,6 +14,10 @@ namespace Orbiters.ReFit
         private const float SourceAboveEpsilon = 0.0005f;
         private const float MeaningfulCorrection = 0.0001f;
         private const float TrustedBindingNormalDot = 0.35f;
+        // The surface guard lifts a sample only when the corners it may move hold at least this share of it. Lifting a
+        // sample that lies mostly on clothing the guard keeps in place drives the one movable corner far out, a spike,
+        // without ever clearing the sample (a long waistband edge sagging into a wider hip between corners that stay).
+        private const float GuardMovableShare = 0.5f;
 
         public sealed class Profile
         {
@@ -21,7 +25,16 @@ namespace Orbiters.ReFit
             public float[] sourceClearance;
             public Vector3[] sourceBodyPoint;
             public int eligibleGroups;
+            /// <summary>
+            /// Optional: how far above the body it was made for each surface guard sample of the authored clothing sits
+            /// (<see cref="GuardSamplesPerTriangle"/> per triangle, negative inside; NaN where no body was found). Long edges of
+            /// a coarse garment sag into a curved body already as authored; the guard restores that, not more.
+            /// </summary>
+            public float[] authoredSampleClearance;
         }
+
+        /// <summary>Surface guard samples of a triangle: the centroid, then thirds and middle of each edge (ab, bc, ca).</summary>
+        public const int GuardSamplesPerTriangle = 10;
 
         public sealed class Context
         {
@@ -76,7 +89,8 @@ namespace Orbiters.ReFit
             MeshSnapshot asset,
             MeshSnapshot sourceBody,
             SurfaceBinding[] sourceBindings,
-            ReFitSettings settings)
+            ReFitSettings settings,
+            SurfaceBvh sourceBvh = null)
         {
             if (asset == null || sourceBody == null || sourceBindings == null || settings == null ||
                 !settings.enableClearanceCorrection || asset.GroupCount == 0)
@@ -108,7 +122,44 @@ namespace Orbiters.ReFit
                 profile.eligibleGroups++;
             }
 
-            return profile.eligibleGroups > 0 ? profile : null;
+            if (profile.eligibleGroups == 0)
+                return null;
+            if (sourceBvh != null && asset.triangles != null && asset.worldVertices != null)
+                profile.authoredSampleClearance = AuthoredSampleClearances(asset, sourceBody, sourceBvh, settings);
+            return profile;
+        }
+
+        // The guard's samples on the authored clothing, measured against the body it was made for.
+        private static float[] AuthoredSampleClearances(MeshSnapshot asset, MeshSnapshot sourceBody, SurfaceBvh sourceBvh, ReFitSettings settings)
+        {
+            int triangleCount = asset.triangles.Length / 3;
+            var clearances = new float[triangleCount * GuardSamplesPerTriangle];
+            float range = Mathf.Max(0.05f, settings.maxProjectionDistance);
+            Parallel.For(0, triangleCount, t =>
+            {
+                var a = asset.worldVertices[asset.triangles[t * 3]];
+                var b = asset.worldVertices[asset.triangles[t * 3 + 1]];
+                var c = asset.worldVertices[asset.triangles[t * 3 + 2]];
+                int index = t * GuardSamplesPerTriangle;
+                clearances[index] = Clearance((a + b + c) / 3f);
+                clearances[index + 1] = Clearance(Vector3.Lerp(a, b, 1f / 3f));
+                clearances[index + 2] = Clearance(Vector3.Lerp(a, b, 0.5f));
+                clearances[index + 3] = Clearance(Vector3.Lerp(a, b, 2f / 3f));
+                clearances[index + 4] = Clearance(Vector3.Lerp(b, c, 1f / 3f));
+                clearances[index + 5] = Clearance(Vector3.Lerp(b, c, 0.5f));
+                clearances[index + 6] = Clearance(Vector3.Lerp(b, c, 2f / 3f));
+                clearances[index + 7] = Clearance(Vector3.Lerp(c, a, 1f / 3f));
+                clearances[index + 8] = Clearance(Vector3.Lerp(c, a, 0.5f));
+                clearances[index + 9] = Clearance(Vector3.Lerp(c, a, 2f / 3f));
+            });
+            return clearances;
+
+            float Clearance(Vector3 point)
+            {
+                var hit = sourceBvh.ClosestPoint(point, range, null);
+                if (!hit.found) return float.NaN;
+                return Vector3.Dot(point - hit.position, sourceBody.BaryNormal(hit.triangle, hit.bary));
+            }
         }
 
         public static ReFitClearanceCorrectionStats Apply(
@@ -476,7 +527,7 @@ namespace Orbiters.ReFit
                     var c = groupWorld[gc];
 
                     violatingSamples += AccumulateTriangleSurfaceGuardSamples(
-                        a, b, c, ga, gb, gc,
+                        t / 3, a, b, c, ga, gb, gc,
                         profile, falloff, expansions, settings, bodySurface, bvh, queryRange, safety, triggerDistance, strength,
                         context, allowedGroups, corrections, weights, stats);
                 }
@@ -1505,6 +1556,7 @@ namespace Orbiters.ReFit
         }
 
         private static int AccumulateTriangleSurfaceGuardSamples(
+            int triangle,
             Vector3 a,
             Vector3 b,
             Vector3 c,
@@ -1528,17 +1580,18 @@ namespace Orbiters.ReFit
             ReFitClearanceCorrectionStats stats)
         {
             int violations = 0;
-            violations += AccumulateEdgeSurfaceGuardSamples(a, b, ga, gb,
+            int first = triangle * GuardSamplesPerTriangle;
+            violations += AccumulateEdgeSurfaceGuardSamples(a, b, ga, gb, first + 1,
                 profile, falloff, expansions, settings, bodySurface, bvh, queryRange, safety, triggerDistance, strength,
                 context, allowedGroups, corrections, weights, stats);
-            violations += AccumulateEdgeSurfaceGuardSamples(b, c, gb, gc,
+            violations += AccumulateEdgeSurfaceGuardSamples(b, c, gb, gc, first + 4,
                 profile, falloff, expansions, settings, bodySurface, bvh, queryRange, safety, triggerDistance, strength,
                 context, allowedGroups, corrections, weights, stats);
-            violations += AccumulateEdgeSurfaceGuardSamples(c, a, gc, ga,
+            violations += AccumulateEdgeSurfaceGuardSamples(c, a, gc, ga, first + 7,
                 profile, falloff, expansions, settings, bodySurface, bvh, queryRange, safety, triggerDistance, strength,
                 context, allowedGroups, corrections, weights, stats);
 
-            violations += AccumulateSurfaceGuardSample((a + b + c) / 3f, ga, 1f / 3f, gb, 1f / 3f, gc, 1f / 3f,
+            violations += AccumulateSurfaceGuardSample((a + b + c) / 3f, ga, 1f / 3f, gb, 1f / 3f, gc, 1f / 3f, AuthoredClearance(profile, first),
                 profile, falloff, expansions, settings, bodySurface, bvh, queryRange, safety, triggerDistance, strength, context, allowedGroups, corrections, weights, stats) ? 1 : 0;
 
             return violations;
@@ -1549,6 +1602,7 @@ namespace Orbiters.ReFit
             Vector3 b,
             int ga,
             int gb,
+            int firstSample,
             Profile profile,
             float[] falloff,
             float[] expansions,
@@ -1569,24 +1623,28 @@ namespace Orbiters.ReFit
             int violations = 0;
             if (samples >= 2)
             {
-                violations += AccumulateSurfaceGuardSample(Vector3.Lerp(a, b, 1f / 3f), ga, 2f / 3f, gb, 1f / 3f, -1, 0f,
+                violations += AccumulateSurfaceGuardSample(Vector3.Lerp(a, b, 1f / 3f), ga, 2f / 3f, gb, 1f / 3f, -1, 0f, AuthoredClearance(profile, firstSample),
                     profile, falloff, expansions, settings, bodySurface, bvh, queryRange, safety, triggerDistance, strength, context, allowedGroups, corrections, weights, stats) ? 1 : 0;
             }
 
             if (samples == 1 || samples >= 3)
             {
-                violations += AccumulateSurfaceGuardSample(Vector3.Lerp(a, b, 0.5f), ga, 0.5f, gb, 0.5f, -1, 0f,
+                violations += AccumulateSurfaceGuardSample(Vector3.Lerp(a, b, 0.5f), ga, 0.5f, gb, 0.5f, -1, 0f, AuthoredClearance(profile, firstSample + 1),
                     profile, falloff, expansions, settings, bodySurface, bvh, queryRange, safety, triggerDistance, strength, context, allowedGroups, corrections, weights, stats) ? 1 : 0;
             }
 
             if (samples >= 2)
             {
-                violations += AccumulateSurfaceGuardSample(Vector3.Lerp(a, b, 2f / 3f), ga, 1f / 3f, gb, 2f / 3f, -1, 0f,
+                violations += AccumulateSurfaceGuardSample(Vector3.Lerp(a, b, 2f / 3f), ga, 1f / 3f, gb, 2f / 3f, -1, 0f, AuthoredClearance(profile, firstSample + 2),
                     profile, falloff, expansions, settings, bodySurface, bvh, queryRange, safety, triggerDistance, strength, context, allowedGroups, corrections, weights, stats) ? 1 : 0;
             }
 
             return violations;
         }
+
+        private static float AuthoredClearance(Profile profile, int sample) =>
+            profile?.authoredSampleClearance != null && sample >= 0 && sample < profile.authoredSampleClearance.Length
+                ? profile.authoredSampleClearance[sample] : float.NaN;
 
         private static bool AccumulateSurfaceGuardSample(
             Vector3 point,
@@ -1596,6 +1654,7 @@ namespace Orbiters.ReFit
             float w1,
             int g2,
             float w2,
+            float authoredClearance,
             Profile profile,
             float[] falloff,
             float[] expansions,
@@ -1617,6 +1676,9 @@ namespace Orbiters.ReFit
             float ew2 = EligibleSampleWeight(profile, falloff, expansions, settings, allowedGroups, g2, w2);
             float totalWeight = ew0 + ew1 + ew2;
             if (totalWeight <= 1e-6f)
+                return false;
+            float movable = (ew0 > 0f ? w0 : 0f) + (ew1 > 0f ? w1 : 0f) + (ew2 > 0f ? w2 : 0f);
+            if (movable < GuardMovableShare * (w0 + w1 + w2))
                 return false;
 
             var referenceNormal = SampleReferenceNormal(context, g0, w0, g1, w1, g2, w2);
@@ -1640,10 +1702,15 @@ namespace Orbiters.ReFit
             if (clearance < 0f)
                 stats.maxPenetrationBefore = Mathf.Max(stats.maxPenetrationBefore, -clearance);
 
-            if (clearance >= -triggerDistance)
+            // Only depth the refit added: where the authored clothing already sat inside the body it was made for (a long
+            // edge sagging into a curved hip), the guard brings the sample back to that depth, not out of the body.
+            float desired = safety;
+            if (!float.IsNaN(authoredClearance) && authoredClearance < 0f)
+                desired = authoredClearance;
+            if (clearance >= Mathf.Min(0f, desired) - triggerDistance)
                 return false;
 
-            float missing = safety - clearance;
+            float missing = desired - clearance;
             var correction = normal * (missing * strength);
             AddWeightedCorrection(corrections, weights, g0, ew0 / totalWeight, correction);
             AddWeightedCorrection(corrections, weights, g1, ew1 / totalWeight, correction);

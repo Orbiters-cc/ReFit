@@ -2243,7 +2243,8 @@ namespace Orbiters.ReFit
             {
                 worldVertices = vertices,
                 worldNormals = ComputeWorldNormals(vertices, body.triangles),
-                triangles = body.triangles
+                triangles = body.triangles,
+                hiddenTriangles = body.hiddenTriangles
             };
         }
 

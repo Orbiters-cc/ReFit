@@ -87,7 +87,7 @@ namespace Orbiters.ReFit
             {
                 var vertices = new Vector3[body.worldVertices.Length];
                 for (int i = 0; i < vertices.Length; i++) vertices[i] = body.worldVertices[i] + bodyDeltas[i];
-                shaped = new MeshSnapshot { worldVertices = vertices, triangles = body.triangles };
+                shaped = new MeshSnapshot { worldVertices = vertices, triangles = body.triangles, hiddenTriangles = body.hiddenTriangles };
             }
             float worstGap = 0;
             foreach (var ring in rings)

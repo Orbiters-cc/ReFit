@@ -509,8 +509,41 @@ namespace Orbiters.ReFit.Editor.Tests
             return child.transform;
         }
 
+        // While set, RunCase collects the cases instead of running them (see QueueStepped).
+        private static List<(string name, Action test)> collected;
+
+        /// <summary>
+        /// Runs the suite one case per editor update, so an MCP call returns at once and a long run does not block the editor
+        /// bridge. Progress and failures go to Temp/ReFitTests/stepped.txt after every case.
+        /// </summary>
+        public static void QueueStepped()
+        {
+            collected = new List<(string, Action)>();
+            try { RunOrThrow(); } catch { }
+            var cases = collected;
+            collected = null;
+            TestOutcomes.Clear();
+            var failures = new List<string>();
+            int next = 0;
+            const string path = "Temp/ReFitTests/stepped.txt";
+            System.IO.Directory.CreateDirectory("Temp/ReFitTests");
+            EditorApplication.CallbackFunction tick = null;
+            tick = () =>
+            {
+                if (next >= cases.Count) { EditorApplication.update -= tick; return; }
+                var c = cases[next++];
+                RunCase(failures, c.name, c.test);
+                var lines = new List<string> { next >= cases.Count ? $"done {cases.Count}" : $"running {next}/{cases.Count}",
+                    $"{TestOutcomes.FindAll(x => x.StartsWith("PASS:")).Count} passed; {TestOutcomes.FindAll(x => x.StartsWith("SKIP:")).Count} skipped; {failures.Count} failed." };
+                lines.AddRange(TestOutcomes.FindAll(x => !x.StartsWith("PASS:")));
+                System.IO.File.WriteAllLines(path, lines);
+            };
+            EditorApplication.update += tick;
+        }
+
         private static void RunCase(List<string> failures, string name, Action test)
         {
+            if (collected != null) { collected.Add((name, test)); return; }
             var timer = System.Diagnostics.Stopwatch.StartNew();
             try
             {

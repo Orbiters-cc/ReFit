@@ -111,8 +111,11 @@ namespace Orbiters.ReFit
             // Keep the nearest face and opening tests: a larger search must not bridge an open hem.
             float range = result.repair ? .08f : Mathf.Min(settings.falloffStartDistance, .06f);
             var samples = new Support?[body.worldVertices.Length];
+            var enclosed = body.HiddenVertices();
             Parallel.For(0, body.worldVertices.Length, i =>
             {
+                // Skin enclosed in another part of the body: the clothing covers that part instead.
+                if (enclosed != null && enclosed[i]) return;
                 var bodyNormal = body.worldNormals[i];
                 // Never search past a nearby opening/lining for a distant outward-facing triangle.
                 var hit = index.ClosestPoint(body.worldVertices[i], range, result.repair ? (Func<int, bool>)null : t => Vector3.Dot(cloth.FaceNormal(t), bodyNormal) >= .35f);
@@ -328,7 +331,7 @@ namespace Orbiters.ReFit
             return Vector3.Dot(cloth - (a * bary.x + b * bary.y + c * bary.z), Vector3.Cross(b - a, c - a).normalized);
         }
 
-        private static bool[] ProtectOpenings(MeshSnapshot asset, BodyRegion[] regions, bool[] tubes)
+        internal static bool[] ProtectOpenings(MeshSnapshot asset, BodyRegion[] regions, bool[] tubes)
         {
             var result = new bool[asset.GroupCount];
             for (int g = 0; g < result.Length; g++)

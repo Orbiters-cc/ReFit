@@ -49,6 +49,12 @@ each sample's depth on the body the clothing was made for is measured once, and 
 edges sag into curved bodies as authored). It lifts a sample only through corners holding at least half of it, since
 lifting it through a lone movable corner pulls that corner into a spike.
 `garmentKind` permits an explicit override instead of depending on ancestor names.
+With the different-base coverage, skin enclosed in another part of the target (`MeshSnapshot.HideEnclosedSkin`: out of
+it, the first surface met faces the same way) is left out of every target query, and `ReFitDrape` ends the primary and
+each transferred field. It keeps covered only target skin whose counterpart on the source lay under the authored
+clothing (fold walls and skin without a counterpart take the decision of the skin around them), relaxes fabric crossing
+itself where it did not as authored, lets fabric span the folds of the body, then pushes the fabric out over covered skin
+still showing through, spreading the push over the fabric and capping it at what the skin around needed.
 
 World-space deformation becomes mesh-local pre-skin deltas. Keeping the original rig requires inverse skin
 conversion; replacing it uses planned bindposes and a target-space basis. This is not an exact surface-fitting

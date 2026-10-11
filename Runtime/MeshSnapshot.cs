@@ -48,6 +48,12 @@ namespace Orbiters.ReFit
         public int GroupCount => groupRep != null ? groupRep.Length : 0;
 
         /// <summary>
+        /// Triangles of skin enclosed in another part of the same body (see <see cref="HideEnclosedSkin"/>), or null.
+        /// <see cref="SurfaceBvh.Build"/> leaves them out, so no query finds them.
+        /// </summary>
+        public bool[] hiddenTriangles;
+
+        /// <summary>
         /// Captures a snapshot of <paramref name="smr"/> in its current pose.
         /// Blendshape weights default to the renderer's current weights; <paramref name="shapeWeightOverrides01"/>
         /// (shape index -> weight in 0..1) overrides individual shapes (e.g. force the transferred shape to 0 or 1).
@@ -224,6 +230,53 @@ namespace Orbiters.ReFit
         // ------------------------------------------------------------------
         // Helpers
         // ------------------------------------------------------------------
+
+        // Enclosed skin lies at least this deep under the part around it: closer, a second surface is a decal or a seam.
+        private const float EnclosedDepth = .01f;
+        // How far out of the skin the part around it is looked for.
+        private const float EnclosedReach = .3f;
+
+        /// <summary>
+        /// Marks <see cref="hiddenTriangles"/>: skin inside another closed part of the same body, such as the flat chest left
+        /// under added breasts or a thigh pressed into the other. Out of such a triangle the first surface met, at least
+        /// <see cref="EnclosedDepth"/> away, faces the same way: the way out of the part enclosing it. Nothing can touch that
+        /// skin and clothing covers the part around it instead. Returns the number of hidden triangles.
+        /// </summary>
+        public int HideEnclosedSkin()
+        {
+            hiddenTriangles = null;
+            var index = SurfaceBvh.Build(this);
+            int count = triangles.Length / 3;
+            var hidden = new bool[count];
+            Parallel.For(0, count, t =>
+            {
+                int i = t * 3;
+                var a = worldVertices[triangles[i]];
+                var normal = Vector3.Cross(worldVertices[triangles[i + 1]] - a, worldVertices[triangles[i + 2]] - a);
+                if (normal.sqrMagnitude < 1e-14f) return;
+                normal.Normalize();
+                var center = (a + worldVertices[triangles[i + 1]] + worldVertices[triangles[i + 2]]) / 3f;
+                var hit = index.Raycast(center + normal * .0005f, normal, EnclosedReach, other => other != t);
+                hidden[t] = hit.found && hit.distance >= EnclosedDepth && Vector3.Dot(FaceNormal(hit.triangle), normal) > 0;
+            });
+            int hiddenCount = 0;
+            foreach (bool h in hidden) if (h) hiddenCount++;
+            hiddenTriangles = hiddenCount > 0 ? hidden : null;
+            return hiddenCount;
+        }
+
+        /// <summary>Vertices of hidden triangles only (see <see cref="hiddenTriangles"/>), or null when none is hidden.</summary>
+        public bool[] HiddenVertices()
+        {
+            if (hiddenTriangles == null) return null;
+            var visible = new bool[worldVertices.Length];
+            for (int t = 0; t < hiddenTriangles.Length; t++)
+                if (!hiddenTriangles[t])
+                    for (int k = 0; k < 3; k++) visible[triangles[t * 3 + k]] = true;
+            var hidden = new bool[visible.Length];
+            for (int v = 0; v < hidden.Length; v++) hidden[v] = !visible[v];
+            return hidden;
+        }
 
         /// <summary>World-space point at barycentric coordinates of a triangle.</summary>
         public Vector3 BaryPoint(int triangle, Vector3 bary)

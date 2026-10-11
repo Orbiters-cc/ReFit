@@ -38,7 +38,7 @@ namespace Orbiters.ReFit
         private Vector3[] a, b, c;       // triangle corners
         private Vector3[] centroids;
 
-        /// <summary>Builds a BVH over the given snapshot's world-space triangles.</summary>
+        /// <summary>Builds a BVH over the given snapshot's world-space triangles, except its hidden ones.</summary>
         public static SurfaceBvh Build(MeshSnapshot snapshot)
         {
             var bvh = new SurfaceBvh();
@@ -54,11 +54,14 @@ namespace Orbiters.ReFit
                 bvh.c[t] = snapshot.worldVertices[snapshot.triangles[t * 3 + 2]];
                 bvh.centroids[t] = (bvh.a[t] + bvh.b[t] + bvh.c[t]) / 3f;
             }
-            bvh.triOrder = new int[triCount];
-            for (int t = 0; t < triCount; t++) bvh.triOrder[t] = t;
-            bvh.nodes = new Node[Mathf.Max(1, triCount * 2)];
+            var hidden = snapshot.hiddenTriangles;
+            int kept = 0;
+            for (int t = 0; t < triCount; t++) if (hidden == null || !hidden[t]) kept++;
+            bvh.triOrder = new int[kept];
+            for (int t = 0, k = 0; t < triCount; t++) if (hidden == null || !hidden[t]) bvh.triOrder[k++] = t;
+            bvh.nodes = new Node[Mathf.Max(1, kept * 2)];
             bvh.nodeCount = 0;
-            if (triCount > 0) bvh.BuildNode(0, triCount);
+            if (kept > 0) bvh.BuildNode(0, kept);
             return bvh;
         }
         private int BuildNode(int start, int count)

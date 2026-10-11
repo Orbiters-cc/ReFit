@@ -1,5 +1,17 @@
 # ReFit
 
+## 0.5.9 — 2026-10-11
+
+- Clothing fitted onto a different base ("No, I placed it myself") now covers a much larger body. Skin enclosed in another
+  part of the target body (the flat chest left inside added breasts) is no longer matched or covered, and a last step
+  drapes the clothing over target skin that still shows through where the base's skin was covered, spreading the push
+  like cloth: on the reported ThiccWiker the onesie now covers the breasts and the buttocks, including the gluteal crease.
+  Before it, fabric that the fit folded through itself (at the crease, behind the knees) is relaxed, and fabric pulled
+  into a fold of the body spans it. Fluff, a mane larger than the base's and the base's own tail never drive it. The same
+  step runs on every transferred body shape.
+- Remaining on that onesie: the collar and the larger mane pass through each other at the back, the tail opening's coarse
+  panel lies flat over the top of the crease, and the crouched test pose shows skin behind the knees.
+
 ## 0.5.8 — 2026-10-10
 
 - The ReFit window is one page in the look of My Avatar and the Logger. It opens on the selection (or the scene's only

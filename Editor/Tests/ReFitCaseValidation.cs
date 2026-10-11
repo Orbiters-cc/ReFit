@@ -190,7 +190,7 @@ namespace Orbiters.ReFit.Editor.Tests
                     lines.Add($"label={label}, replaceArmature={replaceArmature}, cover={request.settings.coverDifferentBaseBody}, settings={settings}, " +
                               $"tightness={request.settings.clearanceTightnessFactor:F3}, engineMs={watch.ElapsedMilliseconds}");
                     lines.AddRange(comp.report.messages.Where(m => m.severity != ReFitSeverity.Info || m.code.Contains("spread") ||
-                        m.code.Contains("star") || m.code.Contains("weights")).Select(m => m.ToString()));
+                        m.code.Contains("star") || m.code.Contains("weights") || m.code.Contains("enclosed") || m.code.Contains("drape") || m.code == "surface-coverage").Select(m => m.ToString()));
 
                     var outputBones = OutputBones(comp, fixture);
                     lines.Add(Bindings(comp, fixture.clothing));
@@ -198,6 +198,7 @@ namespace Orbiters.ReFit.Editor.Tests
                     if (comp.armatureReplaced)
                         lines.Add("fitted " + WeightSides(comp.mesh, outputBones, fixture.clothing, out result.weightTears, out result.oppositeLegShare));
                     lines.Add(BodyCorrespondence(fixture));
+                    lines.Add("target " + Enclosed(fixture.target) + "; source " + Enclosed(fixture.source));
                     var shapeName = comp.secondaryShapeNames?.FirstOrDefault();
 
                     foreach (string pose in new[] { "rest", "spread", "crouch" })
@@ -216,6 +217,9 @@ namespace Orbiters.ReFit.Editor.Tests
                             if (pose == "rest")
                             {
                                 metrics.spikes = Spikes(original, fitted, SpikeThreshold, out metrics.spikeMm, out string spikeText);
+                                lines.Add(Clusters(sourceBody, original, body, fitted));
+                                lines.Add("authored " + Exposed(sourceBody, original));
+                                lines.Add("refit " + Exposed(body, fitted));
                                 lines.Add($"{pose} spikes: {spikeText}");
                             }
                             result.metrics[pose] = metrics;
@@ -241,6 +245,7 @@ namespace Orbiters.ReFit.Editor.Tests
                             if (pose == "rest")
                             {
                                 Dump(label, fixture, comp, original, fitted);
+                                if (ExportFit) ExportSkinned(label, fixture, comp, outputBones, fitted);
                                 if (all)
                                 {
                                     Render(label + "-heat-displacement", body, Colored(fitted, Displacement(original, fitted, .03f), owned), fixture, setup, true);
@@ -270,6 +275,234 @@ namespace Orbiters.ReFit.Editor.Tests
             result.text = string.Join("\n", lines);
             File.WriteAllLines(Output + label + ".txt", lines);
             return result;
+        }
+
+        /// <summary>When set, a run also writes the refitted clothing at rest (skinned, world space) to <see cref="Output"/> as JSON.</summary>
+        public static bool ExportFit;
+
+        /// <summary>
+        /// The refitted clothing as plain JSON for an external FBX writer: baked world vertices at rest, UVs, submeshes with
+        /// material names, the used bones (world pose and parent, ancestors up to the avatar root included) and skin weights.
+        /// </summary>
+        private static void ExportSkinned(string label, Fixture fixture, ReFitComputation comp, Transform[] bones, Mesh fitted)
+        {
+            var inv = System.Globalization.CultureInfo.InvariantCulture;
+            string F(float v) => v.ToString("R", inv);
+            var list = new List<Transform>();
+            var index = new Dictionary<Transform, int>();
+            void Add(Transform t)
+            {
+                if (t == null || index.ContainsKey(t)) return;
+                var parent = t.parent;
+                bool inRig = parent != null && parent != fixture.target.transform.root && parent != fixture.roots[0].transform;
+                if (inRig && parent != null) Add(parent);
+                index[t] = list.Count; list.Add(t);
+            }
+            foreach (var b in bones) Add(b);
+            var weights = comp.mesh.boneWeights;
+            var sb = new System.Text.StringBuilder();
+            sb.Append("{\"name\":\"").Append(label).Append("\",\"bones\":[");
+            for (int i = 0; i < list.Count; i++)
+            {
+                var t = list[i];
+                int parent = t.parent != null && index.TryGetValue(t.parent, out int pi) ? pi : -1;
+                var p = t.position; var r = t.rotation;
+                sb.Append(i > 0 ? "," : "").Append("{\"n\":\"").Append(t.name).Append("\",\"p\":").Append(parent)
+                  .Append(",\"t\":[").Append(F(p.x)).Append(',').Append(F(p.y)).Append(',').Append(F(p.z))
+                  .Append("],\"r\":[").Append(F(r.x)).Append(',').Append(F(r.y)).Append(',').Append(F(r.z)).Append(',').Append(F(r.w)).Append("]}");
+            }
+            sb.Append("],\"v\":[");
+            var v = fitted.vertices;
+            for (int i = 0; i < v.Length; i++) sb.Append(i > 0 ? "," : "").Append(F(v[i].x)).Append(',').Append(F(v[i].y)).Append(',').Append(F(v[i].z));
+            sb.Append("],\"uv\":[");
+            var uv = fitted.uv;
+            for (int i = 0; i < uv.Length; i++) sb.Append(i > 0 ? "," : "").Append(F(uv[i].x)).Append(',').Append(F(uv[i].y));
+            sb.Append("],\"sub\":[");
+            var materials = fixture.clothing.sharedMaterials;
+            for (int s = 0; s < fitted.subMeshCount; s++)
+            {
+                sb.Append(s > 0 ? "," : "").Append("{\"mat\":\"").Append(s < materials.Length && materials[s] != null ? materials[s].name : "mat" + s).Append("\",\"tris\":[")
+                  .Append(string.Join(",", fitted.GetTriangles(s))).Append("]}");
+            }
+            sb.Append("],\"w\":[");
+            for (int i = 0; i < weights.Length; i++)
+            {
+                var w = weights[i];
+                var parts = new List<string>();
+                void Part(int bi, float bw) { if (bw > 0f && bi >= 0 && bi < bones.Length && bones[bi] != null) parts.Add("[" + index[bones[bi]] + "," + F(bw) + "]"); }
+                Part(w.boneIndex0, w.weight0); Part(w.boneIndex1, w.weight1); Part(w.boneIndex2, w.weight2); Part(w.boneIndex3, w.weight3);
+                sb.Append(i > 0 ? "," : "").Append('[').Append(string.Join(",", parts)).Append(']');
+            }
+            sb.Append("]}");
+            File.WriteAllText(Output + label + "-skinned.json", sb.ToString());
+        }
+
+        /// <summary>
+        /// Clothing vertices more than 1 mm under the target body, in connected clusters (largest first): size, worst depth,
+        /// centre, and how many of them were already under the authored body (authored clipping kept by the fit).
+        /// </summary>
+        internal static string Clusters(Mesh authoredBody, Mesh authored, Mesh body, Mesh clothing)
+        {
+            var a = new MeshSnapshot { worldVertices = authoredBody.vertices, triangles = authoredBody.triangles };
+            var b = new MeshSnapshot { worldVertices = body.vertices, triangles = body.triangles };
+            var ia = SurfaceBvh.Build(a); var ib = SurfaceBvh.Build(b);
+            var p = authored.vertices; var q = clothing.vertices; var tris = clothing.triangles;
+            var depth = new float[q.Length]; var before = new float[q.Length];
+            for (int i = 0; i < q.Length; i++)
+            {
+                var hb = ib.ClosestPoint(q[i], .1f, null); var ha = ia.ClosestPoint(p[i], .1f, null);
+                depth[i] = hb.found ? -Vector3.Dot(q[i] - hb.position, b.FaceNormal(hb.triangle)) : 0;
+                before[i] = ha.found ? -Vector3.Dot(p[i] - ha.position, a.FaceNormal(ha.triangle)) : 0;
+            }
+            var key = new Dictionary<Vector3Int, int>(); var weld = new int[q.Length];
+            for (int i = 0; i < q.Length; i++) { var k = Vector3Int.RoundToInt(p[i] * 100000f); if (!key.TryGetValue(k, out int w)) key[k] = w = i; weld[i] = w; }
+            var parent = Enumerable.Range(0, q.Length).ToArray();
+            int Find(int x) { while (parent[x] != x) x = parent[x] = parent[parent[x]]; return x; }
+            for (int i = 0; i < q.Length; i++) if (depth[i] > .001f) parent[Find(i)] = Find(weld[i]);
+            for (int t = 0; t < tris.Length; t += 3)
+                for (int e = 0; e < 3; e++)
+                {
+                    int u = tris[t + e], v = tris[t + (e + 1) % 3];
+                    if (depth[u] > .001f && depth[v] > .001f) parent[Find(u)] = Find(v);
+                }
+            var clusters = Enumerable.Range(0, q.Length).Where(i => depth[i] > .001f).GroupBy(Find).OrderByDescending(g => g.Count()).Take(12);
+            return "clusters under target body: " + string.Join("; ", clusters.Select(g =>
+            {
+                var c = g.Aggregate(Vector3.zero, (s, i) => s + q[i]) / g.Count();
+                return $"n={g.Count()} worst={g.Max(i => depth[i]) * 1000:F0}mm at={c:F3} authoredUnder={g.Count(i => before[i] > .001f)} authoredWorst={g.Max(i => before[i]) * 1000:F0}mm";
+            }));
+        }
+
+        /// <summary>Skin enclosed in another part of the body at rest, body shapes at zero: count and bounds per submesh.</summary>
+        internal static string Enclosed(SkinnedMeshRenderer body)
+        {
+            var mesh = body.sharedMesh;
+            var snapshot = MeshSnapshot.Capture(body, false, Enumerable.Range(0, mesh.blendShapeCount).ToDictionary(i => i, i => 0f), null);
+            int count = snapshot.HideEnclosedSkin();
+            var parts = new List<string>();
+            int offset = 0;
+            for (int s = 0; s < mesh.subMeshCount; s++)
+            {
+                int n = mesh.GetSubMesh(s).indexCount / 3, hidden = 0;
+                var bounds = new Bounds(); bool any = false;
+                for (int t = offset; t < offset + n; t++)
+                    if (snapshot.hiddenTriangles != null && snapshot.hiddenTriangles[t])
+                    {
+                        hidden++;
+                        var c = snapshot.BaryPoint(t, Vector3.one / 3f);
+                        if (!any) { bounds = new Bounds(c, Vector3.zero); any = true; } else bounds.Encapsulate(c);
+                    }
+                if (hidden > 0) parts.Add($"sub{s}={hidden}/{n} [{bounds.min:F2}..{bounds.max:F2}]");
+                offset += n;
+            }
+            return $"enclosed skin: {count} triangles " + string.Join(" ", parts);
+        }
+
+        /// <summary>
+        /// Skin seen in front of the refitted clothing at rest along view rays (direction <paramref name="view"/>) through a
+        /// grid between <paramref name="min"/> and <paramref name="max"/>: the body vertex seen and the clothing groups behind it.
+        /// </summary>
+        public static string Probe(Case setup, Vector3 min, Vector3 max, Vector3 view, float step = .005f)
+        {
+            var owned = new List<Object>();
+            var lines = new List<string>();
+            using (var fixture = Fixture.Create(setup))
+                try
+                {
+                    var comp = new ReFitEngine().Run(fixture.Request(true)); owned.Add(comp.mesh);
+                    var bodyWeights = Weights(fixture.target);
+                    var body = Bake(fixture.target, fixture.target.sharedMesh, fixture.target.bones, bodyWeights); owned.Add(body);
+                    var fitted = Bake(fixture.clothing, comp.mesh, OutputBones(comp, fixture), Mirrored(comp, bodyWeights, null)); owned.Add(fitted);
+                    var b = new MeshSnapshot { worldVertices = body.vertices, triangles = body.triangles };
+                    var c = new MeshSnapshot { worldVertices = fitted.vertices, triangles = fitted.triangles };
+                    var ib = SurfaceBvh.Build(b); var ic = SurfaceBvh.Build(c);
+                    var groups = MeshSnapshot.Capture(fixture.clothing, true, null, null).groupOfVertex;
+                    var seen = new HashSet<int>();
+                    var axis = Mathf.Abs(view.x) > .5f ? 0 : Mathf.Abs(view.y) > .5f ? 1 : 2;
+                    for (float u = min[(axis + 1) % 3]; u <= max[(axis + 1) % 3]; u += step)
+                        for (float w = min[(axis + 2) % 3]; w <= max[(axis + 2) % 3]; w += step)
+                        {
+                            var origin = Vector3.zero; origin[(axis + 1) % 3] = u; origin[(axis + 2) % 3] = w; origin[axis] = view[axis] > 0 ? -3 : 3;
+                            var hb = ib.Raycast(origin, view, 6); var hc = ic.Raycast(origin, view, 6);
+                            if (!hb.found || (hc.found && hc.distance <= hb.distance)) continue;
+                            int t3 = hb.triangle * 3;
+                            int vertex = b.triangles[t3 + (hb.bary.x >= hb.bary.y && hb.bary.x >= hb.bary.z ? 0 : hb.bary.y >= hb.bary.z ? 1 : 2)];
+                            if (!seen.Add(vertex) || lines.Count > 40) continue;
+                            string cloth = "none";
+                            if (hc.found)
+                            {
+                                int c3 = hc.triangle * 3;
+                                cloth = $"behind {(hc.distance - hb.distance) * 1000:F0}mm groups " +
+                                        string.Join(",", Enumerable.Range(0, 3).Select(k => groups[c.triangles[c3 + k]]));
+                            }
+                            lines.Add($"skin v{vertex} at {hb.position:F3} n={body.normals[vertex]:F2} | {cloth}");
+                        }
+                }
+                finally { foreach (var o in owned) if (o != null) Object.DestroyImmediate(o); }
+            return string.Join("\n", lines);
+        }
+
+        /// <summary>The body of a model at rest, body shapes at zero, its enclosed skin in red: front, side and back renders.</summary>
+        /// <param name="vertexMask">Instead of the enclosed skin, the triangles touching these vertices in red.</param>
+        public static void RenderEnclosed(string modelPath, string label, bool[] vertexMask = null)
+        {
+            var go = Object.Instantiate(AssetDatabase.LoadAssetAtPath<GameObject>(modelPath));
+            go.hideFlags = HideFlags.HideAndDontSave;
+            var owned = new List<Object>();
+            try
+            {
+                var renderer = go.GetComponentsInChildren<SkinnedMeshRenderer>(true).First(r => r.name == "Body");
+                var baked = Bake(renderer, renderer.sharedMesh, renderer.bones, new Dictionary<string, float>()); owned.Add(baked);
+                var snapshot = new MeshSnapshot { worldVertices = baked.vertices, triangles = baked.triangles };
+                snapshot.HideEnclosedSkin();
+                // Lit skin, hidden triangles in flat red: red seen from outside is skin wrongly taken as enclosed.
+                var all = baked.triangles;
+                var hidden = vertexMask != null
+                    ? Enumerable.Range(0, all.Length / 3).Select(t => vertexMask[all[t * 3]] || vertexMask[all[t * 3 + 1]] || vertexMask[all[t * 3 + 2]]).ToArray()
+                    : snapshot.hiddenTriangles ?? new bool[all.Length / 3];
+                var visible = Object.Instantiate(baked); owned.Add(visible);
+                visible.subMeshCount = 1; visible.SetTriangles(Enumerable.Range(0, all.Length).Where(i => !hidden[i / 3]).Select(i => all[i]).ToArray(), 0);
+                var enclosed = Object.Instantiate(baked); owned.Add(enclosed);
+                enclosed.subMeshCount = 1; enclosed.SetTriangles(Enumerable.Range(0, all.Length).Where(i => hidden[i / 3]).Select(i => all[i]).ToArray(), 0);
+                enclosed.colors = Enumerable.Repeat(new Color(.95f, .15f, .1f), baked.vertexCount).ToArray();
+                var bounds = baked.bounds;
+                RenderViews(label, visible, enclosed, true, bounds.center, bounds.extents.y * 1.05f, "front", "side", "back");
+                RenderViews(label + "-chest", visible, enclosed, true, new Vector3(0, 1.36f, 0), .22f, "front", "side", "back");
+                RenderViews(label + "-hips", visible, enclosed, true, new Vector3(0, .85f, 0), .4f, "front", "side", "back");
+            }
+            finally { foreach (var o in owned) Object.DestroyImmediate(o); Object.DestroyImmediate(go); }
+        }
+
+        /// <summary>
+        /// Skin showing through the clothing: body vertices with clothing facing the same way straight beneath them (within
+        /// 15 cm), in connected clusters (largest first) with the deepest. Openings the body passes through (neck, cuffs) and
+        /// skin authored outside the clothing (fluff) count on the authored body too.
+        /// </summary>
+        internal static string Exposed(Mesh body, Mesh clothing)
+        {
+            var cloth = new MeshSnapshot { worldVertices = clothing.vertices, triangles = clothing.triangles };
+            var index = SurfaceBvh.Build(cloth);
+            var v = body.vertices; var n = body.normals; var tris = body.triangles;
+            var depth = new float[v.Length];
+            System.Threading.Tasks.Parallel.For(0, v.Length, i =>
+            {
+                var normal = n[i];
+                var hit = index.Raycast(v[i] - normal * .0005f, -normal, .15f, t => Vector3.Dot(cloth.FaceNormal(t), normal) >= .35f);
+                if (hit.found) depth[i] = hit.distance;
+            });
+            var key = new Dictionary<Vector3Int, int>(); var parent = Enumerable.Range(0, v.Length).ToArray();
+            int Find(int x) { while (parent[x] != x) x = parent[x] = parent[parent[x]]; return x; }
+            for (int i = 0; i < v.Length; i++) { var k = Vector3Int.RoundToInt(v[i] * 100000f); if (!key.TryGetValue(k, out int w)) key[k] = i; else if (depth[i] > 0 && depth[w] > 0) parent[Find(i)] = Find(w); }
+            for (int t = 0; t < tris.Length; t += 3)
+                for (int e = 0; e < 3; e++)
+                {
+                    int a = tris[t + e], b = tris[t + (e + 1) % 3];
+                    if (depth[a] > 0 && depth[b] > 0) parent[Find(a)] = Find(b);
+                }
+            var exposed = Enumerable.Range(0, v.Length).Where(i => depth[i] > .001f).ToList();
+            var clusters = exposed.GroupBy(Find).OrderByDescending(g => g.Count()).Take(10);
+            return $"exposed skin: vertices={exposed.Count}, over5mm={exposed.Count(i => depth[i] > .005f)}; " + string.Join("; ", clusters.Select(g =>
+                $"n={g.Count()} deepest={g.Max(i => depth[i]) * 1000:F0}mm at={g.Aggregate(Vector3.zero, (s, i) => s + v[i]) / g.Count():F3}"));
         }
 
         /// <summary>How far a vertex may move unlike the clothing around it before it counts as a spike (metres).</summary>
@@ -738,6 +971,10 @@ namespace Orbiters.ReFit.Editor.Tests
             if (setup.fullBody)
                 RenderViews(label + "-full", body, clothing, colored, clothing.bounds.center, Mathf.Max(clothing.bounds.extents.y, clothing.bounds.extents.x * .9f) * 1.15f,
                     "front", "side", "back");
+            if (setup.fullBody && map.TryGetValue(HumanBodyBones.LeftLowerLeg, out var leftKnee) && map.TryGetValue(HumanBodyBones.RightLowerLeg, out var rightKnee))
+                RenderViews(label + "-knees", body, clothing, colored, (leftKnee.position + rightKnee.position) / 2 + Vector3.up * .15f, .32f, "front", "side", "back");
+            if (setup.fullBody && map.TryGetValue(HumanBodyBones.Chest, out var chest))
+                RenderViews(label + "-chest", body, clothing, colored, chest.position + Vector3.up * .05f, .3f, "front", "side", "back");
         }
 
         private static void RenderViews(string label, Mesh body, Mesh clothing, bool colored, Vector3 center, float size, params string[] views)

@@ -1,5 +1,36 @@
 # Validation Records
 
+## 2026-10-11: Different-Base Drape (onesie on the ThiccWiker: chest and rear)
+
+The reported onesie still showed the ThiccWiker's breasts and the gluteal crease. Three causes: the target's flat chest
+left inside the added breasts was matched and covered instead of the breasts; skin far larger than the base's had no
+coverage support beyond 8 cm; and the fit followed the target's folds (the crease, behind the knees) into pleats
+crossing the fabric itself. With "No, I placed it myself" only:
+
+- `MeshSnapshot.HideEnclosedSkin`: skin enclosed in another part of the target body is left out of every query.
+- `ReFitDrape`, after the coverage repair and on every transferred frame: target skin whose counterpart on the source
+  was under the onesie (fold walls and skin without a counterpart take the decision around them; head skin, fluff
+  through the fabric and the base's tail do not drive it) pushes the fabric out over it; the push spreads like cloth.
+  Before it, fabric crossing itself where it did not as authored is relaxed (the two legs pressed together excepted),
+  and fabric pulled into a fold lifts out of the body to span it.
+
+| Onesie at rest | Before | After |
+| --- | --- | --- |
+| Skin showing through, chest and rear | breasts (850 + 830 vertices), crease | none in renders; the drape reports 2 left |
+| Clipping samples over 3 mm | 1023 (39 mm) | 1634 (72 mm), 594 of 697 vertices under the fluff (mane, chest tuft) |
+| Reversed triangles / spikes over 5 mm | 2622 / 2056 | 1520 / 1098 |
+
+Making the top of the crease less flat (a reported request) was tried and left out: weaker bridging or spreading changed
+nothing visible, lower primary smoothing showed the base tail's outline as a panel, and sinking fabric that floats over
+the crease into it narrowed the back and tore the collar while barely deepening the crease. The onesie's tail-opening
+panel has vertices 4 to 8 cm apart there; it floats 3 to 7 cm over the crease and can only span it.
+
+The clipping count rose because fabric lifted over larger breasts and buttocks now lies under the larger fluff, which
+covers it; the deterministic onesie check (at most 1250 samples) fails on it and was left as is. The crouched pose
+still shows skin behind the knees, as before. The jockstrap replay ("Yes, it was made for it") is unchanged to the
+digit. Deterministic suite: 77 passed, 2 opt-in skipped, the onesie count above failed, and the layered-hem coverage
+check failed until the bridging lift followed the body's normal (it passes now).
+
 ## 2026-10-09: Fit Default for Underwear, and the ReFit Window (0.5.8)
 
 Underwear and swimwear are now clothing by name and fit snug (tightness 0.93) like the body clothing the gravity detection

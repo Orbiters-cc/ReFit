@@ -268,6 +268,8 @@ namespace Orbiters.ReFit
             // Clipped groups another surface covers as authored: the body coverage leaves them in place. Covers of every group:
             // in shapes, fabric stays beneath what lies over it.
             public bool[] hiddenGroups;
+            // Different-base coverage's last step, for the refit and each transferred frame.
+            public ReFitDrape drape;
             public ReFitSurfaceCoverage.Cover?[] hiddenCovers;
             public SurfaceBvh stagedSourceBvh;
             public SurfaceBvh targetBvh;
@@ -981,6 +983,11 @@ namespace Orbiters.ReFit
 
             // Spatial indices
             SetBackgroundProgress(state, 0.05f, "Building spatial indices");
+            // Clothing fitted across bases covers the outside of the target: skin enclosed in another part of it (a chest
+            // under added breasts) must not be matched, covered or skinned to.
+            int enclosed = settings.coverDifferentBaseBody && settings.enableClearanceCorrection ? targetBasis.HideEnclosedSkin() : 0;
+            if (enclosed > 0)
+                state.Report.Info("enclosed-skin", $"Target body: {enclosed} triangles of skin enclosed in another part of the body are ignored.");
             var bvhTarget = SurfaceBvh.Build(targetBasis);
             state.targetBvh = bvhTarget;
             var bvhSource = state.wantMesh && state.sourceBody != targetBasis
@@ -1107,6 +1114,11 @@ namespace Orbiters.ReFit
                     ReFitSurfaceCoverage.RepairPrimary(asset, state.coverageLayers[layer], primaryGroupDeltas,
                         state.assetGroupRegions, state.tubes.groups, settings, state.Report, null, state.coverageLayersAuthored[layer],
                         innerGarment: state.coverageLayerNames[layer]);
+                if (settings.coverDifferentBaseBody && settings.enableClearanceCorrection)
+                {
+                    state.drape = new ReFitDrape(asset, firstSnap, firstBvh, targetBasis, state.targetTriRegions, state.assetGroupRegions, state.tubes.groups, state.hiddenGroups);
+                    state.drape.Apply(targetBasis, null, null, primaryGroupDeltas, state.Report, "different-base coverage");
+                }
                 state.primaryLocalDeltas = ToLocalDeltas(state, primaryGroupDeltas, true);
                 if (settings.recalculateNormalDeltas)
                     state.primaryNormalDeltas = NormalDeltas(asset, state.primaryLocalDeltas, null);
@@ -1230,6 +1242,7 @@ namespace Orbiters.ReFit
                             layerCoverage[layer]?.Apply(worker.coverageLayers[layer], frame.layerDeltas[layer], groupDeltas,
                                 coverageRawDeltas ?? (Vector3[])groupDeltas.Clone(), settings, worker.Report, shape.sourceName);
                         ReFitSurfaceCoverage.KeepUnderCovers(asset, primaryGroupDeltas, groupDeltas, worker.hiddenCovers, worker.coverageLayers, frame.layerDeltas);
+                        worker.drape?.Apply(targetBasis, worldShapeDelta, primaryGroupDeltas, groupDeltas, worker.Report, shape.sourceName);
 
                         frame.localDeltas = ToLocalDeltas(worker, groupDeltas, false);
                         if (settings.recalculateNormalDeltas)

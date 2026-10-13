@@ -67,6 +67,13 @@ namespace Orbiters.ReFit.Editor.Tests
                 SetSize(document, window, 620, 560);
                 Check(stage.parent == scroll.contentContainer && scroll.contentContainer.IndexOf(stage) == 0,
                     "A narrow window must show the stage on top of the page.");
+                // The page is built again on every choice: the stage above it stays, renderer and all.
+                int detached = 0;
+                stage.RegisterCallback<DetachFromPanelEvent>(_ => detached++);
+                type.GetMethod("Render", InstanceFlags).Invoke(window, null);
+                Layout(document);
+                Check(detached == 0 && stage.parent == scroll.contentContainer && scroll.contentContainer.IndexOf(stage) == 0,
+                    "Building the narrow page again took the stage off it (its renderer is freed off a panel).");
                 Check(scroll.contentContainer.layout.height > scroll.contentViewport.layout.height + 1f,
                     "The page must scroll inside a small window instead of growing it.");
                 var buttons = window.rootVisualElement.Query<Button>(className: "orbiters-shape-row").ToList();

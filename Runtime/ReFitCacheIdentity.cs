@@ -5,6 +5,12 @@ namespace Orbiters.ReFit
     /// <summary>Content identities for projection provenance. Call on the main thread while capturing inputs.</summary>
     public static class ReFitCacheIdentity
     {
+        /// <summary>
+        /// The algorithm's revision: saved transfer data and results cached by the Orbiters tools from an earlier one are
+        /// rebuilt (6: enclosed skin, drape and ring carry).
+        /// </summary>
+        public const int Revision = 6;
+
         public static string Renderer(SkinnedMeshRenderer renderer, bool includeShapes)
         {
             if (renderer == null || renderer.sharedMesh == null) return null;
@@ -59,7 +65,7 @@ namespace Orbiters.ReFit
 
         public static string BindingSettings(ReFitSettings settings)
         {
-            var hash = Hash128.Compute("ReFit-binding-5");
+            var hash = Hash128.Compute("ReFit-binding-" + Revision);
             hash.Append(settings.coverDifferentBaseBody ? 1 : 0);
             hash.Append(settings.preserveClosedTubes ? 1 : 0);
             hash.Append(settings.preserveLowerBodyCoverage ? 1 : 0);
@@ -83,8 +89,8 @@ namespace Orbiters.ReFit
             geometry.replaceArmature = false;
             geometry.transferWeights = false;
             geometry.proportionWarningThreshold = 0f;
-            // Algorithm revisions must not reuse fields generated before surface coverage correction.
-            return Hash128.Compute("ReFit-transfer-5:" + JsonUtility.ToJson(geometry)).ToString();
+            // Algorithm revisions must not reuse fields generated before them.
+            return Hash128.Compute("ReFit-transfer-" + Revision + ":" + JsonUtility.ToJson(geometry)).ToString();
         }
     }
 }

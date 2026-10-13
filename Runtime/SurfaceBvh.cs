@@ -64,6 +64,47 @@ namespace Orbiters.ReFit
             if (kept > 0) bvh.BuildNode(0, kept);
             return bvh;
         }
+        /// <summary>
+        /// Moves the hierarchy onto <paramref name="snapshot"/>: the same triangles (the snapshot it was built from, or one with
+        /// the same triangles) at new positions. The tree keeps its order and only its bounds follow, in linear time: queries
+        /// stay exact, and get slower the farther the surface moves from where it was built.
+        /// </summary>
+        public void Refit(MeshSnapshot snapshot)
+        {
+            int triCount = a.Length;
+            if (snapshot.triangles.Length / 3 != triCount) throw new ArgumentException("Refit needs the triangles the hierarchy was built on.", nameof(snapshot));
+            for (int t = 0; t < triCount; t++)
+            {
+                a[t] = snapshot.worldVertices[snapshot.triangles[t * 3]];
+                b[t] = snapshot.worldVertices[snapshot.triangles[t * 3 + 1]];
+                c[t] = snapshot.worldVertices[snapshot.triangles[t * 3 + 2]];
+            }
+            // Children always follow their parent in the node array: bounds settle from the last node back to the root.
+            for (int n = nodeCount - 1; n >= 0; n--)
+            {
+                var node = nodes[n];
+                if (node.left < 0)
+                {
+                    var min = new Vector3(float.MaxValue, float.MaxValue, float.MaxValue);
+                    var max = new Vector3(float.MinValue, float.MinValue, float.MinValue);
+                    for (int i = node.start; i < node.start + node.count; i++)
+                    {
+                        int t = triOrder[i];
+                        min = Vector3.Min(min, Vector3.Min(a[t], Vector3.Min(b[t], c[t])));
+                        max = Vector3.Max(max, Vector3.Max(a[t], Vector3.Max(b[t], c[t])));
+                    }
+                    node.boundsMin = min;
+                    node.boundsMax = max;
+                }
+                else
+                {
+                    node.boundsMin = Vector3.Min(nodes[node.left].boundsMin, nodes[node.right].boundsMin);
+                    node.boundsMax = Vector3.Max(nodes[node.left].boundsMax, nodes[node.right].boundsMax);
+                }
+                nodes[n] = node;
+            }
+        }
+
         private int BuildNode(int start, int count)
         {
             int nodeIndex = nodeCount++;

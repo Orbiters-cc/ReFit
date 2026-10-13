@@ -42,16 +42,17 @@ namespace Orbiters.ReFit.Editor
             if (avatars.Count == 1) SetAvatar(avatars[0]);
         }
 
-        // A clothing piece or an avatar picked in the Hierarchy is taken while the studio waits for a choice.
+        // A clothing piece or an avatar picked in the Hierarchy is taken while the studio shows and waits for a piece: a piece
+        // already chosen (and set up) stays until another is picked here.
         private void OnSelectionChanged()
         {
-            if (isExecuting || page != Page.Studio || content == null) return;
+            if (isExecuting || page != Page.Studio || content == null || !visible || asset != null) return;
             var selected = Selection.activeGameObject;
             if (selected == null || EditorUtility.IsPersistent(selected)) return;
             var renderer = selected.GetComponent<SkinnedMeshRenderer>();
             if (renderer != null)
             {
-                if (renderer == asset || renderer.sharedMesh == null) return;
+                if (renderer.sharedMesh == null) return;
                 var wearer = ReFitAutoSetup.AvatarOf(selected);
                 if (wearer != null && renderer == ReFitAutoSetup.Body(wearer)) return;
             }
@@ -63,7 +64,7 @@ namespace Orbiters.ReFit.Editor
             {
                 // An outfit's root on an avatar (not its armature, not the body).
                 var wearer = ReFitAutoSetup.AvatarOf(selected);
-                if (wearer == null || asset != null && asset.transform.IsChildOf(selected.transform)) return;
+                if (wearer == null) return;
                 var meshes = ReFitAutoSetup.Meshes(selected);
                 if (meshes.Count == 0 || meshes.Contains(ReFitAutoSetup.Body(wearer))) return;
             }
@@ -109,21 +110,24 @@ namespace Orbiters.ReFit.Editor
             return true;
         }
 
+        // Another avatar: what the piece was made for and the shapes it follows are chosen again for it (the previous avatar's
+        // shapes may not exist on this one, and the piece may now be worn on the avatar it fits).
         private void SetAvatar(GameObject avatar)
         {
             targetAvatar = avatar;
             myAvatar = avatar;
             originalBase = ReFitAutoSetup.OriginalBase(avatar);
-            if (asset != null && !EditorUtility.IsPersistent(asset) && avatar != null && !asset.transform.IsChildOf(avatar.transform))
+            if (asset != null)
             {
-                // The asset now moves from its own avatar to this one.
-                var wearer = ReFitAutoSetup.AvatarOf(asset.gameObject);
-                if (wearer != null) { madeFor = MadeFor.Other; sourceAvatar = wearer; }
+                Defaults(asset);
+                return;
             }
+            madeFor = MadeFor.Target;
+            sourceAvatar = null; sourceBody = null;
+            blendshapes.Clear(); activeShapes.Clear();
             UpdateMode();
             InvalidateChecks();
             ClearPictures(true);
-            if (asset != null) RequestBeforePicture();
         }
 
         /// <summary>The piece to refit, with smart defaults for everything else.</summary>
@@ -141,6 +145,14 @@ namespace Orbiters.ReFit.Editor
                 var avatars = ReFitAutoSetup.SceneAvatars();
                 if (avatars.Count == 1) { targetAvatar = avatars[0]; originalBase = ReFitAutoSetup.OriginalBase(targetAvatar); }
             }
+            Defaults(renderer);
+        }
+
+        // The choices for the piece on the chosen avatar: what it was made for, the shapes it follows, how snug it fits.
+        private void Defaults(SkinnedMeshRenderer renderer)
+        {
+            bool persistent = EditorUtility.IsPersistent(renderer);
+            var wearer = persistent ? null : ReFitAutoSetup.AvatarOf(renderer.gameObject);
             myAvatar = wearer ?? targetAvatar;
 
             // Made for: the avatar it is worn on when moving it, the original base a custom base was made from (unless the
@@ -195,9 +207,12 @@ namespace Orbiters.ReFit.Editor
         private ReFitStageView BuildStage()
         {
             var view = new ReFitStageView();
+            // Avatars and clothing only (a skinned mesh in it), while the studio waits for a choice.
+            view.Accepts = objects => !isExecuting && page != Page.Result && Dropped(objects) is GameObject item &&
+                                      (ReFitAutoSetup.IsAvatar(item) || ReFitAutoSetup.Meshes(item).Count > 0);
             view.Dropped += objects =>
             {
-                var item = objects.OfType<GameObject>().FirstOrDefault() ?? objects.OfType<Component>().Select(c => c.gameObject).FirstOrDefault();
+                var item = Dropped(objects);
                 if (item != null && !isExecuting && page != Page.Result && UseSelection(item)) Render();
             };
             stageViews = new SegmentedControl(StageViewNames, index =>
@@ -212,6 +227,9 @@ namespace Orbiters.ReFit.Editor
             view.SetView(ReFitScenePicture.Direction(StageViews[Mathf.Clamp(stageView, 0, StageViews.Length - 1)]));
             return view;
         }
+
+        private static GameObject Dropped(Object[] objects) =>
+            objects.OfType<GameObject>().FirstOrDefault() ?? objects.OfType<Component>().Select(c => c.gameObject).FirstOrDefault();
 
         // The stage shows what the window has: the piece on the avatar, the result beside it, or why there is nothing.
         private void ShowPictures()
@@ -277,7 +295,7 @@ namespace Orbiters.ReFit.Editor
                             });
                         }
                         menu.DropDown(more.worldBound);
-                    });
+                    }, now: true);
                 }
             }
             if (pieces.Count == 0)
@@ -313,7 +331,8 @@ namespace Orbiters.ReFit.Editor
 
         private VisualElement AvatarChip(GameObject avatar, bool selected)
         {
-            var chip = new VisualElement { tooltip = selected ? "The avatar it fits" : "Fit onto " + avatar.name };
+            // The full name in the tooltip: a narrow heading ellipsizes it.
+            var chip = new VisualElement { tooltip = selected ? avatar.name + ": the avatar it fits" : "Fit onto " + avatar.name };
             chip.AddToClassList("refit-chip");
             chip.AddToClassList("refit-chip--avatar");
             chip.EnableInClassList("refit-chip--selected", selected);
@@ -321,7 +340,7 @@ namespace Orbiters.ReFit.Editor
             icon.AddToClassList("refit-chip__icon");
             chip.Add(icon);
             Text(chip, avatar.name, "refit-chip__text");
-            if (!selected) OnPress(chip, () => { SetAvatar(avatar); Render(); });
+            if (!selected) OnPress(chip, () => { if (avatar == null) return; SetAvatar(avatar); Render(); }, Light(chip, "refit-chip--selected"));
             return chip;
         }
 
@@ -342,7 +361,7 @@ namespace Orbiters.ReFit.Editor
             check.AddToClassList("refit-piece__check");
             card.Add(check);
             Text(card, piece.name, "refit-piece__name");
-            if (piece != asset) OnPress(card, () => { SetAsset(piece); Render(); });
+            if (piece != asset) OnPress(card, () => { if (piece == null) return; SetAsset(piece); Render(); }, Light(card, "refit-piece--selected"));
             return card;
         }
 
@@ -376,18 +395,20 @@ namespace Orbiters.ReFit.Editor
 
             // Made for
             var madeRow = SetupRow(card, "Made for");
+            string target = targetAvatar != null ? targetAvatar.name : "the avatar";
             var options = new List<(MadeFor choice, string label, string tip)>
             {
                 (MadeFor.Target, targetAvatar != null && targetAvatar != myAvatar && myAvatar != null ? targetAvatar.name : "This avatar",
-                    "It already fits " + (targetAvatar != null ? targetAvatar.name : "the avatar") + ": ReFit makes it follow body shapes.")
+                    "It already fits " + target + ": ReFit makes it follow body shapes.")
             };
             if (originalBase != null)
                 options.Add((MadeFor.OriginalBase, ShortBaseName(), "Made for the original " + (originalBase.BaseName ?? "base") +
-                    ": ReFit fits it to " + (originalBase.Name ?? targetAvatar.name) + "."));
+                    ": ReFit fits it to " + (originalBase.Name ?? target) + "."));
             options.Add((MadeFor.Other, madeFor == MadeFor.Other && sourceAvatar != null ? sourceAvatar.name : "Other…",
                 "Made for another avatar: pick it."));
             var made = new SegmentedControl(options.Select(o => new SegmentedControl.Option(o.label, null, o.tip)), index =>
             {
+                if (isExecuting) return;
                 madeFor = options[index].choice;
                 if (madeFor != MadeFor.Other) { sourceAvatar = null; sourceBody = null; }
                 UpdateMode();
@@ -404,6 +425,7 @@ namespace Orbiters.ReFit.Editor
                 pick.AddToClassList("refit-setup__picker");
                 pick.RegisterValueChangedCallback(e =>
                 {
+                    if (isExecuting) return;
                     sourceAvatar = e.newValue as GameObject;
                     sourceBody = null;
                     UpdateMode();
@@ -429,12 +451,13 @@ namespace Orbiters.ReFit.Editor
                         if (other != sourceAvatar)
                             OnPress(chip, () =>
                             {
+                                if (captured == null) return;
                                 sourceAvatar = captured;
                                 sourceBody = null;
                                 UpdateMode();
                                 InvalidateChecks();
                                 Render();
-                            });
+                            }, Light(chip, "refit-chip--selected"));
                     }
                 }
             }
@@ -453,6 +476,7 @@ namespace Orbiters.ReFit.Editor
                 new SegmentedControl.Option("Snug", null, "Clothing: follows the body closely where it grows")
             }, index =>
             {
+                if (isExecuting) return;
                 ApplyClearanceTightnessPreset(presets[index]);
                 InvalidateChecks();
                 fitCaption.text = FitCaption();
@@ -463,27 +487,32 @@ namespace Orbiters.ReFit.Editor
             fitRow.Add(fit);
             fitCaption = Text(card, FitCaption(), "refit-setup__caption");
 
-            // Placed by hand
-            var handRow = SetupRow(card, "Placed by hand");
-            var hand = new ToggleSwitch(!madeForAvatar, value =>
+            // Placed by hand: only where ReFit has a body to fit it from (another one, or the avatar it is placed on).
+            var inputs = Current();
+            if (PlacedByHandApplies(inputs, asset))
             {
-                madeForAvatar = !value;
-                InvalidateChecks();
-                Render();
-            });
-            hand.AddToClassList("refit-setup__switch");
-            handRow.Add(hand);
-            Text(card, madeForAvatar ? "Off: it was made to fit, as it is." :
-                "It sinks into the body here and there: ReFit also pushes it out where it clips, with the shapes too.", "refit-setup__caption");
-            var outfit = OnItsAvatar(asset) ? OutfitParts(asset) : null;
+                var handRow = SetupRow(card, "Placed by hand");
+                var hand = new ToggleSwitch(!madeForAvatar, value =>
+                {
+                    if (isExecuting) return;
+                    madeForAvatar = !value;
+                    InvalidateChecks();
+                    Render();
+                });
+                hand.AddToClassList("refit-setup__switch");
+                handRow.Add(hand);
+                Text(card, madeForAvatar ? "Off: it was made to fit, as it is." :
+                    "It sinks into the body here and there: ReFit also pushes it out where it clips, with the shapes too.", "refit-setup__caption");
+            }
+            var outfit = OnItsAvatar(inputs, asset) ? OutfitParts(inputs, asset) : null;
             if (outfit != null && outfit.Count > 1)
             {
                 var outfitRow = SetupRow(card, "Whole outfit");
-                var together = new ToggleSwitch(refitOutfit, value => { refitOutfit = value; InvalidateChecks(); Render(); });
+                var together = new ToggleSwitch(refitOutfit, value => { if (isExecuting) return; refitOutfit = value; InvalidateChecks(); Render(); });
                 together.AddToClassList("refit-setup__switch");
                 together.tooltip = "Inner parts first, so the outer ones stay over them: " + string.Join(", ", outfit.Select(p => p.name));
                 outfitRow.Add(together);
-                Text(card, refitOutfit ? "Inner parts first, each keeping its side of the others: " + string.Join(", ", RunParts().Select(p => p.name)) + "."
+                Text(card, refitOutfit ? "Inner parts first, each keeping its side of the others: " + string.Join(", ", RunParts(inputs).Select(p => p.name)) + "."
                     : "Only this part; it keeps its side of the outfit's other parts.", "refit-setup__caption");
             }
 
@@ -564,7 +593,8 @@ namespace Orbiters.ReFit.Editor
                 remove.AddToClassList("refit-chip__remove");
                 chip.Add(remove);
                 string captured = shape;
-                OnPress(chip, () => { blendshapes.Remove(captured); UpdateMode(); InvalidateChecks(); Render(); });
+                OnPress(chip, () => { blendshapes.Remove(captured); UpdateMode(); InvalidateChecks(); Render(); },
+                    () => chip.style.display = DisplayStyle.None);
             }
             var add = Box(chips, "refit-chip", "refit-chip--add");
             var plus = new VectorIcon(shapesOpen ? IconGlyph.Chevron : IconGlyph.Plus);
@@ -594,7 +624,8 @@ namespace Orbiters.ReFit.Editor
                     chip.Add(icon);
                     Text(chip, shape, "refit-chip__text");
                     string captured = shape;
-                    OnPress(chip, () => { blendshapes.Add(captured); UpdateMode(); InvalidateChecks(); Render(); });
+                    OnPress(chip, () => { if (!blendshapes.Contains(captured)) blendshapes.Add(captured); UpdateMode(); InvalidateChecks(); Render(); },
+                        () => chip.style.display = DisplayStyle.None);
                 }
             }
 
@@ -609,6 +640,7 @@ namespace Orbiters.ReFit.Editor
             for (int i = 0; i < body.sharedMesh.blendShapeCount; i++) names.Add(body.sharedMesh.GetBlendShapeName(i));
             var picker = new ReFitBlendshapePicker(names, blendshapes, () =>
             {
+                if (isExecuting) return;
                 UpdateMode();
                 InvalidateChecks();
                 // The chips above follow the picker on its next close; the button state follows now.
@@ -634,6 +666,8 @@ namespace Orbiters.ReFit.Editor
         private string ChecksKey() => (asset != null ? asset.GetInstanceID() : 0) + "|" + (targetAvatar != null ? targetAvatar.GetInstanceID() : 0) + "|" +
             (sourceAvatar != null ? sourceAvatar.GetInstanceID() : 0) + "|" + madeFor + "|" + mode + "|" + madeForAvatar + "|" + string.Join(",", blendshapes);
 
+        // Staging both avatars is slow: it waits for the last change, and ReFitService keeps its answer for the same avatars
+        // and piece, so picking shapes checks only the shapes.
         private void ScheduleChecks()
         {
             checkUpdate?.Pause();
@@ -678,7 +712,7 @@ namespace Orbiters.ReFit.Editor
             pictureUpdate = rootVisualElement.schedule.Execute(() =>
             {
                 if (asset == null || isExecuting || page == Page.Result || beforeScene != null) return;
-                SetBeforeScene(MakeScene(asset));
+                SetBeforeScene(MakeScene(asset, targetAvatar));
             }).StartingIn(60);
         }
 
@@ -689,18 +723,18 @@ namespace Orbiters.ReFit.Editor
             rootVisualElement.schedule.Execute(() =>
             {
                 if (page != Page.Result || lastResult?.sceneRenderer == null || afterScene != null) return;
-                var made = MakeScene(lastResult.sceneRenderer);
+                var made = MakeScene(lastResult.sceneRenderer, lastRequest?.targetAvatar ?? targetAvatar);
                 afterScene = made;
                 ShowPictures();
             }).StartingIn(30);
         }
 
-        /// <summary>Before a run, the avatar wearing the piece as it is now: the stage compares it with the result.</summary>
-        private void CaptureBeforePictures()
+        /// <summary>Before a run, the avatar wearing the piece as the run starts from it: the stage compares it with the result.</summary>
+        private void CaptureBeforePictures(Inputs run)
         {
-            if (asset == null) return;
+            if (run.asset == null) return;
             ClearPictures(false);
-            SetBeforeScene(MakeScene(asset));
+            SetBeforeScene(MakeScene(run.asset, run.targetAvatar));
         }
 
         // The stage switches to the new scene before the old one is freed.
@@ -714,10 +748,10 @@ namespace Orbiters.ReFit.Editor
 
         // The avatar wearing the piece, baked (scripts, constraints and physics never run). A project file is shown on its
         // own, from a copy in a preview scene that is closed again at once.
-        private ReFitScenePicture.Scene MakeScene(SkinnedMeshRenderer piece)
+        private ReFitScenePicture.Scene MakeScene(SkinnedMeshRenderer piece, GameObject wearer)
         {
             if (piece == null || piece.sharedMesh == null) return null;
-            var avatar = targetAvatar != null && !EditorUtility.IsPersistent(targetAvatar) ? targetAvatar : null;
+            var avatar = wearer != null && !EditorUtility.IsPersistent(wearer) ? wearer : null;
             var preview = default(UnityEngine.SceneManagement.Scene);
             pictureError = null;
             try

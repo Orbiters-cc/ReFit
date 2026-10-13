@@ -82,208 +82,240 @@ namespace Orbiters.ReFit.Editor.Tests
 
         public static void RunOrThrow()
         {
-            bool hadHistory = EditorPrefs.HasKey(ReFitBlendshapeHistory.Key);
-            string savedHistory = EditorPrefs.GetString(ReFitBlendshapeHistory.Key);
+            var cases = Collect();
+            var restoreHistory = KeepHistory();
             TestOutcomes.Clear();
             var failures = new List<string>();
             try
             {
-                RunArchitectureChecks(failures);
-                RunPlacementChecks(failures);
-                RunCase(failures, "Closed tubular accessories preserve analytic expansion and thickness", ReFitTubeTests.RunOrThrow);
-                RunCase(failures, "Navigation, search, recents and commission rows", ReFitNavigationTests.RunOrThrow);
-                RunCase(failures,
-                    "Commission handoff serializes only selected creators and ReFit context",
-                    CommissionHandoff_JsonContractIsMinimalAndStable);
-                RunCase(failures,
-                    "Commission creator avatars are alpha-masked to a circle",
-                    CommissionAvatar_IsCircular);
-                RunCase(failures,
-                    "MeshAndBlendshape equal body surfaces do not create primary refit drift",
-                    MeshAndBlendshape_EqualSurfaces_NoPrimaryDrift_TransfersMuscle);
-                RunCase(failures,
-                    "Scale matching ignores skeleton pose outliers when body surfaces match",
-                    ScaleMatching_EqualBodySurfacesIgnoreSkeletonPoseOutliers);
-                RunCase(failures,
-                    "Active non-target body blendshapes do not affect primary refit",
-                    MeshAndBlendshape_ActiveNonTargetBodyShapes_DoNotAffectPrimaryRefit);
-                RunCase(failures,
-                    "Primary smoothing does not smooth transferred blendshapes",
-                    TransferredBlendshapeSmoothing_IsIndependentFromPrimarySmoothing);
-                RunCase(failures,
-                    "Transferred blendshape smoothing preserves explicit peak control",
-                    TransferredBlendshapeSmoothing_PreservesLocalizedPeaksWhenDisabled);
-                RunCase(failures,
-                    "Transferred blendshape keeps clothing outside shaped skin",
-                    TransferredBlendshape_PreservesSignedSkinClearance);
-                RunCase(failures,
-                    "Transferred Belly follows lower torso in all axes and mesh orientations",
-                    TransferredBelly_FollowsLowerTorsoInAllAxes);
-                RunCase(failures,
-                    "Lower-body cloth covers dense body peaks between its vertices",
-                    ReFitSurfaceCoverageTests.RunOrThrow);
-                RunCase(failures,
-                    "Clearance correction adaptively tightens expanded areas",
-                    ClearanceCorrection_AdaptivelyTightensExpandedAreas);
-                RunCase(failures,
-                    "Clearance correction strong settings pull expanded areas closer",
-                    ClearanceCorrection_StrongSettingsCanPullExpandedAreasMuchCloser);
-                RunCase(failures,
-                    "High tightness keeps upper-body garment hem deltas bounded",
-                    ClearanceCorrection_HighTightnessKeepsUpperBodyHemBounded);
-                RunCase(failures,
-                    "Transferred blendshape stabilizes partially moved detached lace clusters",
-                    TransferredBlendshape_StabilizesPartiallyMovedDetachedLaceClusters);
-                RunCase(failures,
-                    "Clearance correction propagates to disconnected garment islands",
-                    ClearanceCorrection_PropagatesToDisconnectedGarmentIslands);
-                RunCase(failures,
-                    "Clearance correction support-propagates to ineligible detached islands",
-                    ClearanceCorrection_SupportPropagatesToIneligibleDetachedIslands);
-                RunCase(failures,
-                    "Clearance correction keeps transferred cap after island propagation",
-                    ClearanceCorrection_PostPropagationGuardRespectsTransferredTotalCap);
-                RunCase(failures,
-                    "Blendshape-only transfer works on target-space clothing and preserves root bone",
-                    BlendshapeOnly_TargetSpaceAccessory_TransfersMuscle_PreservesRootBone);
-                RunCase(failures,
-                    "Blendshape-only target-nested clothing matches equivalent-source tightness",
-                    BlendshapeOnly_TargetNestedAccessory_MatchesEquivalentSourceTightness);
-                RunCase(failures,
-                    "Real hoodie no-source staging preserves target authored pose",
-                    RealHoodie_NoSourceStaging_PreservesTargetAuthoredPose);
-                RunCase(failures,
-                    "Real hoodie no-source blendshape matches source-FBX whole hoodie",
-                    RealHoodie_NoSourceBlendshape_MatchesSourceFbxWholeHoodie);
-                RunCase(failures,
-                    "Real hoodie prefab refit keeps VRCFury Armature Link traversable",
-                    RealHoodiePrefab_ArmatureLinkTraversesTargetArmature);
-                RunCase(failures,
-                    "Real hoodie prefab VRCFury test-copy build merges armature bones",
-                    RealHoodiePrefab_VrcfuryTestCopyBuildMergesArmatureBones);
-                RunCase(failures,
-                    "Active scene Hoodie prefab has fresh VRCFury armature state when present",
-                    ActiveSceneHoodiePrefab_HasFreshVrcfuryArmatureStateWhenPresent);
-                RunCase(failures,
-                    "Mesh refit with armature replacement disabled preserves clothing root bone",
-                    MeshAndBlendshape_ArmatureReplacementDisabled_PreservesRootBone);
-                RunCase(failures,
-                    "Armature replacement removes stale accessory skeleton",
-                    MeshAndBlendshape_ArmatureReplacement_RemovesStaleAccessorySkeleton);
-                RunCase(failures,
-                    "Armature replacement restore restores original asset parentage",
-                    ArmatureReplacement_RestoreRestoresOriginalAssetParentage);
-                RunCase(failures,
-                    "Armature replacement reset restores removed bones, references and removes the rebuilt rig",
-                    ArmatureReplacement_ResetRestoresRemovedRigAndReferences);
-                RunCase(failures,
-                    "Generated metadata is editor-only for the VRChat SDK",
-                    GeneratedMetadata_IsEditorOnlyForVRChat);
-                RunCase(failures,
-                    "Blendshape snapshots interpolate frames as Unity does",
-                    BlendShapeFrames_SnapshotMatchesUnity);
-                RunCase(failures,
-                    "Transferred blendshape keeps the body shape's frames and weights",
-                    TransferredBlendshape_KeepsBodyFrames);
-                RunCase(failures,
-                    "Standalone prefab export never saves the avatar",
-                    SavePrefab_NeverSavesTheAvatar);
-                RunCase(failures,
-                    "Armature replacement rebinds serialized component bone references",
-                    ArmatureReplacement_RebindsSerializedComponentBoneReferences);
-                RunCase(failures,
-                    "Armature replacement repairs VRCFury Armature Link",
-                    ArmatureReplacement_RepairsVrcfuryArmatureLink);
-                RunCase(failures,
-                    "Scene asset armature preflight repairs stale VRCFury alias state",
-                    SceneAssetArmaturePreflight_RepairsStaleVrcfuryAliasState);
-                RunCase(failures,
-                    "Standalone staging bakes the asset after source posing",
-                    Staging_StandaloneAssetBakeMatchesPostPoseSkin);
-                RunCase(failures,
-                    "Fresh target-nested source asset still stages through source pose",
-                    Staging_FreshTargetNestedSourceAssetDoesNotAssumeTargetSpace);
-                RunCase(failures,
-                    "Armature replacement keeps extra ChestUp as a clothing side branch",
-                    ArmatureReplacement_ChestUpSideBranchDoesNotTrapHumanChain);
-                RunCase(failures,
-                    "Armature replacement normalizes aliases for VRCFury traversal",
-                    ArmatureReplacement_NormalizesAliasesForVrcfuryTraversal);
-                RunCase(failures,
-                    "Armature replacement adds target-derived non-deforming leaf helpers",
-                    ArmatureReplacement_TargetChildCreatesLeafTailHelper);
-                RunCase(failures,
-                    "Armature leaf helpers use the next anatomical segment before deeper descendants",
-                    ArmatureReplacement_LeafTailPrefersShinOverFoot);
-                RunCase(failures,
-                    "Armature replacement materializes child-first bone plans without hierarchy drift",
-                    ArmatureReplacement_ChildFirstPlan_MaterializesWithoutDrift);
-                RunCase(failures,
-                    "Weight transfer follows the bodies' skinning change within compatible regions",
-                    WeightTransfer_FollowsBodySkinningChangeWithinCompatibleRegions);
-                RunCase(failures,
-                    "Target-space accessory keeps source bone regions for projection filtering",
-                    ProjectionDebug_TargetSpaceAccessoryClassifiesAssetRegions);
-                RunCase(failures,
-                    "Projection debug captures binding and weight decision data",
-                    ProjectionDebug_CapturesBindingAndWeightDecisionData);
-                RunCase(failures,
-                    "Target surface chaining prefers near equivalent hits before normal filtering",
-                    SurfaceBinding_TargetChainPrefersNearEquivalentHitBeforeNormalFilter);
-                RunCase(failures,
-                    "Target surface chaining follows the normal onto a grown surface past a nearer crease",
-                    SurfaceBinding_ChainFollowsNormalPastNearerCrease);
-                RunCase(failures,
-                    "Reported jockstrap keeps the Ultipaw crotch clear at rest, spread and crouched",
-                    ReportedJockstrap_UltipawCrotchStaysClearInPoses);
-                RunCase(failures,
-                    "Reported Wickerbeast onesie covers the ThiccWiker's thighs, crotch and buttocks",
-                    ReportedOnesie_ThiccWikerCovered);
-                RunCase(failures,
-                    "Wizard debug mode captures projection data even when rays are hidden",
-                    ReFitWizard_DebugModeCapturesProjectionDataWhenGizmoHidden);
-                RunCase(failures,
-                    "Debug snapshots use independent baked mesh instances",
-                    DebugSession_CapturesIndependentSnapshotMeshes);
-                RunCase(failures,
-                    "XRay extra gizmo registry exposes external toggles",
-                    XRayExtraGizmoRegistry_RegistersAndTogglesExternalGizmo);
-                RunCase(failures,
-                    "Gravity detector recognizes body clothing candidates",
-                    GravityRelaxation_DetectsBodyClothingCandidate);
-                RunCase(failures,
-                    "Gravity relaxation propagates upper torso clearance downward",
-                    GravityRelaxation_PropagatesUpperTorsoClearanceDownward);
-                RunCase(failures,
-                    "Gravity preview uses normal weight with stronger baked deltas",
-                    GravityPreview_UsesNormalWeightWithStrongerBakedDeltas);
-                RunCase(failures,
-                    "Armature replacement cleans rerun target-space stale skeleton",
-                    ArmatureReplacement_RerunTargetSpace_RemovesUnusedLocalSkeleton);
-                RunCase(failures,
-                    "Humanoid alias bone names map to target armature bones",
-                    HumanoidAliases_MapAccessoryBonesToAvatarBones);
-                RunCase(failures,
-                    "FBX fixture reproduces authored B clothing result",
-                    FbxFixture_ReproducesAuthoredResultClothing);
-                RunCase(failures,
-                    "FBX fixture supports clothing with an inserted armature bone",
-                    FbxFixture_DifferentClothingArmature_ReproducesAuthoredResultClothing);
-
+                foreach (var c in cases) RunCase(failures, c.name, c.test);
                 if (failures.Count > 0)
                     throw new Exception("[ReFit Tests] Failed deterministic checks:\n" + string.Join("\n", failures));
-
             }
             finally
             {
-                LastSummary = $"{TestOutcomes.FindAll(x => x.StartsWith("PASS:")).Count} passed; " +
-                    $"{TestOutcomes.FindAll(x => x.StartsWith("SKIP:")).Count} skipped; {failures.Count} failed.";
-                System.IO.Directory.CreateDirectory("Temp/ReFitTests");
-                System.IO.File.WriteAllLines("Temp/ReFitTests/latest.txt", TestOutcomes);
-                Debug.Log("[ReFit Tests] " + LastSummary);
+                Summarize(failures);
+                restoreHistory();
+            }
+        }
+
+        // The suite's cases in order, collected without running any (nothing is written, no preference touched).
+        private static List<(string name, Action test)> Collect()
+        {
+            collected = new List<(string, Action)>();
+            try
+            {
+                DeclareCases(new List<string>());
+                return collected;
+            }
+            finally { collected = null; }
+        }
+
+        // The recent-blendshape history the cases write to, given back as it was when the run ends.
+        private static Action KeepHistory()
+        {
+            bool hadHistory = EditorPrefs.HasKey(ReFitBlendshapeHistory.Key);
+            string savedHistory = EditorPrefs.GetString(ReFitBlendshapeHistory.Key);
+            return () =>
+            {
                 if (hadHistory) EditorPrefs.SetString(ReFitBlendshapeHistory.Key, savedHistory);
                 else EditorPrefs.DeleteKey(ReFitBlendshapeHistory.Key);
-            }
+            };
+        }
+
+        private static void Summarize(List<string> failures)
+        {
+            LastSummary = $"{TestOutcomes.FindAll(x => x.StartsWith("PASS:")).Count} passed; " +
+                $"{TestOutcomes.FindAll(x => x.StartsWith("SKIP:")).Count} skipped; {failures.Count} failed.";
+            System.IO.Directory.CreateDirectory("Temp/ReFitTests");
+            System.IO.File.WriteAllLines("Temp/ReFitTests/latest.txt", TestOutcomes);
+            Debug.Log("[ReFit Tests] " + LastSummary);
+        }
+
+        private static void DeclareCases(List<string> failures)
+        {
+            RunArchitectureChecks(failures);
+            RunPlacementChecks(failures);
+            RunSyntheticChecks(failures);
+            RunCase(failures, "Closed tubular accessories preserve analytic expansion and thickness", ReFitTubeTests.RunOrThrow);
+            RunCase(failures, "Navigation, search, recents and commission rows", ReFitNavigationTests.RunOrThrow);
+            RunCase(failures,
+                "Commission handoff serializes only selected creators and ReFit context",
+                CommissionHandoff_JsonContractIsMinimalAndStable);
+            RunCase(failures,
+                "Commission creator avatars are alpha-masked to a circle",
+                CommissionAvatar_IsCircular);
+            RunCase(failures,
+                "MeshAndBlendshape equal body surfaces do not create primary refit drift",
+                MeshAndBlendshape_EqualSurfaces_NoPrimaryDrift_TransfersMuscle);
+            RunCase(failures,
+                "Scale matching ignores skeleton pose outliers when body surfaces match",
+                ScaleMatching_EqualBodySurfacesIgnoreSkeletonPoseOutliers);
+            RunCase(failures,
+                "Active non-target body blendshapes do not affect primary refit",
+                MeshAndBlendshape_ActiveNonTargetBodyShapes_DoNotAffectPrimaryRefit);
+            RunCase(failures,
+                "Primary smoothing does not smooth transferred blendshapes",
+                TransferredBlendshapeSmoothing_IsIndependentFromPrimarySmoothing);
+            RunCase(failures,
+                "Transferred blendshape smoothing preserves explicit peak control",
+                TransferredBlendshapeSmoothing_PreservesLocalizedPeaksWhenDisabled);
+            RunCase(failures,
+                "Transferred blendshape keeps clothing outside shaped skin",
+                TransferredBlendshape_PreservesSignedSkinClearance);
+            RunCase(failures,
+                "Transferred Belly follows lower torso in all axes and mesh orientations",
+                TransferredBelly_FollowsLowerTorsoInAllAxes);
+            RunCase(failures,
+                "Lower-body cloth covers dense body peaks between its vertices",
+                ReFitSurfaceCoverageTests.RunOrThrow);
+            RunCase(failures,
+                "Clearance correction adaptively tightens expanded areas",
+                ClearanceCorrection_AdaptivelyTightensExpandedAreas);
+            RunCase(failures,
+                "Clearance correction strong settings pull expanded areas closer",
+                ClearanceCorrection_StrongSettingsCanPullExpandedAreasMuchCloser);
+            RunCase(failures,
+                "High tightness keeps upper-body garment hem deltas bounded",
+                ClearanceCorrection_HighTightnessKeepsUpperBodyHemBounded);
+            RunCase(failures,
+                "Transferred blendshape stabilizes partially moved detached lace clusters",
+                TransferredBlendshape_StabilizesPartiallyMovedDetachedLaceClusters);
+            RunCase(failures,
+                "Clearance correction propagates to disconnected garment islands",
+                ClearanceCorrection_PropagatesToDisconnectedGarmentIslands);
+            RunCase(failures,
+                "Clearance correction support-propagates to ineligible detached islands",
+                ClearanceCorrection_SupportPropagatesToIneligibleDetachedIslands);
+            RunCase(failures,
+                "Clearance correction keeps transferred cap after island propagation",
+                ClearanceCorrection_PostPropagationGuardRespectsTransferredTotalCap);
+            RunCase(failures,
+                "Blendshape-only transfer works on target-space clothing and preserves root bone",
+                BlendshapeOnly_TargetSpaceAccessory_TransfersMuscle_PreservesRootBone);
+            RunCase(failures,
+                "Blendshape-only target-nested clothing matches equivalent-source tightness",
+                BlendshapeOnly_TargetNestedAccessory_MatchesEquivalentSourceTightness);
+            RunCase(failures,
+                "Real hoodie no-source staging preserves target authored pose",
+                RealHoodie_NoSourceStaging_PreservesTargetAuthoredPose);
+            RunCase(failures,
+                "Real hoodie no-source blendshape matches source-FBX whole hoodie",
+                RealHoodie_NoSourceBlendshape_MatchesSourceFbxWholeHoodie);
+            RunCase(failures,
+                "Real hoodie prefab refit keeps VRCFury Armature Link traversable",
+                RealHoodiePrefab_ArmatureLinkTraversesTargetArmature);
+            RunCase(failures,
+                "Real hoodie prefab VRCFury test-copy build merges armature bones",
+                RealHoodiePrefab_VrcfuryTestCopyBuildMergesArmatureBones);
+            RunCase(failures,
+                "Active scene Hoodie prefab has fresh VRCFury armature state when present",
+                ActiveSceneHoodiePrefab_HasFreshVrcfuryArmatureStateWhenPresent);
+            RunCase(failures,
+                "Mesh refit with armature replacement disabled preserves clothing root bone",
+                MeshAndBlendshape_ArmatureReplacementDisabled_PreservesRootBone);
+            RunCase(failures,
+                "Armature replacement removes stale accessory skeleton",
+                MeshAndBlendshape_ArmatureReplacement_RemovesStaleAccessorySkeleton);
+            RunCase(failures,
+                "Armature replacement restore restores original asset parentage",
+                ArmatureReplacement_RestoreRestoresOriginalAssetParentage);
+            RunCase(failures,
+                "Armature replacement reset restores removed bones, references and removes the rebuilt rig",
+                ArmatureReplacement_ResetRestoresRemovedRigAndReferences);
+            RunCase(failures,
+                "Generated metadata is editor-only for the VRChat SDK",
+                GeneratedMetadata_IsEditorOnlyForVRChat);
+            RunCase(failures,
+                "Blendshape snapshots interpolate frames as Unity does",
+                BlendShapeFrames_SnapshotMatchesUnity);
+            RunCase(failures,
+                "Transferred blendshape keeps the body shape's frames and weights",
+                TransferredBlendshape_KeepsBodyFrames);
+            RunCase(failures,
+                "Standalone prefab export never saves the avatar",
+                SavePrefab_NeverSavesTheAvatar);
+            RunCase(failures,
+                "Armature replacement rebinds serialized component bone references",
+                ArmatureReplacement_RebindsSerializedComponentBoneReferences);
+            RunCase(failures,
+                "Armature replacement repairs VRCFury Armature Link",
+                ArmatureReplacement_RepairsVrcfuryArmatureLink);
+            RunCase(failures,
+                "Scene asset armature preflight repairs stale VRCFury alias state",
+                SceneAssetArmaturePreflight_RepairsStaleVrcfuryAliasState);
+            RunCase(failures,
+                "Standalone staging bakes the asset after source posing",
+                Staging_StandaloneAssetBakeMatchesPostPoseSkin);
+            RunCase(failures,
+                "Fresh target-nested source asset still stages through source pose",
+                Staging_FreshTargetNestedSourceAssetDoesNotAssumeTargetSpace);
+            RunCase(failures,
+                "Armature replacement keeps extra ChestUp as a clothing side branch",
+                ArmatureReplacement_ChestUpSideBranchDoesNotTrapHumanChain);
+            RunCase(failures,
+                "Armature replacement normalizes aliases for VRCFury traversal",
+                ArmatureReplacement_NormalizesAliasesForVrcfuryTraversal);
+            RunCase(failures,
+                "Armature replacement adds target-derived non-deforming leaf helpers",
+                ArmatureReplacement_TargetChildCreatesLeafTailHelper);
+            RunCase(failures,
+                "Armature leaf helpers use the next anatomical segment before deeper descendants",
+                ArmatureReplacement_LeafTailPrefersShinOverFoot);
+            RunCase(failures,
+                "Armature replacement materializes child-first bone plans without hierarchy drift",
+                ArmatureReplacement_ChildFirstPlan_MaterializesWithoutDrift);
+            RunCase(failures,
+                "Weight transfer follows the bodies' skinning change within compatible regions",
+                WeightTransfer_FollowsBodySkinningChangeWithinCompatibleRegions);
+            RunCase(failures,
+                "Target-space accessory keeps source bone regions for projection filtering",
+                ProjectionDebug_TargetSpaceAccessoryClassifiesAssetRegions);
+            RunCase(failures,
+                "Projection debug captures binding and weight decision data",
+                ProjectionDebug_CapturesBindingAndWeightDecisionData);
+            RunCase(failures,
+                "Target surface chaining prefers near equivalent hits before normal filtering",
+                SurfaceBinding_TargetChainPrefersNearEquivalentHitBeforeNormalFilter);
+            RunCase(failures,
+                "Target surface chaining follows the normal onto a grown surface past a nearer crease",
+                SurfaceBinding_ChainFollowsNormalPastNearerCrease);
+            RunCase(failures,
+                "Reported jockstrap keeps the Ultipaw crotch clear at rest, spread and crouched",
+                ReportedJockstrap_UltipawCrotchStaysClearInPoses);
+            RunCase(failures,
+                "Reported Wickerbeast onesie covers the ThiccWiker's thighs, crotch and buttocks",
+                ReportedOnesie_ThiccWikerCovered);
+            RunCase(failures,
+                "Wizard debug mode captures projection data even when rays are hidden",
+                ReFitWizard_DebugModeCapturesProjectionDataWhenGizmoHidden);
+            RunCase(failures,
+                "Debug snapshots use independent baked mesh instances",
+                DebugSession_CapturesIndependentSnapshotMeshes);
+            RunCase(failures,
+                "XRay extra gizmo registry exposes external toggles",
+                XRayExtraGizmoRegistry_RegistersAndTogglesExternalGizmo);
+            RunCase(failures,
+                "Gravity detector recognizes body clothing candidates",
+                GravityRelaxation_DetectsBodyClothingCandidate);
+            RunCase(failures,
+                "Gravity relaxation propagates upper torso clearance downward",
+                GravityRelaxation_PropagatesUpperTorsoClearanceDownward);
+            RunCase(failures,
+                "Gravity preview uses normal weight with stronger baked deltas",
+                GravityPreview_UsesNormalWeightWithStrongerBakedDeltas);
+            RunCase(failures,
+                "Armature replacement cleans rerun target-space stale skeleton",
+                ArmatureReplacement_RerunTargetSpace_RemovesUnusedLocalSkeleton);
+            RunCase(failures,
+                "Humanoid alias bone names map to target armature bones",
+                HumanoidAliases_MapAccessoryBonesToAvatarBones);
+            RunCase(failures,
+                "FBX fixture reproduces authored B clothing result",
+                FbxFixture_ReproducesAuthoredResultClothing);
+            RunCase(failures,
+                "FBX fixture supports clothing with an inserted armature bone",
+                FbxFixture_DifferentClothingArmature_ReproducesAuthoredResultClothing);
         }
 
         private static void FbxFixture_ReproducesAuthoredResultClothing()
@@ -514,14 +546,13 @@ namespace Orbiters.ReFit.Editor.Tests
 
         /// <summary>
         /// Runs the suite one case per editor update, so an MCP call returns at once and a long run does not block the editor
-        /// bridge. Progress and failures go to Temp/ReFitTests/stepped.txt after every case.
+        /// bridge. Progress and failures go to Temp/ReFitTests/stepped.txt after every case, the summary to latest.txt at the
+        /// end, when the recent-blendshape history is given back.
         /// </summary>
         public static void QueueStepped()
         {
-            collected = new List<(string, Action)>();
-            try { RunOrThrow(); } catch { }
-            var cases = collected;
-            collected = null;
+            var cases = Collect();
+            var restoreHistory = KeepHistory();
             TestOutcomes.Clear();
             var failures = new List<string>();
             int next = 0;
@@ -530,7 +561,13 @@ namespace Orbiters.ReFit.Editor.Tests
             EditorApplication.CallbackFunction tick = null;
             tick = () =>
             {
-                if (next >= cases.Count) { EditorApplication.update -= tick; return; }
+                if (next >= cases.Count)
+                {
+                    EditorApplication.update -= tick;
+                    Summarize(failures);
+                    restoreHistory();
+                    return;
+                }
                 var c = cases[next++];
                 RunCase(failures, c.name, c.test);
                 var lines = new List<string> { next >= cases.Count ? $"done {cases.Count}" : $"running {next}/{cases.Count}",

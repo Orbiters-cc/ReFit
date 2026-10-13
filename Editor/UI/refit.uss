@@ -29,6 +29,8 @@
 .refit-root--narrow .refit-panel { width: auto; flex-grow: 1; }
 .refit-scroll { flex-grow: 1; flex-shrink: 1; flex-basis: 0; min-height: 0; }
 .refit-page-content { padding: 0 16px 10px 16px; }
+/* Locked while a run works: the run took its choices, none made now reaches it. */
+.refit-page:disabled .refit-section-block, .refit-page:disabled .refit-card, .refit-page:disabled .refit-links { opacity: 0.55; }
 .refit-credit { margin: 0 0 10px 0; padding-top: 6px; }
 
 /* ---- Shared ------------------------------------------------------------------------------------------------------- */
@@ -108,11 +110,15 @@
 .refit-chip { flex-direction: row; align-items: center; flex-shrink: 0; height: 26px; margin: 2px 4px 2px 0; padding: 0 10px 0 8px; border-radius: 13px; background-color: #2e2e2e; transition-property: background-color, scale; transition-duration: 0.12s, 0.18s; transition-timing-function: ease-out, ease-out-back; cursor: link; }
 .refit-chip:hover { background-color: #363636; }
 .refit-chip__text { margin: 0; padding: 0; color: #d0d0d0; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-.refit-chip--avatar .refit-chip__text { max-width: 150px; }
+/* Avatar chips share the heading's width: each shrinks and ellipsizes its name, the chosen one last, so none is cut off. */
+.refit-chip--avatar .refit-chip__text { max-width: 150px; flex-shrink: 1; min-width: 0; }
+.refit-chip--avatar .refit-chip__icon { flex-shrink: 0; }
 .refit-chip__icon { width: 12px; height: 12px; margin-right: 5px; --icon-color: #8c8c8c; }
 .refit-chip__remove { width: 10px; height: 10px; margin-left: 6px; --icon-color: #7a7a7a; }
 .refit-chip:hover .refit-chip__remove { --icon-color: #e6e6e6; }
-.refit-chip--avatar { margin: 0 0 0 6px; }
+.refit-chip--avatar { margin: 0 0 0 6px; flex-shrink: 1; min-width: 44px; }
+.refit-chip--avatar.refit-chip--selected { flex-shrink: 0.2; min-width: 84px; }
+.refit-chip--avatar.refit-chip--more { flex-shrink: 0; min-width: 0; }
 .refit-chip--more { padding: 0 9px; }
 .refit-chip--selected { background-color: rgba(0, 218, 109, 0.14); cursor: arrow; }
 .refit-chip--selected .refit-chip__text { color: #00DA6D; -unity-font-style: bold; }

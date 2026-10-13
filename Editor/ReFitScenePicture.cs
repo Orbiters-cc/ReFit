@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using UnityEditor;
 using UnityEngine;
+using UnityEngine.SceneManagement;
 using Object = UnityEngine.Object;
 
 namespace Orbiters.ReFit.Editor
@@ -42,17 +43,6 @@ namespace Orbiters.ReFit.Editor
         /// <summary>Where a camera looks from, relative to the avatar's facing.</summary>
         internal enum View { Front, ThreeQuarter, Side, Back, Elevated }
 
-        /// <summary>
-        /// Where a picture's camera aims and how much it shows. A before and an after picture drawn with the same framing line
-        /// up exactly, so they can be compared side by side.
-        /// </summary>
-        internal struct Framing
-        {
-            public bool valid;
-            public Vector3 center;
-            public float size;
-        }
-
         internal static Vector3 Direction(View view)
         {
             switch (view)
@@ -89,9 +79,8 @@ namespace Orbiters.ReFit.Editor
                 {
                     if (!renderer.enabled || !renderer.gameObject.activeInHierarchy && renderer != accessory) continue;
                     if (IsDebugCopy(renderer.transform)) continue;
-                    var mesh = Bake(renderer, renderer == accessory ? primaryShape : null);
+                    var mesh = Bake(renderer, renderer == accessory ? primaryShape : null, out var matrix);
                     if (mesh == null) continue;
-                    var matrix = CaptureMatrix(renderer);
                     scene.parts.Add(new Part { mesh = mesh, matrix = matrix, materials = renderer.sharedMaterials, accessory = renderer == accessory });
                     foreach (var vertex in mesh.vertices)
                     {
@@ -116,39 +105,16 @@ namespace Orbiters.ReFit.Editor
         }
 
         /// <summary>
-        /// Draws <paramref name="scene"/> from <paramref name="view"/>: an orthographic camera framing the accessory (or
-        /// everything) with <paramref name="margin"/> around it. <paramref name="toDisplay"/> converts a linear project's
-        /// colours for display in UI images.
+        /// Draws <paramref name="scene"/> from <paramref name="localDirection"/> (where the camera stands, relative to the
+        /// avatar's facing): an orthographic camera framing the accessory (or everything) with <paramref name="margin"/> around
+        /// it. <paramref name="toDisplay"/> converts a linear project's colours for display in UI images.
         /// </summary>
-        internal static Texture2D Render(Scene scene, View view, bool accessoryOnly, int width, int height, float margin, Color background,
-            bool toDisplay)
-        {
-            var framing = new Framing();
-            return Render(scene, Direction(view), accessoryOnly, width, height, margin, background, toDisplay, ref framing);
-        }
-
-        /// <summary>
-        /// The same, with <paramref name="framing"/>: used as it is when valid, else made (the subject raised by
-        /// <paramref name="lift"/> of the frame's half height, for controls along the bottom) and returned.
-        /// </summary>
-        internal static Texture2D Render(Scene scene, View view, bool accessoryOnly, int width, int height, float margin, Color background,
-            bool toDisplay, ref Framing framing, float lift = 0f) =>
-            Render(scene, Direction(view), accessoryOnly, width, height, margin, background, toDisplay, ref framing, lift);
-
-        /// <param name="localDirection">Where the camera stands, relative to the avatar's facing.</param>
         internal static Texture2D Render(Scene scene, Vector3 localDirection, bool accessoryOnly, int width, int height, float margin,
             Color background, bool toDisplay)
         {
-            var framing = new Framing();
-            return Render(scene, localDirection, accessoryOnly, width, height, margin, background, toDisplay, ref framing);
-        }
-
-        private static Texture2D Render(Scene scene, Vector3 localDirection, bool accessoryOnly, int width, int height, float margin,
-            Color background, bool toDisplay, ref Framing framing, float lift = 0f)
-        {
             var focus = accessoryOnly ? scene.accessoryBounds : scene.bounds;
             var preview = new PreviewRenderUtility();
-            Material fallback = null;
+            var fallback = Fallback();
             try
             {
                 var camera = preview.camera;
@@ -162,32 +128,23 @@ namespace Orbiters.ReFit.Editor
                 var up = scene.up;
                 Vector3 direction = facing * localDirection.normalized;
                 float radius = scene.bounds.extents.magnitude;
-                var center = framing.valid ? framing.center : focus.center;
+                var center = focus.center;
                 camera.transform.position = center + direction * (radius * 3f + 1f);
                 camera.transform.LookAt(center, up);
-                if (!framing.valid)
+                // The focused geometry's extent as seen by this camera, so it fills the frame from every side.
+                float halfWidth = 0f, halfHeight = 0f;
+                foreach (var part in scene.parts)
                 {
-                    // The focused geometry's extent as seen by this camera, so it fills the frame from every side.
-                    float halfWidth = 0f, halfHeight = 0f;
-                    foreach (var part in scene.parts)
+                    if (accessoryOnly && !part.accessory) continue;
+                    foreach (var vertex in part.mesh.vertices)
                     {
-                        if (accessoryOnly && !part.accessory) continue;
-                        foreach (var vertex in part.mesh.vertices)
-                        {
-                            var local = camera.transform.InverseTransformPoint(part.matrix.MultiplyPoint3x4(vertex));
-                            halfWidth = Mathf.Max(halfWidth, Mathf.Abs(local.x));
-                            halfHeight = Mathf.Max(halfHeight, Mathf.Abs(local.y));
-                        }
+                        var local = camera.transform.InverseTransformPoint(part.matrix.MultiplyPoint3x4(vertex));
+                        halfWidth = Mathf.Max(halfWidth, Mathf.Abs(local.x));
+                        halfHeight = Mathf.Max(halfHeight, Mathf.Abs(local.y));
                     }
-                    float aspect = width / (float)height;
-                    float size = Mathf.Max(0.02f, Mathf.Max(halfHeight, halfWidth / aspect) * margin);
-                    // Raised a little: the camera aims below the middle.
-                    center -= camera.transform.up * (size * lift);
-                    framing = new Framing { valid = true, center = center, size = size };
-                    camera.transform.position = center + direction * (radius * 3f + 1f);
-                    camera.transform.LookAt(center, up);
                 }
-                camera.orthographicSize = framing.size;
+                float aspect = width / (float)height;
+                camera.orthographicSize = Mathf.Max(0.02f, Mathf.Max(halfHeight, halfWidth / aspect) * margin);
                 camera.nearClipPlane = 0.01f;
                 camera.farClipPlane = radius * 8f + 10f;
                 preview.lights[0].transform.rotation = camera.transform.rotation * Quaternion.Euler(25, -30, 0);
@@ -196,14 +153,7 @@ namespace Orbiters.ReFit.Editor
                 // BeginPreview clears with its own colour: ours is set after it.
                 camera.clearFlags = CameraClearFlags.SolidColor;
                 camera.backgroundColor = background;
-                foreach (var part in scene.parts)
-                    for (int submesh = 0; submesh < part.mesh.subMeshCount; submesh++)
-                    {
-                        var material = part.materials.Length > 0 ? part.materials[Mathf.Min(submesh, part.materials.Length - 1)] : null;
-                        // A renderer without its material still shows, in plain grey.
-                        if (material == null) material = fallback != null ? fallback : fallback = Fallback();
-                        if (material != null) preview.DrawMesh(part.mesh, part.matrix, material, submesh);
-                    }
+                foreach (var part in scene.parts) Draw(preview, part, fallback);
                 preview.Render(true);
                 var render = (RenderTexture)preview.EndPreview();
                 var previous = RenderTexture.active;
@@ -232,7 +182,25 @@ namespace Orbiters.ReFit.Editor
             }
         }
 
-        private static Material Fallback()
+        /// <summary>
+        /// Draws a part as its renderer does: each submesh with its material, and materials beyond the submeshes drawing the
+        /// last submesh again (extra passes). A submesh without its material shows in <paramref name="fallback"/> (plain grey).
+        /// </summary>
+        internal static void Draw(PreviewRenderUtility preview, Part part, Material fallback)
+        {
+            if (part.mesh == null || part.mesh.subMeshCount == 0) return;
+            int submeshes = part.mesh.subMeshCount;
+            int materials = part.materials != null ? part.materials.Length : 0;
+            for (int i = 0; i < Mathf.Max(submeshes, materials); i++)
+            {
+                var material = materials > 0 ? part.materials[Mathf.Min(i, materials - 1)] : null;
+                if (material == null) material = fallback;
+                if (material != null) preview.DrawMesh(part.mesh, part.matrix, material, Mathf.Min(i, submeshes - 1));
+            }
+        }
+
+        /// <summary>The plain grey of a renderer without its material, or null when no shader can draw it.</summary>
+        internal static Material Fallback()
         {
             var shader = Shader.Find("Standard");
             if (shader == null) return null;
@@ -252,29 +220,45 @@ namespace Orbiters.ReFit.Editor
             return false;
         }
 
-        private static Mesh Bake(Renderer renderer, string primaryShape)
+        // The renderer as posed. A skinned mesh is baked where it is (baking changes nothing); one shown with its refit shape
+        // on is baked from a hidden copy beside the avatar, never inside it: an object added under the avatar wakes the tools
+        // watching its hierarchy (Modular Avatar, VRCFury, NDMF previews).
+        private static Mesh Bake(Renderer renderer, string primaryShape, out Matrix4x4 matrix)
         {
+            matrix = renderer.localToWorldMatrix;
             if (renderer is SkinnedMeshRenderer skinned && skinned.sharedMesh != null)
             {
-                var temporary = new GameObject("ReFit picture renderer") { hideFlags = HideFlags.HideAndDontSave };
+                int index = !string.IsNullOrEmpty(primaryShape) ? skinned.sharedMesh.GetBlendShapeIndex(primaryShape) : -1;
                 Mesh mesh = null;
+                if (index < 0 || Mathf.Approximately(skinned.GetBlendShapeWeight(index), 100f))
+                {
+                    try
+                    {
+                        mesh = new Mesh { hideFlags = HideFlags.HideAndDontSave };
+                        skinned.BakeMesh(mesh);
+                        matrix = CaptureMatrix(skinned);
+                        return mesh;
+                    }
+                    catch { if (mesh != null) Object.DestroyImmediate(mesh); throw; }
+                }
+                var temporary = new GameObject("ReFit picture renderer") { hideFlags = HideFlags.HideAndDontSave };
                 try
                 {
-                    // Matching the original parent preserves nonuniform scale and shear during skinning.
-                    temporary.transform.SetParent(skinned.transform.parent, false);
-                    temporary.transform.localPosition = skinned.transform.localPosition;
-                    temporary.transform.localRotation = skinned.transform.localRotation;
-                    temporary.transform.localScale = skinned.transform.localScale;
+                    if (skinned.gameObject.scene.IsValid() && temporary.scene != skinned.gameObject.scene)
+                        SceneManager.MoveGameObjectToScene(temporary, skinned.gameObject.scene);
+                    // The bones place a skinned mesh; a mesh without bones takes the renderer's place and size.
+                    temporary.transform.SetPositionAndRotation(skinned.transform.position, skinned.transform.rotation);
+                    temporary.transform.localScale = skinned.transform.lossyScale;
                     var copy = temporary.AddComponent<SkinnedMeshRenderer>();
                     copy.sharedMesh = skinned.sharedMesh;
                     copy.bones = skinned.bones;
                     copy.rootBone = skinned.rootBone;
                     for (int shape = 0; shape < copy.sharedMesh.blendShapeCount; shape++)
                         copy.SetBlendShapeWeight(shape, skinned.GetBlendShapeWeight(shape));
-                    int index = !string.IsNullOrEmpty(primaryShape) ? copy.sharedMesh.GetBlendShapeIndex(primaryShape) : -1;
-                    if (index >= 0) copy.SetBlendShapeWeight(index, 100f);
+                    copy.SetBlendShapeWeight(index, 100f);
                     mesh = new Mesh { hideFlags = HideFlags.HideAndDontSave };
                     copy.BakeMesh(mesh);
+                    matrix = CaptureMatrix(copy);
                     return mesh;
                 }
                 catch { if (mesh != null) Object.DestroyImmediate(mesh); throw; }

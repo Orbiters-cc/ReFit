@@ -75,7 +75,7 @@ namespace Orbiters.ReFit
 
             int kept = 0, adjusted = 0, unchanged = 0, rejected = 0, projectedCount = 0, fallback = 0;
             bool hasOriginal = !asset.rigid && asset.boneWeights != null && asset.boneWeights.Length == vertexCount;
-            var dense = new float[boneCount];
+            var blended = new Dictionary<int, float>(16);
             for (int i = 0; i < vertexCount; i++)
             {
                 int g = asset.groupOfVertex[i];
@@ -108,12 +108,12 @@ namespace Orbiters.ReFit
                     var region = DominantRegion(original, newBoneRegions);
                     if (region == BodyRegion.Unknown && assetGroupRegions != null && g < assetGroupRegions.Length)
                         region = assetGroupRegions[g];
-                    int offset = g * boneCount;
+                    var own = change[g];
                     float incompatible = 0f, moved = 0f;
-                    for (int b = 0; b < boneCount; b++)
+                    for (int k = 0; k < own.bones.Length; k++)
                     {
-                        float c = change[offset + b];
-                        if (c > 0f && !LimbCompatible(region, newBoneRegions[b])) incompatible += c;
+                        float c = own.values[k];
+                        if (c > 0f && !LimbCompatible(region, newBoneRegions[own.bones[k]])) incompatible += c;
                         moved += Mathf.Abs(c);
                     }
                     if (incompatible > IncompatibleChangeTolerance)
@@ -131,18 +131,20 @@ namespace Orbiters.ReFit
                         unchanged++;
                         continue;
                     }
-                    Array.Clear(dense, 0, boneCount);
-                    AddDense(dense, original.boneIndex0, original.weight0);
-                    AddDense(dense, original.boneIndex1, original.weight1);
-                    AddDense(dense, original.boneIndex2, original.weight2);
-                    AddDense(dense, original.boneIndex3, original.weight3);
-                    for (int b = 0; b < boneCount; b++)
+                    blended.Clear();
+                    AddWeight(blended, original.boneIndex0, original.weight0, boneCount);
+                    AddWeight(blended, original.boneIndex1, original.weight1, boneCount);
+                    AddWeight(blended, original.boneIndex2, original.weight2, boneCount);
+                    AddWeight(blended, original.boneIndex3, original.weight3, boneCount);
+                    for (int k = 0; k < own.bones.Length; k++)
                     {
-                        float c = change[offset + b];
+                        int b = own.bones[k];
+                        float c = own.values[k];
                         if (c > 0f && !LimbCompatible(region, newBoneRegions[b])) continue;
-                        dense[b] = Mathf.Max(0f, dense[b] + c);
+                        blended.TryGetValue(b, out float weight);
+                        blended[b] = Mathf.Max(0f, weight + c);
                     }
-                    if (TopFour(dense, out result[i]))
+                    if (TopFour(blended, out result[i]))
                     {
                         debug.decisionsByVertex[i] = ReFitWeightDecision.Blended;
                         adjusted++;
@@ -176,60 +178,108 @@ namespace Orbiters.ReFit
             return result;
         }
 
+        /// <summary>A group's change of skinning: the bones it involves (ascending) and their change. Most groups touch a few
+        /// bones of hundreds, so only those are kept (a dense table took groups x bones floats, hundreds of MB on large meshes).</summary>
+        private struct SparseChange
+        {
+            public static readonly SparseChange None = new SparseChange { bones = Array.Empty<int>(), values = Array.Empty<float>() };
+            public int[] bones;
+            public float[] values;
+
+            public static SparseChange From(Dictionary<int, float> entries)
+            {
+                if (entries.Count == 0) return None;
+                var bones = new int[entries.Count];
+                entries.Keys.CopyTo(bones, 0);
+                Array.Sort(bones);
+                var values = new float[bones.Length];
+                for (int k = 0; k < bones.Length; k++) values[k] = entries[bones[k]];
+                return new SparseChange { bones = bones, values = values };
+            }
+
+            public float this[int bone]
+            {
+                get
+                {
+                    int k = Array.BinarySearch(bones, bone);
+                    return k >= 0 ? values[k] : 0f;
+                }
+            }
+        }
+
         /// <summary>
         /// Target minus source skinning (in the new bone list) at each group's matches, scaled by its confidence and
         /// lightly smoothed over the clothing surface. Groups without both matches have no change.
         /// </summary>
-        private static float[] BuildChange(MeshSnapshot asset, MeshSnapshot sourceBody, SurfaceBinding[] sourceBindings,
+        private static SparseChange[] BuildChange(MeshSnapshot asset, MeshSnapshot sourceBody, SurfaceBinding[] sourceBindings,
             int[] sourceBoneToNew, MeshSnapshot targetBody, SurfaceBinding[] targetBindings, int[] targetBoneToNew,
             float[] groupConfidence, int boneCount, out bool[] hasChange)
         {
             int groupCount = asset.GroupCount;
-            var change = new float[groupCount * boneCount];
+            var change = new SparseChange[groupCount];
+            for (int g = 0; g < groupCount; g++) change[g] = SparseChange.None;
             var has = new bool[groupCount];
             bool sourceSkinned = sourceBody != null && !sourceBody.rigid && sourceBody.boneWeights != null && sourceBody.boneWeights.Length > 0;
             bool targetSkinned = targetBody != null && !targetBody.rigid && targetBody.boneWeights != null && targetBody.boneWeights.Length > 0;
             if (boneCount > 0 && sourceSkinned && targetSkinned && sourceBindings != null && targetBindings != null)
-                Parallel.For(0, groupCount, g =>
+                Parallel.For(0, groupCount, () => new Dictionary<int, float>(24), (g, _, entries) =>
                 {
                     float confidence = groupConfidence != null && g < groupConfidence.Length ? groupConfidence[g] : 1f;
-                    if (!sourceBindings[g].valid || !targetBindings[g].valid) return;
+                    if (!sourceBindings[g].valid || !targetBindings[g].valid) return entries;
                     confidence *= 1f - Mathf.Clamp01((sourceBindings[g].distance - SkinContactFull) / (SkinContactNone - SkinContactFull));
-                    if (confidence <= 0f) return;
-                    int offset = g * boneCount;
-                    AccumulateSkin(change, offset, boneCount, targetBody, targetBindings[g], targetBoneToNew, confidence);
-                    AccumulateSkin(change, offset, boneCount, sourceBody, sourceBindings[g], sourceBoneToNew, -confidence);
+                    if (confidence <= 0f) return entries;
+                    entries.Clear();
+                    AccumulateSkin(entries, boneCount, targetBody, targetBindings[g], targetBoneToNew, confidence);
+                    AccumulateSkin(entries, boneCount, sourceBody, sourceBindings[g], sourceBoneToNew, -confidence);
+                    change[g] = SparseChange.From(entries);
                     has[g] = true;
-                });
+                    return entries;
+                }, _ => { });
 
             if (boneCount > 0)
             {
-                var buffer = new float[change.Length];
+                var buffer = new SparseChange[groupCount];
                 for (int iteration = 0; iteration < ChangeSmoothingIterations; iteration++)
                 {
-                    Parallel.For(0, groupCount, g =>
+                    var current = change;
+                    Parallel.For(0, groupCount, () => new Dictionary<int, float>(32), (g, _, entries) =>
                     {
-                        int offset = g * boneCount;
-                        if (!has[g]) return;
+                        if (!has[g]) { buffer[g] = current[g]; return entries; }
                         int neighbors = 0;
                         foreach (int n in asset.groupAdjacency[g]) if (has[n]) neighbors++;
-                        for (int b = 0; b < boneCount; b++)
+                        if (neighbors == 0) { buffer[g] = current[g]; return entries; }
+                        // Every bone the group or a neighbour involves, each at the same sums as a dense table.
+                        entries.Clear();
+                        var own = current[g];
+                        for (int k = 0; k < own.bones.Length; k++) entries[own.bones[k]] = 0f;
+                        foreach (int n in asset.groupAdjacency[g])
                         {
-                            float own = change[offset + b];
-                            if (neighbors == 0) { buffer[offset + b] = own; continue; }
-                            float sum = 0f;
-                            foreach (int n in asset.groupAdjacency[g]) if (has[n]) sum += change[n * boneCount + b];
-                            buffer[offset + b] = Mathf.Lerp(own, sum / neighbors, ChangeSmoothingStrength);
+                            if (!has[n]) continue;
+                            foreach (int b in current[n].bones) entries[b] = 0f;
                         }
-                    });
-                    var swap = change; change = buffer; buffer = swap;
+                        var bones = new int[entries.Count];
+                        entries.Keys.CopyTo(bones, 0);
+                        Array.Sort(bones);
+                        var values = new float[bones.Length];
+                        for (int k = 0; k < bones.Length; k++)
+                        {
+                            int b = bones[k];
+                            float sum = 0f;
+                            foreach (int n in asset.groupAdjacency[g]) if (has[n]) sum += current[n][b];
+                            values[k] = Mathf.Lerp(own[b], sum / neighbors, ChangeSmoothingStrength);
+                        }
+                        buffer[g] = new SparseChange { bones = bones, values = values };
+                        return entries;
+                    }, _ => { });
+                    change = buffer;
+                    buffer = current;
                 }
             }
             hasChange = has;
             return change;
         }
 
-        private static void AccumulateSkin(float[] change, int offset, int boneCount, MeshSnapshot body, SurfaceBinding binding,
+        private static void AccumulateSkin(Dictionary<int, float> change, int boneCount, MeshSnapshot body, SurfaceBinding binding,
             int[] boneToNew, float scale)
         {
             int t = binding.triangle * 3;
@@ -238,19 +288,20 @@ namespace Orbiters.ReFit
                 float bary = corner == 0 ? binding.bary.x : corner == 1 ? binding.bary.y : binding.bary.z;
                 if (bary <= 0f) continue;
                 var w = body.boneWeights[body.triangles[t + corner]];
-                AccumulateBone(change, offset, boneCount, w.boneIndex0, w.weight0 * bary * scale, boneToNew);
-                AccumulateBone(change, offset, boneCount, w.boneIndex1, w.weight1 * bary * scale, boneToNew);
-                AccumulateBone(change, offset, boneCount, w.boneIndex2, w.weight2 * bary * scale, boneToNew);
-                AccumulateBone(change, offset, boneCount, w.boneIndex3, w.weight3 * bary * scale, boneToNew);
+                AccumulateBone(change, boneCount, w.boneIndex0, w.weight0 * bary * scale, boneToNew);
+                AccumulateBone(change, boneCount, w.boneIndex1, w.weight1 * bary * scale, boneToNew);
+                AccumulateBone(change, boneCount, w.boneIndex2, w.weight2 * bary * scale, boneToNew);
+                AccumulateBone(change, boneCount, w.boneIndex3, w.weight3 * bary * scale, boneToNew);
             }
         }
 
-        private static void AccumulateBone(float[] change, int offset, int boneCount, int bodyBone, float weight, int[] boneToNew)
+        private static void AccumulateBone(Dictionary<int, float> change, int boneCount, int bodyBone, float weight, int[] boneToNew)
         {
             if (weight == 0f || boneToNew == null || bodyBone < 0 || bodyBone >= boneToNew.Length) return;
             int index = boneToNew[bodyBone];
             if (index < 0 || index >= boneCount) return;
-            change[offset + index] += weight;
+            change.TryGetValue(index, out float current);
+            change[index] = current + weight;
         }
 
         // Torso cloth may hand weight to any limb it borders (hips to thighs, chest to shoulders); limb cloth only to its
@@ -262,17 +313,18 @@ namespace Orbiters.ReFit
             return own == bone;
         }
 
-        private static void AddDense(float[] dense, int index, float weight)
+        private static void AddWeight(Dictionary<int, float> weights, int index, float weight, int boneCount)
         {
-            if (weight <= 0f || index < 0 || index >= dense.Length) return;
-            dense[index] += weight;
+            if (weight <= 0f || index < 0 || index >= boneCount) return;
+            weights.TryGetValue(index, out float current);
+            weights[index] = current + weight;
         }
 
-        private static bool TopFour(float[] dense, out BoneWeight bw)
+        private static bool TopFour(Dictionary<int, float> weights, out BoneWeight bw)
         {
             var acc = new Dictionary<int, float>(8);
-            for (int b = 0; b < dense.Length; b++)
-                if (dense[b] > 1e-5f) acc[b] = dense[b];
+            foreach (var pair in weights)
+                if (pair.Value > 1e-5f) acc[pair.Key] = pair.Value;
             return NormalizeTop4(acc, out bw);
         }
 

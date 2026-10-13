@@ -202,20 +202,42 @@ namespace Orbiters.ReFit
             {
                 if (stage == null) return report;
                 ProportionChecker.Check(stage, request.settings ?? new ReFitSettings(), report);
-                var names = RequestedShapeNames(request);
-                if (names.Count > 0 && stage.targetBody != null && stage.targetBody.sharedMesh != null)
-                {
-                    int found = 0;
-                    foreach (var name in names)
-                    {
-                        if (stage.targetBody.sharedMesh.GetBlendShapeIndex(name) >= 0) found++;
-                        else report.Warn("blendshape-not-found", $"Blendshape '{name}' was not found on the target body '{stage.targetBody.name}'.");
-                    }
-                    if (found == 0 && request.mode != ReFitMode.MeshToMesh)
-                        report.Error("blendshapes-missing", "None of the requested blendshapes exist on the target body.");
-                }
+                ValidateShapes(request, stage.targetBody, report);
             }
             return report;
+        }
+
+        /// <summary>
+        /// The part of <see cref="Validate"/> that stages the avatars (armature matching, proportions): it does not depend on
+        /// the requested blendshapes, so it holds for every shape choice of the same avatars and asset.
+        /// </summary>
+        public ReFitReport ValidateStaging(ReFitRequest request)
+        {
+            var report = new ReFitReport();
+            if (!ValidateRequest(request, report, false)) return report;
+            using (var stage = PoseNormalizer.CreateStage(request, report))
+                if (stage != null) ProportionChecker.Check(stage, request.settings ?? new ReFitSettings(), report);
+            return report;
+        }
+
+        /// <summary>The part of <see cref="Validate"/> about the requested blendshapes, on the target body (no staging).</summary>
+        public static void ValidateShapes(ReFitRequest request, SkinnedMeshRenderer targetBody, ReFitReport report)
+        {
+            if (request != null && request.mode != ReFitMode.MeshToMesh && RequestedShapeNames(request).Count == 0)
+            {
+                report.Error("missing-blendshape", "Blendshape transfer needs at least one target body blendshape name.");
+                return;
+            }
+            var names = RequestedShapeNames(request);
+            if (names.Count == 0 || targetBody == null || targetBody.sharedMesh == null) return;
+            int found = 0;
+            foreach (var name in names)
+            {
+                if (targetBody.sharedMesh.GetBlendShapeIndex(name) >= 0) found++;
+                else report.Warn("blendshape-not-found", $"Blendshape '{name}' was not found on the target body '{targetBody.name}'.");
+            }
+            if (found == 0 && request.mode != ReFitMode.MeshToMesh)
+                report.Error("blendshapes-missing", "None of the requested blendshapes exist on the target body.");
         }
 
         // ------------------------------------------------------------------
@@ -415,13 +437,21 @@ namespace Orbiters.ReFit
                     var originalTransform = ReFitUtility.ResolvePath(request.targetAvatar.transform, path);
                     originalTarget = originalTransform != null ? originalTransform.GetComponent<SkinnedMeshRenderer>() : null;
                 }
+                bool targetSpace = ShouldUseTargetSpaceBaseBlendshape(request, stage);
+                var metadata = targetSpace ? CopyGeneratedMetadata(stage.assetRenderer) : null;
+                // Shapes added to clothing fitted across bases are covered and draped as the fit's own were, whoever asks.
+                if (metadata != null && metadata.coverDifferentBaseBody && !state.settings.coverDifferentBaseBody)
+                {
+                    state.settings.coverDifferentBaseBody = true;
+                    report.Info("coverage-kept", "The clothing was fitted from another base: its new shapes are covered and draped like the fit.");
+                }
                 state.targetIdentity = ReFitCacheIdentity.Renderer(originalTarget, false);
                 state.settingsIdentity = ReFitCacheIdentity.Settings(state.settings);
                 state.bindingSettingsIdentity = ReFitCacheIdentity.BindingSettings(state.settings);
                 Dictionary<int, float> assetShapeOverrides = null;
-                if (ShouldUseTargetSpaceBaseBlendshape(request, stage))
+                if (targetSpace)
                 {
-                    state.targetSpaceMetadata = CopyGeneratedMetadata(stage.assetRenderer);
+                    state.targetSpaceMetadata = metadata;
                     if (state.targetSpaceMetadata != null &&
                         (string.IsNullOrEmpty(state.targetSpaceMetadata.targetIdentity) ||
                          state.targetSpaceMetadata.targetIdentity != state.targetIdentity ||
@@ -863,6 +893,7 @@ namespace Orbiters.ReFit
                 targetIdentity = state.targetIdentity,
                 settingsIdentity = state.settingsIdentity,
                 bindingSettingsIdentity = state.bindingSettingsIdentity,
+                coverDifferentBaseBody = state.settings.coverDifferentBaseBody,
                 groupCount = groupCount,
                 targetBodyVertexCount = targetBasis.localVertices.Length,
                 targetBodyTriangleIndexCount = targetBasis.triangles.Length,
@@ -947,7 +978,7 @@ namespace Orbiters.ReFit
             return overrides;
         }
 
-        private static bool ValidateRequest(ReFitRequest request, ReFitReport report)
+        private static bool ValidateRequest(ReFitRequest request, ReFitReport report, bool shapes = true)
         {
             if (request == null) { report.Error("bad-request", "Request is null."); return false; }
             if (request.assetRenderer == null) { report.Error("missing-asset", "No asset renderer set."); return false; }
@@ -957,7 +988,7 @@ namespace Orbiters.ReFit
                 report.Error("missing-source", "Mesh re-fit needs the avatar the asset was made for (source avatar).");
                 return false;
             }
-            if (request.mode != ReFitMode.MeshToMesh && RequestedShapeNames(request).Count == 0)
+            if (shapes && request.mode != ReFitMode.MeshToMesh && RequestedShapeNames(request).Count == 0)
             {
                 report.Error("missing-blendshape", "Blendshape transfer needs at least one target body blendshape name.");
                 return false;
@@ -1110,15 +1141,18 @@ namespace Orbiters.ReFit
                 }
                 ReFitSurfaceCoverage.RepairPrimary(asset, targetBasis, primaryGroupDeltas,
                     state.assetGroupRegions, state.tubes.groups, settings, state.Report, state.targetTriRegions, hidden: state.hiddenGroups);
+                // The drape knows only the body: the inner layers' repair comes after it and has the last word on the layers.
+                if (settings.coverDifferentBaseBody && settings.enableClearanceCorrection)
+                {
+                    SetBackgroundProgress(state, 0.42f, "Draping the clothing over the body");
+                    state.drape = new ReFitDrape(asset, null, firstSnap, firstBvh, targetBasis, state.targetTriRegions, state.assetGroupRegions, state.tubes.groups, state.hiddenGroups);
+                    state.drape.Apply(targetBasis, null, null, primaryGroupDeltas, state.Report, "different-base coverage", state.cancellationToken,
+                        t => state.backgroundProgress = 0.42f + 0.06f * t);
+                }
                 for (int layer = 0; layer < state.coverageLayers.Count; layer++)
                     ReFitSurfaceCoverage.RepairPrimary(asset, state.coverageLayers[layer], primaryGroupDeltas,
                         state.assetGroupRegions, state.tubes.groups, settings, state.Report, null, state.coverageLayersAuthored[layer],
                         innerGarment: state.coverageLayerNames[layer]);
-                if (settings.coverDifferentBaseBody && settings.enableClearanceCorrection)
-                {
-                    state.drape = new ReFitDrape(asset, firstSnap, firstBvh, targetBasis, state.targetTriRegions, state.assetGroupRegions, state.tubes.groups, state.hiddenGroups);
-                    state.drape.Apply(targetBasis, null, null, primaryGroupDeltas, state.Report, "different-base coverage");
-                }
                 state.primaryLocalDeltas = ToLocalDeltas(state, primaryGroupDeltas, true);
                 if (settings.recalculateNormalDeltas)
                     state.primaryNormalDeltas = NormalDeltas(asset, state.primaryLocalDeltas, null);
@@ -1129,6 +1163,10 @@ namespace Orbiters.ReFit
             {
                 primaryGroupDeltas = state.targetSpaceBaseGroupDeltas;
                 transferBindings = metadataTransferBindings ?? targetBindings;
+                // Shapes added to a fit draped over the target drape like the fit's own: the skin the fit covers stays covered.
+                if (settings.coverDifferentBaseBody && settings.enableClearanceCorrection && state.shapes.Count > 0)
+                    state.drape = new ReFitDrape(asset, primaryGroupDeltas, targetBasis, bvhTarget, targetBasis, state.targetTriRegions,
+                        state.assetGroupRegions, state.tubes.groups, null);
             }
 
             if (state.wantMesh)
@@ -1238,11 +1276,13 @@ namespace Orbiters.ReFit
                         worker.tubes.Apply(asset, targetBasis, bvhTarget, worldShapeDelta, primaryGroupDeltas, groupDeltas,
                             settings, worker.Report, $"transferred '{shape.sourceName}'");
                         coverage?.Apply(targetBasis, worldShapeDelta, groupDeltas, coverageRawDeltas, settings, worker.Report, shape.sourceName);
+                        // The drape knows only the body: the layers' coverage and the covers come after it and keep the layer order.
+                        worker.drape?.Apply(targetBasis, worldShapeDelta, primaryGroupDeltas, groupDeltas, worker.Report, shape.sourceName,
+                            worker.cancellationToken);
                         for (int layer = 0; layer < layerCoverage.Count; layer++)
                             layerCoverage[layer]?.Apply(worker.coverageLayers[layer], frame.layerDeltas[layer], groupDeltas,
                                 coverageRawDeltas ?? (Vector3[])groupDeltas.Clone(), settings, worker.Report, shape.sourceName);
                         ReFitSurfaceCoverage.KeepUnderCovers(asset, primaryGroupDeltas, groupDeltas, worker.hiddenCovers, worker.coverageLayers, frame.layerDeltas);
-                        worker.drape?.Apply(targetBasis, worldShapeDelta, primaryGroupDeltas, groupDeltas, worker.Report, shape.sourceName);
 
                         frame.localDeltas = ToLocalDeltas(worker, groupDeltas, false);
                         if (settings.recalculateNormalDeltas)

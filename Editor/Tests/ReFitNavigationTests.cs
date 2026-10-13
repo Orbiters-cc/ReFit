@@ -103,10 +103,11 @@ namespace Orbiters.ReFit.Editor.Tests
         /// <summary>Underwear and swimwear count as clothing; the shapes an avatar keeps on under a piece are found.</summary>
         private static void SmartDefaults()
         {
-            foreach (var name in new[] { "Jockstrap", "classicJockstrap", "Underwear", "SportBra", "Bra", "Swim Trunks", "Bikini top", "Boxers", "Lingerie_Set", "Bodysuit" })
+            foreach (var name in new[] { "Jockstrap", "classicJockstrap", "Underwear", "SportBra", "Bra", "Swim Trunks", "Bikini top", "Boxers", "Lingerie_Set", "Bodysuit",
+                         "Speedo", "Swim_Suit", "Boxerbriefs", "JockstrapV2", "Thongs", "Boxer Shorts", "boxer_shorts", "bikinitop", "lingerieset" })
                 Check(Named(name), name + " was not recognised as clothing.");
-            // Loose one-pieces are left to the body clothing detection.
-            foreach (var name in new[] { "Bracelet", "Brass ring", "Earrings", "Zebra tail", "Hat", "Collar", "WickerOnesie" })
+            // Loose one-pieces are left to the body clothing detection; a token inside a longer word is not clothing.
+            foreach (var name in new[] { "Bracelet", "Brass ring", "Earrings", "Zebra tail", "Hat", "Collar", "WickerOnesie", "Speedometer", "Briefcase" })
                 Check(!Named(name), name + " was taken for snug clothing by name.");
 
             var scene = EditorSceneManager.NewPreviewScene();

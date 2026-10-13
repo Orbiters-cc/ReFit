@@ -502,6 +502,8 @@ namespace Orbiters.ReFit
         public string assetIdentity;
         public string settingsIdentity;
         public string bindingSettingsIdentity;
+        /// <summary>Fitted with the different-base coverage (and drape): shapes added later are covered the same way.</summary>
+        public bool coverDifferentBaseBody;
         public string primaryShapeName;
         public int groupCount;
         public int targetBodyVertexCount;
@@ -531,6 +533,7 @@ namespace Orbiters.ReFit
                 assetIdentity = assetIdentity,
                 settingsIdentity = settingsIdentity,
                 bindingSettingsIdentity = bindingSettingsIdentity,
+                coverDifferentBaseBody = coverDifferentBaseBody,
                 primaryShapeName = primaryShapeName,
                 groupCount = groupCount,
                 targetBodyVertexCount = targetBodyVertexCount,

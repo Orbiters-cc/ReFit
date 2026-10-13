@@ -1,8 +1,27 @@
 # ReFit
 
+## 0.5.10 — 2026-10-13
+
+- While a refit runs, the window's choices are locked and the run keeps the ones it started with. It holds the avatar,
+  so MCB can't switch its version mid-refit, and the refit is recorded with its custom base.
+- A piece that was refitted already is refitted from its original mesh, and its record keeps the original and the
+  shapes it had; a refit that fails or is interrupted gives the earlier fit back; **Whole outfit** shows the right
+  "before".
+- The drape: belts and collars follow the fabric under each part of them, it runs before layers and covers are
+  repaired and never pushes fabric into skin, shows its progress and stops when cancelled. Skin is hidden under another
+  part only where that part closes around it (fur cards no longer hide the skin under them), and body shapes that
+  shrink the body keep their full depth.
+- Skin weights are transferred with much less memory, with the same result.
+- Refits saved by earlier versions are worked out again (revision 6).
+- The window: picking another avatar works out **Made for** and the shapes again, the Hierarchy selection only fills an
+  empty choice, the narrow layout keeps its 3D stage, avatar chips shrink to fit, **Placed by hand** works without
+  shapes, drops only take avatars and clothing, and the stage draws every material and frames before and after.
+- Clothing names match whole words ("Speedometer" is no swimwear) and compound ones (Boxer Shorts, bikinitop).
+- Needs Orbiters Toolkit 0.3.22.
+
 ## 0.5.9 — 2026-10-11
 
-- Clothing fitted onto a different base ("No, I placed it myself") now covers a much larger body. Skin enclosed in another
+- Clothing fitted onto a different base ("Placed by hand") now covers a much larger body. Skin enclosed in another
   part of the target body (the flat chest left inside added breasts) is no longer matched or covered, and a last step
   drapes the clothing over target skin that still shows through where the base's skin was covered, spreading the push
   like cloth: on the reported ThiccWiker the onesie now covers the breasts and the buttocks, including the gluteal crease.
@@ -99,10 +118,12 @@ are never modified.
 `Tools > Orbiters > ReFit`
 
 The window opens on what you selected: an avatar, a piece of clothing it wears, or a prefab from your project files (with
-nothing selected, the scene's only avatar). The avatar's clothing shows as picture cards; click one, select it in the
-Hierarchy or drop a prefab on the stage, and the stage on the left shows the avatar wearing it in 3D: drag to turn,
-scroll to zoom, right-drag (or Shift-drag) to move, double-click to frame the piece again, or pick Front, ¾, Side or
-Back. Under the cards, one row per choice, already set:
+nothing selected, the scene's only avatar). The avatar's clothing shows as picture cards; click one, drop a prefab or an
+avatar on the stage, or (while no piece is chosen yet) select it in the Hierarchy, and the stage on the left shows the
+avatar wearing it in 3D: drag to turn, scroll to zoom, right-drag (or Shift-drag) to move, double-click to frame the piece
+again, or pick Front, ¾, Side or Back. In a narrow window the stage tops the page, and the wheel scrolls the page unless
+the stage was clicked or Ctrl is held. Under the cards, one row per choice, already set (picking another avatar sets them
+again for it):
 
 - **Made for**: this avatar (ReFit makes it follow body shapes), the original base of the avatar's custom base when MCB
   knows it, or another avatar (picked by itself when you fit a piece from the avatar wearing it to another one).
@@ -110,10 +131,15 @@ Back. Under the cards, one row per choice, already set:
   picked for you, a custom base's own shapes are suggested, and **More** opens the search picker with your recent shapes.
 - **Fit**: Loose, Balanced or Snug. Clothing (underwear and swimwear included) starts Snug, accessories Loose.
 - **Placed by hand**: for clothing made for another avatar and placed over this one by hand. ReFit then also removes the
-  clipping it already has and, with **Whole outfit**, refits the rest of its outfit with it, innermost part first, so
-  jacket, shirt and trousers stay layered.
+  clipping it already has (with or without body shapes) and, with **Whole outfit**, refits the rest of its outfit with it,
+  innermost part first, so jacket, shirt and trousers stay layered. It shows when ReFit has a body to fit the piece from:
+  the avatar it is worn on, or the avatar or base it was made for (not for a project file that already fits).
 
-The **ReFit** button shows its progress. The setup checks (armature matching, proportion comparison) appear under it.
+The **ReFit** button shows its progress; the page is locked meanwhile, and the avatar is held as the Orbiters tools hold
+their own refits (MCB waits to switch its custom base version, posing previews rest). A fit of a refitted piece starts
+again from its original (every tool's reset still gives the real original back), shapes added to it keep its fit, and a
+refit that fails gives the piece its earlier fit back. The setup checks (armature matching, proportion comparison) appear
+under it.
 Warnings never block: if your custom base has intentionally relocated bones but a near-identical mesh, just proceed — the
 surface projection compensates. Afterwards the stage compares before and after with the same camera: drag the handle
 to move the split, anywhere else to turn. The result selects the

@@ -5,7 +5,7 @@
 The reported onesie still showed the ThiccWiker's breasts and the gluteal crease. Three causes: the target's flat chest
 left inside the added breasts was matched and covered instead of the breasts; skin far larger than the base's had no
 coverage support beyond 8 cm; and the fit followed the target's folds (the crease, behind the knees) into pleats
-crossing the fabric itself. With "No, I placed it myself" only:
+crossing the fabric itself. With "Placed by hand" only:
 
 - `MeshSnapshot.HideEnclosedSkin`: skin enclosed in another part of the target body is left out of every query.
 - `ReFitDrape`, after the coverage repair and on every transferred frame: target skin whose counterpart on the source
@@ -93,7 +93,7 @@ Two user reports replayed with `ReFitCaseValidation` on transform-only copies in
 - A jockstrap made for the Winterpaw, refitted onto an Ultipaw like the wizard does ("made for another avatar base",
   "Yes, it was made for it", armature replaced, `orbit muscles` transferred). The two bodies are within 4 mm at rest
   around it, but the Ultipaw gives the groin and the hips' sides to the thighs where the Winterpaw gives them to the hips.
-- A Wickerbeast onesie refitted onto a ThiccWiker with the different-base coverage ("No, I placed it myself"), the
+- A Wickerbeast onesie refitted onto a ThiccWiker with the different-base coverage ("Placed by hand"), the
   ThiccWiker's always-on `VVorthy - normal fix - Reverted` shape transferred and mirrored at 100.
 
 Clipping counts clothing vertices and triangle centers outside the authored body that end over 3 mm inside the target

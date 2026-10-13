@@ -20,7 +20,10 @@ namespace Orbiters.ReFit.Editor
         private int commissionGeneration;
         private double commissionLastFetch = double.NegativeInfinity;
 
-        /// <summary>Opens the result page of a refit made by another Orbiters tool, where the user can commission a creator.</summary>
+        /// <summary>
+        /// Opens the result page of a refit made by another Orbiters tool, where the user can commission a creator. The
+        /// window's own settings stay: the tool's request (its armature kept, no prefab) is only the result's.
+        /// </summary>
         public static void OpenForCommission(ReFitRequest request, ReFitResult result)
         {
             if (request == null || result == null) return;
@@ -32,7 +35,6 @@ namespace Orbiters.ReFit.Editor
             window.sourceAvatar = request.sourceAvatar;
             window.madeFor = request.sourceAvatar != null && request.sourceAvatar != request.targetAvatar ? MadeFor.Other : MadeFor.Target;
             window.mode = request.mode;
-            window.settings = request.settings?.Clone() ?? new ReFitSettings();
             if (request.targetBlendshapes != null) window.blendshapes.AddRange(request.targetBlendshapes);
             window.lastRequest = request;
             window.lastResult = result;
@@ -254,7 +256,7 @@ namespace Orbiters.ReFit.Editor
             card.Add(banner);
             ReFitCommissionClient.LoadTexture(creator.bannerUrl, texture =>
             {
-                if (banner == null) return;
+                if (banner.panel == null) return;
                 if (texture != null)
                 {
                     banner.image = texture;
@@ -262,7 +264,7 @@ namespace Orbiters.ReFit.Editor
                 }
                 ReFitCommissionClient.LoadTexture(creator.avatarUrl, fallback =>
                 {
-                    if (banner != null) banner.image = fallback;
+                    if (banner.panel != null) banner.image = fallback;
                 });
             });
 
@@ -276,7 +278,7 @@ namespace Orbiters.ReFit.Editor
             identity.Add(avatarFrame);
             ReFitCommissionClient.LoadCircularTexture(creator.avatarUrl, texture =>
             {
-                if (avatar != null) avatar.image = texture;
+                if (avatar.panel != null) avatar.image = texture;
             });
             // Name over price: the name keeps the card's whole width, however narrow the column.
             var text = new VisualElement();
@@ -302,6 +304,8 @@ namespace Orbiters.ReFit.Editor
             bool requestedDevEnvironment = ReFitCommissionClient.IsDevEnvironment;
             ReFitCommissionClient.FetchCreators((creators, error) =>
             {
+                // The window closed meanwhile: nothing to show it in.
+                if (this == null) return;
                 commissionCreatorsLoading = false;
                 if (requestedDevEnvironment != ReFitCommissionClient.IsDevEnvironment)
                 {
@@ -338,7 +342,7 @@ namespace Orbiters.ReFit.Editor
             try
             {
                 photos = ReFitCommissionCapture.Capture(targetAvatar, lastResult?.sceneRenderer != null ? lastResult.sceneRenderer : asset,
-                    lastResult?.primaryShapeName ?? settings.blendshapeName);
+                    lastResult?.primaryShapeName ?? lastRequest?.settings?.blendshapeName ?? settings.blendshapeName);
             }
             catch (Exception exception)
             {
@@ -349,6 +353,12 @@ namespace Orbiters.ReFit.Editor
             }
             ReFitCommissionClient.CreateHandoff(payload, (url, error) =>
             {
+                // Asked for before the window closed: the page still opens, the window is not touched.
+                if (this == null)
+                {
+                    if (!string.IsNullOrEmpty(url)) Application.OpenURL(url);
+                    return;
+                }
                 commissionHandoffLoading = false;
                 commissionError = error;
                 if (!string.IsNullOrEmpty(url)) Application.OpenURL(url);

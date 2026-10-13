@@ -182,8 +182,39 @@ namespace Orbiters.ReFit
                 normals[a] += n; normals[b] += n; normals[c] += n;
             }
             for (int i = 0; i < normals.Length; i++)
-                normals[i] = normals[i].sqrMagnitude > 1e-12f ? normals[i].normalized : Vector3.up;
+            {
+                var unit = Unit(normals[i]);
+                normals[i] = unit != Vector3.zero ? unit : Vector3.up;
+            }
             return normals;
+        }
+
+        /// <summary>
+        /// <paramref name="vector"/> scaled to length 1, or zero when it has no direction. Unlike <see cref="Vector3.normalized"/>
+        /// (zero below a length of 1e-5), a cross product of millimetre edges keeps its direction.
+        /// </summary>
+        internal static Vector3 Unit(Vector3 vector)
+        {
+            float length = Mathf.Sqrt(vector.x * vector.x + vector.y * vector.y + vector.z * vector.z);
+            return length > 1e-12f ? vector / length : Vector3.zero;
+        }
+
+        /// <summary>A snapshot of world-space geometry without a renderer (procedural surfaces and tests): rigid, at rest.</summary>
+        internal static MeshSnapshot FromWorld(Vector3[] worldVertices, int[] triangles, bool buildTopology)
+        {
+            var snap = new MeshSnapshot
+            {
+                localVertices = (Vector3[])worldVertices.Clone(),
+                worldVertices = (Vector3[])worldVertices.Clone(),
+                triangles = (int[])triangles.Clone(),
+                rigid = true,
+                rendererLocalToWorld = Matrix4x4.identity,
+                rendererWorldToLocal = Matrix4x4.identity
+            };
+            snap.worldNormals = ComputeVertexNormals(snap.worldVertices, snap.triangles);
+            snap.baseNormals = (Vector3[])snap.worldNormals.Clone();
+            if (buildTopology) snap.BuildTopology();
+            return snap;
         }
 
         // ------------------------------------------------------------------
@@ -239,7 +270,9 @@ namespace Orbiters.ReFit
         /// <summary>
         /// Marks <see cref="hiddenTriangles"/>: skin inside another closed part of the same body, such as the flat chest left
         /// under added breasts or a thigh pressed into the other. Out of such a triangle the first surface met, at least
-        /// <see cref="EnclosedDepth"/> away, faces the same way: the way out of the part enclosing it. Nothing can touch that
+        /// <see cref="EnclosedDepth"/> away, faces the same way: the way out of the part enclosing it. That part must be
+        /// closed around the skin: from halfway out, every way along the skin leaves it through its surface too. A fluff card
+        /// or a mane standing over the skin (a single sheet, open air beneath it) encloses nothing. Nothing can touch enclosed
         /// skin and clothing covers the part around it instead. Returns the number of hidden triangles.
         /// </summary>
         public int HideEnclosedSkin()
@@ -252,17 +285,30 @@ namespace Orbiters.ReFit
             {
                 int i = t * 3;
                 var a = worldVertices[triangles[i]];
-                var normal = Vector3.Cross(worldVertices[triangles[i + 1]] - a, worldVertices[triangles[i + 2]] - a);
-                if (normal.sqrMagnitude < 1e-14f) return;
-                normal.Normalize();
+                var normal = Unit(Vector3.Cross(worldVertices[triangles[i + 1]] - a, worldVertices[triangles[i + 2]] - a));
+                if (normal == Vector3.zero) return;
                 var center = (a + worldVertices[triangles[i + 1]] + worldVertices[triangles[i + 2]]) / 3f;
                 var hit = index.Raycast(center + normal * .0005f, normal, EnclosedReach, other => other != t);
-                hidden[t] = hit.found && hit.distance >= EnclosedDepth && Vector3.Dot(FaceNormal(hit.triangle), normal) > 0;
+                if (!hit.found || hit.distance < EnclosedDepth || Vector3.Dot(FaceNormal(hit.triangle), normal) <= 0) return;
+                hidden[t] = Inside(index, center + normal * (hit.distance * .5f), normal);
             });
             int hiddenCount = 0;
             foreach (bool h in hidden) if (h) hiddenCount++;
             hiddenTriangles = hiddenCount > 0 ? hidden : null;
             return hiddenCount;
+        }
+
+        // Inside a closed part at point: along the skin (across normal), each way leaves through a surface facing that way.
+        private bool Inside(SurfaceBvh index, Vector3 point, Vector3 normal)
+        {
+            var side = Unit(Vector3.Cross(normal, Mathf.Abs(normal.y) < .9f ? Vector3.up : Vector3.right));
+            var other = Vector3.Cross(normal, side);
+            foreach (var direction in new[] { side, -side, other, -other })
+            {
+                var exit = index.Raycast(point, direction, EnclosedReach);
+                if (!exit.found || Vector3.Dot(FaceNormal(exit.triangle), direction) <= 0) return false;
+            }
+            return true;
         }
 
         /// <summary>Vertices of hidden triangles only (see <see cref="hiddenTriangles"/>), or null when none is hidden.</summary>
@@ -287,13 +333,17 @@ namespace Orbiters.ReFit
                    worldVertices[triangles[t + 2]] * bary.z;
         }
 
-        /// <summary>World-space (non-normalized safe) face normal of a triangle.</summary>
+        /// <summary>
+        /// World-space unit face normal of a triangle, however small. A degenerate triangle (no area) takes the smooth normal of
+        /// its corners, or no direction (zero) without vertex normals: it never claims to face a way it does not.
+        /// </summary>
         public Vector3 FaceNormal(int triangle)
         {
             int t = triangle * 3;
             var a = worldVertices[triangles[t]];
-            var n = Vector3.Cross(worldVertices[triangles[t + 1]] - a, worldVertices[triangles[t + 2]] - a);
-            return n.sqrMagnitude > 1e-12f ? n.normalized : Vector3.up;
+            var n = Unit(Vector3.Cross(worldVertices[triangles[t + 1]] - a, worldVertices[triangles[t + 2]] - a));
+            if (n != Vector3.zero || worldNormals == null) return n;
+            return Unit(worldNormals[triangles[t]] + worldNormals[triangles[t + 1]] + worldNormals[triangles[t + 2]]);
         }
 
         /// <summary>Smooth world-space normal at barycentric coordinates of a triangle.</summary>
@@ -303,7 +353,8 @@ namespace Orbiters.ReFit
             var n = worldNormals[triangles[t]] * bary.x +
                     worldNormals[triangles[t + 1]] * bary.y +
                     worldNormals[triangles[t + 2]] * bary.z;
-            return n.sqrMagnitude > 1e-12f ? n.normalized : FaceNormal(triangle);
+            var unit = Unit(n);
+            return unit != Vector3.zero ? unit : FaceNormal(triangle);
         }
     }
 }

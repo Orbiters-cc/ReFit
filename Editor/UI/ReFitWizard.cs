@@ -5,6 +5,7 @@ using System.Linq;
 using Orbiters.Toolkit.Editor;
 using Orbiters.Toolkit.Editor.Refit;
 using UnityEditor;
+using UnityEditor.SceneManagement;
 using UnityEngine;
 using UnityEngine.UIElements;
 
@@ -33,6 +34,10 @@ namespace Orbiters.ReFit.Editor
         private static readonly Color32 ReFitGreen = new Color32(0, 218, 109, 255);
         private static readonly Color ReFitProgressTrack = new Color(0.22f, 0.22f, 0.22f);
         private const string StyleSheetPath = "Packages/orbiters.refit/Editor/UI/refit.uss";
+        // A choice made on press runs this long after it, once the pressed look has painted.
+        private const long PressPaint = 16;
+        // The scene settles this long after its last change before the window reads it again.
+        private const long SceneSettle = 300;
 
         private enum Page { Studio, Settings, Result }
 
@@ -47,6 +52,30 @@ namespace Orbiters.ReFit.Editor
             Other
         }
 
+        /// <summary>
+        /// Every choice a run uses, copied when it starts: the page stays locked while it runs, and nothing chosen meanwhile (a
+        /// selection, a drop) reaches it. The original base opened for the run and the fit taken back for it live here too,
+        /// never in the window's choices.
+        /// </summary>
+        private sealed class Inputs
+        {
+            public SkinnedMeshRenderer asset;
+            public GameObject targetAvatar, sourceAvatar;
+            public SkinnedMeshRenderer sourceBody;
+            public MadeFor madeFor;
+            public CustomBaseInfo originalBase;
+            public List<string> blendshapes;
+            public ReFitMode mode;
+            public ReFitSettings settings;
+            public bool madeForAvatar, refitOutfit;
+            // The target's custom base and version, recorded with the fit (MCB keeps a fit for its version only).
+            public string baseKey, baseName;
+            public CustomBaseOriginal resolvedOriginal;
+            // The parts' earlier fits, taken back for the run: each given back unless its new fit succeeds.
+            public readonly Dictionary<SkinnedMeshRenderer, ReFitRecordIntegration.PreviousFit> previous =
+                new Dictionary<SkinnedMeshRenderer, ReFitRecordIntegration.PreviousFit>();
+        }
+
         // What is being refitted (serialized: the window keeps its choices across script reloads)
         [SerializeField] private Page page = Page.Studio;
         [SerializeField] private GameObject myAvatar;
@@ -57,7 +86,6 @@ namespace Orbiters.ReFit.Editor
         [SerializeField] private SkinnedMeshRenderer sourceBody;
         [SerializeField] private MadeFor madeFor = MadeFor.Target;
         private CustomBaseInfo originalBase;
-        private CustomBaseOriginal resolvedOriginal;
         [SerializeField] private List<string> blendshapes = new List<string>();
         [SerializeField] private List<string> activeShapes = new List<string>();
         [SerializeField] private ReFitMode mode = ReFitMode.Blendshape;
@@ -95,10 +123,16 @@ namespace Orbiters.ReFit.Editor
         // Chrome: the header, then the stage on the left and the page on the right (stacked when narrow).
         private VisualElement body, stageColumn, panel;
         private bool narrow;
-        private ScrollView content;
+        // The page scrolls; the stage tops it when narrow, kept there while the page under it is built again.
+        private ScrollView scroll;
+        private VisualElement content;
         private Button backButton;
         private Button settingsButton;
         private OrbitersGlowSurfaceElement glow;
+        // Shown (not an inactive docked tab): only then does a selection in the Hierarchy reach it.
+        private bool visible;
+        private IVisualElementScheduledItem sceneUpdate;
+        private string sceneSignature;
 
         [MenuItem("Tools/Orbiters/ReFit")]
         public static void Open()
@@ -165,11 +199,14 @@ namespace Orbiters.ReFit.Editor
             panel = new VisualElement();
             panel.AddToClassList("refit-panel");
             body.Add(panel);
-            content = new ScrollView(ScrollViewMode.Vertical);
-            content.AddToClassList("refit-scroll");
-            content.horizontalScrollerVisibility = ScrollerVisibility.Hidden;
-            content.contentContainer.AddToClassList("refit-page-content");
-            panel.Add(content);
+            scroll = new ScrollView(ScrollViewMode.Vertical);
+            scroll.AddToClassList("refit-scroll");
+            scroll.horizontalScrollerVisibility = ScrollerVisibility.Hidden;
+            scroll.contentContainer.AddToClassList("refit-page-content");
+            panel.Add(scroll);
+            content = new VisualElement();
+            content.AddToClassList("refit-page");
+            scroll.Add(content);
             var credit = new SupportCredit();
             credit.AddToClassList("refit-credit");
             panel.Add(credit);
@@ -178,14 +215,37 @@ namespace Orbiters.ReFit.Editor
 
             commissionPoll?.Pause();
             commissionPoll = root.schedule.Execute(PollCommissions).Every(2000);
-            Selection.selectionChanged -= OnSelectionChanged;
-            Selection.selectionChanged += OnSelectionChanged;
+            // Its page is made when it shows (a docked tab's when it is first brought up); hidden again, it is told.
+            visible = true;
+            Listen(true);
             // After a script reload the choices are back; what is not kept is found again.
             if (page == Page.Result && lastResult == null) page = Page.Studio;
             if (targetAvatar != null && originalBase == null) originalBase = ReFitAutoSetup.OriginalBase(targetAvatar);
             if (asset == null && targetAvatar == null) AutoDetect();
+            sceneSignature = SceneSignature();
             Render();
             if (asset != null && page != Page.Result) RequestBeforePicture();
+        }
+
+        private void OnBecameVisible() => visible = true;
+        private void OnBecameInvisible() => visible = false;
+
+        // The scene the window reads: selection, hierarchy, undo, scenes opened or closed, a custom base version applied.
+        private void Listen(bool on)
+        {
+            Selection.selectionChanged -= OnSelectionChanged;
+            EditorApplication.hierarchyChanged -= OnSceneChanged;
+            Undo.undoRedoPerformed -= OnUndoRedo;
+            EditorSceneManager.sceneOpened -= OnSceneOpened;
+            EditorSceneManager.sceneClosed -= OnSceneClosed;
+            CustomBases.Changed -= OnCustomBaseChanged;
+            if (!on) return;
+            Selection.selectionChanged += OnSelectionChanged;
+            EditorApplication.hierarchyChanged += OnSceneChanged;
+            Undo.undoRedoPerformed += OnUndoRedo;
+            EditorSceneManager.sceneOpened += OnSceneOpened;
+            EditorSceneManager.sceneClosed += OnSceneClosed;
+            CustomBases.Changed += OnCustomBaseChanged;
         }
 
         // Two columns, the stage on the left; narrower than NarrowWidth, the stage tops the page and scrolls with it.
@@ -200,16 +260,17 @@ namespace Orbiters.ReFit.Editor
             PlaceStage();
         }
 
+        // Moved only when the layout switches: off a panel, the stage frees its renderer.
         private void PlaceStage()
         {
-            if (stage == null || content == null) return;
+            if (stage == null || scroll == null) return;
             if (narrow)
             {
-                if (stage.parent != content.contentContainer || content.contentContainer.IndexOf(stage) != 0)
-                    content.contentContainer.Insert(0, stage);
+                if (stage.parent != scroll.contentContainer || scroll.contentContainer.IndexOf(stage) != 0)
+                    scroll.contentContainer.Insert(0, stage);
             }
             else if (stage.parent != stageColumn) stageColumn.Add(stage);
-            stage.EnableInClassList("refit-stage--inline", narrow);
+            stage.SetInline(narrow);
             stageColumn.style.display = narrow ? DisplayStyle.None : DisplayStyle.Flex;
         }
 
@@ -224,7 +285,7 @@ namespace Orbiters.ReFit.Editor
             if (isExecuting) return;
             if (next == Page.Settings) returnPage = page;
             page = next;
-            if (content != null) content.scrollOffset = Vector2.zero;
+            if (scroll != null) scroll.scrollOffset = Vector2.zero;
             Render();
         }
 
@@ -276,12 +337,13 @@ namespace Orbiters.ReFit.Editor
             // First: whatever else fails, the stage's renderer is freed.
             stage?.Release();
             commissionPoll?.Pause();
+            sceneUpdate?.Pause();
             commissionGeneration++;
             commissionListLoading = false;
-            Selection.selectionChanged -= OnSelectionChanged;
+            Listen(false);
+            // A run stopped half way gives back what it took (its avatar, the original base, a part's earlier fit).
             StopExecutionPump();
             isExecuting = false;
-            ReleaseOriginal();
             ReFitGravityPreviewService.ClearPreview(gravityPreview);
             ClearPictures(true);
         }
@@ -303,9 +365,87 @@ namespace Orbiters.ReFit.Editor
                 case Page.Result: BuildResult(); break;
                 default: BuildStudio(); break;
             }
+            // Locked while a run works: its choices are taken, and none made now could reach it.
+            content.SetEnabled(!isExecuting);
             PlaceStage();
             ShowPictures();
         }
+
+        // ------------------------------------------------------------------
+        // The scene changing under the window
+        // ------------------------------------------------------------------
+
+        private void OnSceneChanged() => ScheduleSceneRefresh(false);
+        private void OnUndoRedo() => ScheduleSceneRefresh(true);
+        private void OnSceneOpened(UnityEngine.SceneManagement.Scene scene, OpenSceneMode openMode) => ScheduleSceneRefresh(true);
+        private void OnSceneClosed(UnityEngine.SceneManagement.Scene scene) => ScheduleSceneRefresh(true);
+        private void OnCustomBaseChanged(Transform avatarRoot)
+        {
+            if (avatarRoot == null || targetAvatar == null || avatarRoot == targetAvatar.transform) ScheduleSceneRefresh(true);
+        }
+
+        private bool sceneRefreshAll;
+
+        // The window reads the scene again a moment after its last change (a run in progress reads it when done).
+        private void ScheduleSceneRefresh(bool all)
+        {
+            sceneRefreshAll |= all;
+            sceneUpdate?.Pause();
+            sceneUpdate = rootVisualElement.schedule.Execute(RefreshFromScene).StartingIn(SceneSettle);
+        }
+
+        // Choices destroyed meanwhile are let go, the custom base is read again, and the page and the stage follow what
+        // changed: an undone refit, a removed piece, another scene. Structure unchanged (an object renamed): nothing is rebuilt.
+        private void RefreshFromScene()
+        {
+            if (content == null) return;
+            if (isExecuting) { ScheduleSceneRefresh(false); return; }
+            bool all = sceneRefreshAll;
+            sceneRefreshAll = false;
+            ReFitService.ClearValidationCache();
+            if (Gone(targetAvatar)) { targetAvatar = null; myAvatar = null; originalBase = null; }
+            if (Gone(myAvatar)) myAvatar = null;
+            if (Gone(asset)) asset = null;
+            if (Gone(assetFileObject)) assetFileObject = null;
+            if (Gone(sourceAvatar)) { sourceAvatar = null; sourceBody = null; }
+            if (Gone(sourceBody)) sourceBody = null;
+            if (targetAvatar != null) originalBase = ReFitAutoSetup.OriginalBase(targetAvatar);
+            if (madeFor == MadeFor.OriginalBase && originalBase == null) madeFor = MadeFor.Target;
+            string signature = SceneSignature();
+            if (!all && signature == sceneSignature) return;
+            sceneSignature = signature;
+            if (asset == null && targetAvatar == null) AutoDetect();
+            UpdateMode();
+            InvalidateChecks();
+            if (page == Page.Result) return;
+            ClearPictures(true);
+            RequestBeforePicture();
+            Render();
+        }
+
+        // Set once, destroyed since (a reference Unity reports as null).
+        private static bool Gone(UnityEngine.Object value) => !ReferenceEquals(value, null) && value == null;
+
+        // What the page and the stage show of the scene: the choices, the avatars, the pieces and how they are worn.
+        private string SceneSignature()
+        {
+            var parts = new List<int>
+            {
+                Id(asset), Id(targetAvatar), Id(sourceAvatar), Id(assetFileObject),
+                asset != null && asset.sharedMesh != null ? asset.sharedMesh.GetInstanceID() : 0,
+                asset != null && asset.gameObject.activeInHierarchy ? 1 : 0
+            };
+            parts.AddRange(ReFitAutoSetup.SceneAvatars().Select(Id));
+            if (targetAvatar != null)
+                foreach (var renderer in targetAvatar.GetComponentsInChildren<SkinnedMeshRenderer>(true))
+                {
+                    parts.Add(renderer.GetInstanceID());
+                    parts.Add(renderer.gameObject.activeInHierarchy ? 1 : 0);
+                }
+            return string.Join(",", parts) + "|" + (originalBase?.Key ?? "");
+        }
+
+        private static int Id(UnityEngine.Object value) => value != null ? value.GetInstanceID() : 0;
 
         // ------------------------------------------------------------------
         // Requests
@@ -318,74 +458,99 @@ namespace Orbiters.ReFit.Editor
             mode = otherBody ? (blendshapes.Count > 0 ? ReFitMode.MeshAndBlendshape : ReFitMode.MeshToMesh) : ReFitMode.Blendshape;
         }
 
-        /// <summary>Why the ReFit button cannot run yet, or null when it can.</summary>
-        private string MissingChoice()
+        /// <summary>The window's choices now.</summary>
+        private Inputs Current() => new Inputs
         {
-            if (asset == null) return "Pick the clothing to refit.";
-            if (targetAvatar == null) return "Pick the avatar it should fit.";
-            if (madeFor == MadeFor.Other && sourceAvatar == null) return "Pick the avatar it was made for.";
-            if (madeFor == MadeFor.OriginalBase && originalBase == null) return "The original base is not available.";
-            if (mode == ReFitMode.Blendshape && blendshapes.Count == 0)
+            asset = asset, targetAvatar = targetAvatar, sourceAvatar = sourceAvatar, sourceBody = sourceBody, madeFor = madeFor,
+            originalBase = originalBase, blendshapes = new List<string>(blendshapes), mode = mode,
+            settings = settings?.Clone() ?? new ReFitSettings(), madeForAvatar = madeForAvatar, refitOutfit = refitOutfit
+        };
+
+        /// <summary>Why the ReFit button cannot run yet, or null when it can.</summary>
+        private string MissingChoice() => MissingChoice(Current());
+
+        private static string MissingChoice(Inputs run)
+        {
+            if (run.asset == null) return "Pick the clothing to refit.";
+            if (run.targetAvatar == null) return "Pick the avatar it should fit.";
+            if (run.madeFor == MadeFor.Other && run.sourceAvatar == null) return "Pick the avatar it was made for.";
+            if (run.madeFor == MadeFor.OriginalBase && run.originalBase == null) return "The original base is not available.";
+            // Placed by hand, it is fitted out of the body where it clips, shapes or not.
+            if (run.mode == ReFitMode.Blendshape && run.blendshapes.Count == 0 && !OnItsAvatar(run, run.asset))
                 return "It already fits this avatar: pick body shapes to follow, or the base it was made for.";
             return null;
         }
 
-        private ReFitRequest BuildRequest(SkinnedMeshRenderer part)
+        private ReFitRequest BuildRequest(SkinnedMeshRenderer part) => RequestFor(Current(), part);
+
+        private static ReFitRequest RequestFor(Inputs run, SkinnedMeshRenderer part)
         {
-            var requestSettings = settings.Clone();
+            var requestSettings = run.settings.Clone();
             requestSettings.captureProjectionDebug = ReFitDebugService.Enabled;
             if (requestSettings.captureProjectionDebug)
                 requestSettings.maxProjectionDebugGroups = 0;
             var request = new ReFitRequest
             {
-                mode = mode,
+                mode = run.mode,
                 assetRenderer = part,
-                sourceAvatar = mode == ReFitMode.Blendshape ? null : sourceAvatar,
-                sourceBodyRenderer = mode == ReFitMode.Blendshape ? null : sourceBody,
-                targetAvatar = targetAvatar,
-                targetBlendshapes = mode == ReFitMode.MeshToMesh ? null : new List<string>(blendshapes),
+                sourceAvatar = run.mode == ReFitMode.Blendshape ? null : run.sourceAvatar,
+                sourceBodyRenderer = run.mode == ReFitMode.Blendshape ? null : run.sourceBody,
+                targetAvatar = run.targetAvatar,
+                // The body the shapes were picked from: the refit uses the same one.
+                targetBodyRenderer = ReFitAutoSetup.Body(run.targetAvatar, part),
+                targetBlendshapes = run.mode == ReFitMode.MeshToMesh ? null : new List<string>(run.blendshapes),
                 settings = requestSettings
             };
-            if (madeForAvatar) return request;
+            if (run.madeForAvatar || !PlacedByHandApplies(run, part)) return request;
             // Not made for it: the coverage pass made for clothing from another avatar base.
             requestSettings.coverDifferentBaseBody = true;
-            if (OnItsAvatar(part))
+            if (OnItsAvatar(run, part))
             {
                 // Its mesh is refitted onto the same body, from where it was placed, with the blendshapes. The outfit's other
                 // parts keep their side of it; clipping they cover stays as it is.
-                request.mode = ReFitMode.MeshAndBlendshape;
-                request.sourceAvatar = targetAvatar;
-                request.sourceBodyRenderer = null;
+                request.mode = run.blendshapes.Count > 0 ? ReFitMode.MeshAndBlendshape : ReFitMode.MeshToMesh;
+                if (request.mode == ReFitMode.MeshToMesh) request.targetBlendshapes = null;
+                request.sourceAvatar = run.targetAvatar;
+                request.sourceBodyRenderer = request.targetBodyRenderer;
                 requestSettings.coverageKeepsLayerOrder = true;
-                request.coverageLayers = OutfitParts(part).Where(p => p != part).ToList();
+                request.coverageLayers = OutfitParts(run, part).Where(p => p != part).ToList();
             }
             return request;
         }
 
-        // Refit onto the same avatar from where it was placed: it is on that avatar's hierarchy.
-        private bool OnItsAvatar(SkinnedMeshRenderer part) => !madeForAvatar && mode != ReFitMode.MeshToMesh && targetAvatar != null &&
-            part != null && part.transform.IsChildOf(targetAvatar.transform) && (sourceAvatar == null || sourceAvatar == targetAvatar);
+        // Placed by hand needs a body to fit it from: another one (a mesh refit), or the avatar it was placed on. A project
+        // file following this avatar's shapes has neither.
+        private static bool PlacedByHandApplies(Inputs run, SkinnedMeshRenderer part) => run.mode != ReFitMode.Blendshape || OnAvatar(run, part);
+
+        // Worn on the avatar it should fit (in its hierarchy), with no other body chosen to fit it from.
+        private static bool OnAvatar(Inputs run, SkinnedMeshRenderer part) => run.mode != ReFitMode.MeshToMesh && run.madeFor != MadeFor.OriginalBase &&
+            run.targetAvatar != null && part != null && !EditorUtility.IsPersistent(part) && part.transform.IsChildOf(run.targetAvatar.transform) &&
+            (run.sourceAvatar == null || run.sourceAvatar == run.targetAvatar);
+
+        // Refit onto the same avatar from where it was placed by hand.
+        private static bool OnItsAvatar(Inputs run, SkinnedMeshRenderer part) => !run.madeForAvatar && OnAvatar(run, part);
 
         // The outfit a part belongs to: its object directly under the avatar, when that holds other meshes. Body and
         // editor-only renderers excluded.
-        private List<SkinnedMeshRenderer> OutfitParts(SkinnedMeshRenderer part)
+        private static List<SkinnedMeshRenderer> OutfitParts(Inputs run, SkinnedMeshRenderer part)
         {
             var parts = new List<SkinnedMeshRenderer> { part };
-            if (part == null || targetAvatar == null || !part.transform.IsChildOf(targetAvatar.transform) || part.transform == targetAvatar.transform) return parts;
+            var avatar = run.targetAvatar;
+            if (part == null || avatar == null || !part.transform.IsChildOf(avatar.transform) || part.transform == avatar.transform) return parts;
             var top = part.transform;
-            while (top.parent != null && top.parent != targetAvatar.transform) top = top.parent;
-            var body = ReFitAutoSetup.Body(targetAvatar);
+            while (top.parent != null && top.parent != avatar.transform) top = top.parent;
+            var body = ReFitAutoSetup.Body(avatar);
             foreach (var renderer in top.GetComponentsInChildren<SkinnedMeshRenderer>(true))
                 if (renderer != part && renderer != body && renderer.sharedMesh != null && (renderer.hideFlags & HideFlags.DontSaveInEditor) == 0)
                     parts.Add(renderer);
             return parts;
         }
 
-        // The parts refitted in this run: the asset, or its outfit innermost first.
-        private List<SkinnedMeshRenderer> RunParts()
+        // The parts refitted in a run: the asset, or its outfit innermost first.
+        private static List<SkinnedMeshRenderer> RunParts(Inputs run)
         {
-            if (!OnItsAvatar(asset) || !refitOutfit) return new List<SkinnedMeshRenderer> { asset };
-            return ReFitOutfit.InnerFirst(ReFitAutoSetup.Body(targetAvatar), OutfitParts(asset));
+            if (!OnItsAvatar(run, run.asset) || !run.refitOutfit) return new List<SkinnedMeshRenderer> { run.asset };
+            return ReFitOutfit.InnerFirst(ReFitAutoSetup.Body(run.targetAvatar), OutfitParts(run, run.asset));
         }
 
         // ------------------------------------------------------------------
@@ -394,7 +559,9 @@ namespace Orbiters.ReFit.Editor
 
         private void StartExecution()
         {
-            if (isExecuting || MissingChoice() != null) return;
+            if (isExecuting) return;
+            var run = Current();
+            if (MissingChoice(run) != null) return;
             try
             {
                 isExecuting = true;
@@ -402,12 +569,11 @@ namespace Orbiters.ReFit.Editor
                 executionStep = "Preparing…";
                 lastResult = null;
                 outfitResults.Clear();
-                backButton?.SetEnabled(false);
-                settingsButton?.SetEnabled(false);
                 executionCoroutines.Clear();
-                executionCoroutines.Push(RunExecution());
+                executionCoroutines.Push(RunExecution(run));
                 EditorApplication.update -= PumpExecution;
                 EditorApplication.update += PumpExecution;
+                Render();
                 stage?.SetBusy("Fitting…");
             }
             catch (Exception ex)
@@ -416,68 +582,113 @@ namespace Orbiters.ReFit.Editor
             }
         }
 
-        private IEnumerator RunExecution()
+        private IEnumerator RunExecution(Inputs run)
         {
             // The press shows at once; the pictures and the original base come on the next frame.
             yield return null;
-            CaptureBeforePictures();
-            if (madeFor == MadeFor.OriginalBase)
+            // Held as the Orbiters tools hold their own refits: the custom base cannot change meanwhile, and the posing preview
+            // rests, on the avatar it should fit and on the one it was made for.
+            using (ReFitRecordIntegration.Hold(run.targetAvatar))
+            using (ReFitRecordIntegration.Hold(run.sourceAvatar != run.targetAvatar ? run.sourceAvatar : null))
             {
-                executionStep = "Opening " + (originalBase?.BaseName ?? "the original base") + "…";
-                yield return null;
-                if (!ResolveOriginal())
+                try
                 {
-                    lastResult = new ReFitResult();
-                    lastResult.report.Error("original-base-missing",
-                        "The original base of " + (originalBase?.Name ?? "this custom base") + " could not be opened.");
-                    FinishExecution();
-                    yield break;
-                }
-            }
-            lastSourceName = mode == ReFitMode.Blendshape ? null : sourceAvatar != null ? sourceAvatar.name : null;
-            if (madeFor == MadeFor.OriginalBase && originalBase != null) lastSourceName = originalBase.BaseName ?? lastSourceName;
-            lastRequest = BuildRequest(asset);
-
-            var parts = RunParts();
-            if (parts.Count == 1)
-            {
-                // A part not made for this avatar starts again from its original mesh, not from an earlier refit.
-                if (OnItsAvatar(asset) && ReFitRecordIntegration.TryRestore(asset)) lastRequest = BuildRequest(asset);
-                yield return ReFitService.ExecuteCoroutine(
-                    lastRequest,
-                    (t, label) =>
+                    // Read now it is held (the window's copy follows the scene a moment late): the base the fit is made for.
+                    var customBase = CustomBases.Describe(run.targetAvatar.transform);
+                    if (run.madeFor == MadeFor.OriginalBase) run.originalBase = customBase != null && customBase.CanFit ? customBase : null;
+                    run.baseKey = customBase?.Key;
+                    run.baseName = customBase?.Name;
+                    if (run.madeFor == MadeFor.OriginalBase)
                     {
-                        executionProgress = Mathf.Clamp01(t);
-                        executionStep = label;
-                    },
-                    result => lastResult = result);
-            }
-            else
-                for (int i = 0; i < parts.Count; i++)
-                {
-                    var part = parts[i];
-                    if (part == null) continue;
-                    ReFitRecordIntegration.TryRestore(part);
-                    // Built now: the parts refitted before it are its layers as refitted.
-                    var request = BuildRequest(part);
-                    // One prefab of the outfit, once every part is refitted.
-                    request.settings.savePrefab &= i == parts.Count - 1;
-                    ReFitResult result = null;
-                    int index = i;
-                    yield return ReFitService.ExecuteCoroutine(
-                        request,
-                        (t, label) =>
+                        executionStep = "Opening " + (run.originalBase?.BaseName ?? "the original base") + "…";
+                        yield return null;
+                        if (!ResolveOriginal(run))
                         {
-                            executionProgress = Mathf.Clamp01((index + Mathf.Clamp01(t)) / parts.Count);
-                            executionStep = part.name + ": " + label;
-                        },
-                        r => result = r);
-                    Record(request, result, part);
-                    outfitResults.Add((part, request, result));
-                    if (part == asset) { lastRequest = request; lastResult = result; }
-                }
+                            lastResult = new ReFitResult();
+                            lastResult.report.Error("original-base-missing",
+                                "The original base of " + (run.originalBase?.Name ?? "this custom base") + " could not be opened.");
+                            FinishExecution();
+                            yield break;
+                        }
+                    }
+                    lastSourceName = run.mode == ReFitMode.Blendshape ? null : run.sourceAvatar != null ? run.sourceAvatar.name : null;
+                    if (run.madeFor == MadeFor.OriginalBase && run.originalBase != null) lastSourceName = run.originalBase.BaseName ?? lastSourceName;
 
-            FinishExecution();
+                    // A fit starts again from each part's original mesh, never on top of an earlier refit (which would also
+                    // become the "original" every tool's reset gives back); shapes added to a refit keep it. Every part first:
+                    // the stage compares the result with those originals.
+                    var parts = RunParts(run);
+                    foreach (var part in parts)
+                        if (part != null && RefitsMesh(run, part) && !run.previous.ContainsKey(part))
+                        {
+                            var previous = ReFitRecordIntegration.StartAgain(part);
+                            if (previous != null) run.previous[part] = previous;
+                        }
+                    CaptureBeforePictures(run);
+                    if (parts.Count == 1)
+                    {
+                        lastRequest = RequestFor(run, run.asset);
+                        yield return ReFitService.ExecuteCoroutine(
+                            lastRequest,
+                            (t, label) =>
+                            {
+                                executionProgress = Mathf.Clamp01(t);
+                                executionStep = label;
+                            },
+                            result => lastResult = result);
+                        Settle(run, lastRequest, lastResult, run.asset);
+                    }
+                    else
+                        for (int i = 0; i < parts.Count; i++)
+                        {
+                            var part = parts[i];
+                            if (part == null) continue;
+                            // Built now: the parts refitted before it are its layers as refitted.
+                            var request = RequestFor(run, part);
+                            // One prefab of the outfit, once every part is refitted.
+                            request.settings.savePrefab &= i == parts.Count - 1;
+                            ReFitResult result = null;
+                            int index = i;
+                            yield return ReFitService.ExecuteCoroutine(
+                                request,
+                                (t, label) =>
+                                {
+                                    executionProgress = Mathf.Clamp01((index + Mathf.Clamp01(t)) / parts.Count);
+                                    executionStep = part.name + ": " + label;
+                                },
+                                r => result = r);
+                            Settle(run, request, result, part);
+                            outfitResults.Add((part, request, result));
+                            if (part == run.asset) { lastRequest = request; lastResult = result; }
+                        }
+                    ReleaseOriginal(run);
+                    FinishExecution();
+                }
+                finally
+                {
+                    // Stopped half way (the window closed) or failed before a part ran: its earlier fit comes back.
+                    foreach (var previous in run.previous.Values) previous.Keep();
+                    run.previous.Clear();
+                    ReleaseOriginal(run);
+                }
+            }
+        }
+
+        // The part's mesh is refitted (not only given shapes): from the avatar or base it was made for, or placed by hand.
+        private static bool RefitsMesh(Inputs run, SkinnedMeshRenderer part) => run.mode != ReFitMode.Blendshape || OnItsAvatar(run, part);
+
+        // After each part: a result replaces the part's earlier fit and is recorded; a failed one gives the earlier fit back.
+        private static void Settle(Inputs run, ReFitRequest request, ReFitResult result, SkinnedMeshRenderer part)
+        {
+            if (part != null && run.previous.TryGetValue(part, out var previous)) run.previous.Remove(part);
+            else previous = null;
+            if (result == null || !result.success)
+            {
+                previous?.Keep();
+                return;
+            }
+            previous?.Drop();
+            Record(run, request, result, part);
         }
 
         /// <summary>Drives nested ReFit enumerators from editor updates while geometry runs on its worker task.</summary>
@@ -529,10 +740,16 @@ namespace Orbiters.ReFit.Editor
             FinishExecution();
         }
 
-        private static void Record(ReFitRequest request, ReFitResult result, SkinnedMeshRenderer part)
+        // Applied and saved: from here a failure is the window's, never the refit's.
+        private static void Record(Inputs run, ReFitRequest request, ReFitResult result, SkinnedMeshRenderer part)
         {
             if (result == null || !result.success) return;
-            ReFitRecordIntegration.TryRegister(request, result);
+            try { ReFitRecordIntegration.TryRegister(request, result, run.baseKey, run.baseName); }
+            catch (Exception ex)
+            {
+                Debug.LogException(ex);
+                result.report.Warn("record-failed", "The refit is applied, but the Orbiters tools could not record it: " + ex.Message);
+            }
             SessionLog.Add(new RefitLogEntry
             {
                 assetName = part != null ? part.name : "asset",
@@ -546,45 +763,59 @@ namespace Orbiters.ReFit.Editor
 
         private void FinishExecution()
         {
-            StopExecutionPump();
             isExecuting = false;
             executionProgress = 1f;
             executionStep = null;
-            if (outfitResults.Count == 0) Record(lastRequest, lastResult, asset);
-            ReleaseOriginal();
             gravityPreview = null;
-            // The gravity preview shows one garment: an outfit run goes to its results.
-            if (outfitResults.Count == 0 && lastResult != null && lastResult.success &&
-                ReFitGravityPreviewService.TryCreatePreview(lastResult, lastRequest, out gravityPreview))
-            {
-                gravityPreviewWeight = 100f;
-                ReFitGravityPreviewService.ShowPreview(lastResult.sceneRenderer, gravityPreview, gravityPreviewWeight);
-            }
-            stage?.SetBusy(null);
             page = Page.Result;
-            Render();
-            if (lastResult != null && lastResult.success) RequestAfterPicture();
+            // The result is applied and saved: what the page shows of it may fail without making it a failed refit.
+            try
+            {
+                // The gravity preview shows one garment: an outfit run goes to its results.
+                if (outfitResults.Count == 0 && lastResult != null && lastResult.success &&
+                    ReFitGravityPreviewService.TryCreatePreview(lastResult, lastRequest, out gravityPreview))
+                {
+                    gravityPreviewWeight = 100f;
+                    ReFitGravityPreviewService.ShowPreview(lastResult.sceneRenderer, gravityPreview, gravityPreviewWeight);
+                }
+            }
+            catch (Exception ex)
+            {
+                gravityPreview = null;
+                Debug.LogException(ex);
+                lastResult?.report.Warn("gravity-preview", "The gravity preview could not be shown: " + ex.Message);
+            }
+            try
+            {
+                // Taken at once, while the avatar is still held at rest like the before picture (a posing preview resumes after).
+                if (lastResult != null && lastResult.success && lastResult.sceneRenderer != null && afterScene == null)
+                    afterScene = MakeScene(lastResult.sceneRenderer, lastRequest?.targetAvatar ?? targetAvatar);
+                stage?.SetBusy(null);
+                Render();
+            }
+            catch (Exception ex) { Debug.LogException(ex); }
         }
 
         // The original base comes from the tool that knows the custom base (it may import a file): only for the run.
-        private bool ResolveOriginal()
+        private static bool ResolveOriginal(Inputs run)
         {
-            ReleaseOriginal();
-            try { resolvedOriginal = originalBase?.ResolveOriginal?.Invoke(); }
-            catch (Exception ex) { Debug.LogWarning("[ReFit] Could not open the original base: " + ex.Message); resolvedOriginal = null; }
-            if (resolvedOriginal == null || resolvedOriginal.Avatar == null) { ReleaseOriginal(); return false; }
-            sourceAvatar = resolvedOriginal.Avatar;
-            sourceBody = resolvedOriginal.Body;
+            ReleaseOriginal(run);
+            try { run.resolvedOriginal = run.originalBase?.ResolveOriginal?.Invoke(); }
+            catch (Exception ex) { Debug.LogWarning("[ReFit] Could not open the original base: " + ex.Message); run.resolvedOriginal = null; }
+            if (run.resolvedOriginal == null || run.resolvedOriginal.Avatar == null) { ReleaseOriginal(run); return false; }
+            run.sourceAvatar = run.resolvedOriginal.Avatar;
+            run.sourceBody = run.resolvedOriginal.Body;
             return true;
         }
 
-        private void ReleaseOriginal()
+        private static void ReleaseOriginal(Inputs run)
         {
-            if (resolvedOriginal == null) return;
-            if (madeFor == MadeFor.OriginalBase) { sourceAvatar = null; sourceBody = null; }
-            try { resolvedOriginal.Dispose(); }
+            if (run?.resolvedOriginal == null) return;
+            run.sourceAvatar = null;
+            run.sourceBody = null;
+            try { run.resolvedOriginal.Dispose(); }
             catch (Exception ex) { Debug.LogWarning("[ReFit] Could not close the original base: " + ex.Message); }
-            resolvedOriginal = null;
+            run.resolvedOriginal = null;
         }
 
         // ------------------------------------------------------------------
@@ -617,14 +848,26 @@ namespace Orbiters.ReFit.Editor
             element.RegisterCallback<PointerLeaveEvent>(_ => element.RemoveFromClassList("refit-pressed"));
         }
 
-        /// <summary>An element that acts as soon as it is pressed (choices that are cheap and safe to apply at once).</summary>
-        private static void OnPress(VisualElement element, Action action)
+        /// <summary>
+        /// An element that acts as soon as it is pressed (choices that are cheap and safe to apply at once). The press paints
+        /// first (pressed, and <paramref name="shown"/>: the choice's look, such as the card lit); the choice itself, which may
+        /// read the avatar and builds the page again, follows a frame later. <paramref name="now"/> acts within the press
+        /// (a menu opens under the pointer from its event).
+        /// </summary>
+        private void OnPress(VisualElement element, Action action, Action shown = null, bool now = false)
         {
+            void Press()
+            {
+                element.AddToClassList("refit-pressed");
+                shown?.Invoke();
+                element.MarkDirtyRepaint();
+                if (now) action();
+                else rootVisualElement.schedule.Execute(() => { if (!isExecuting) action(); }).StartingIn(PressPaint);
+            }
             element.RegisterCallback<PointerDownEvent>(evt =>
             {
-                if (evt.button != 0 || !element.enabledInHierarchy) return;
-                element.AddToClassList("refit-pressed");
-                action();
+                if (evt.button != 0 || !element.enabledInHierarchy || isExecuting) return;
+                Press();
                 evt.StopPropagation();
             });
             element.RegisterCallback<PointerUpEvent>(_ => element.RemoveFromClassList("refit-pressed"));
@@ -632,9 +875,17 @@ namespace Orbiters.ReFit.Editor
             element.focusable = true;
             element.RegisterCallback<KeyDownEvent>(evt =>
             {
-                if (evt.keyCode == KeyCode.Return || evt.keyCode == KeyCode.Space) action();
+                if ((evt.keyCode == KeyCode.Return || evt.keyCode == KeyCode.Space) && element.enabledInHierarchy && !isExecuting) Press();
             });
         }
+
+        /// <summary>Lights <paramref name="element"/> with <paramref name="className"/>, its siblings off: a choice shown on press.</summary>
+        private static Action Light(VisualElement element, string className) => () =>
+        {
+            if (element.parent != null)
+                foreach (var sibling in element.parent.Children()) sibling.RemoveFromClassList(className);
+            element.AddToClassList(className);
+        };
 
         private static Label Text(VisualElement parent, string text, params string[] classes)
         {

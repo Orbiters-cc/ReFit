@@ -1,3 +1,5 @@
+using System.Collections.Generic;
+using System.Text;
 using System.Text.RegularExpressions;
 using UnityEngine;
 
@@ -11,11 +13,18 @@ namespace Orbiters.ReFit
     /// </summary>
     public static class ReFitClothingDetection
     {
-        // Distinctive enough to be found inside longer names ("classicJockstrap", "SportBodysuit").
+        // Distinctive enough to be found inside longer names ("classicJockstrap", "SportBodysuit", "Swim_Suit"), as long as the
+        // name's word ends with them, with a plural or a garment word ("bikinitop", "Boxer Shorts"): "Speedometer" is no speedo.
         private static readonly string[] Tokens =
         {
             "jockstrap", "underwear", "undies", "lingerie", "bikini", "swimsuit", "swimwear", "leotard", "bodysuit",
-            "panties", "boxers", "boxerbrief", "briefs", "thong", "speedo"
+            "panties", "boxers", "boxershort", "boxerbrief", "briefs", "thong", "speedo"
+        };
+
+        // What may follow a token within a word: a plural, or a garment word of a compound name.
+        private static readonly string[] Endings =
+        {
+            "s", "es", "top", "tops", "set", "sets", "short", "shorts", "bottom", "bottoms", "brief", "briefs", "piece", "pieces"
         };
 
         // Short words that are clothing only on their own ("Bra", not "Bracelet").
@@ -35,12 +44,33 @@ namespace Orbiters.ReFit
         {
             if (renderer == null) return false;
             string text = renderer.name + " " + renderer.gameObject.name + " " + (renderer.sharedMesh != null ? renderer.sharedMesh.name : "");
-            string normalized = ReFitUtility.NormalizeName(text);
-            foreach (string token in Tokens)
-                if (normalized.Contains(token)) return true;
-            // Word boundaries for the short ones, camel case split first ("SportBra" -> "sport bra").
+            // Word boundaries, camel case split first ("SportBra" -> "sport bra").
             string spaced = Regex.Replace(text, "(?<=[a-z])(?=[A-Z])", " ").ToLowerInvariant();
-            return Words.IsMatch(spaced);
+            if (Words.IsMatch(spaced)) return true;
+            // The words joined ("boxer_shorts" -> "boxershorts"), remembering where each ends.
+            var joined = new StringBuilder();
+            var ends = new HashSet<int>();
+            foreach (Match word in Regex.Matches(spaced, "[a-z]+"))
+            {
+                joined.Append(word.Value);
+                ends.Add(joined.Length);
+            }
+            string letters = joined.ToString();
+            foreach (string token in Tokens)
+                for (int at = letters.IndexOf(token, System.StringComparison.Ordinal); at >= 0;
+                     at = letters.IndexOf(token, at + 1, System.StringComparison.Ordinal))
+                    if (EndsWord(letters, at + token.Length, ends)) return true;
+            return false;
+        }
+
+        // A word ends there, or after a plural or a garment word that ends one.
+        private static bool EndsWord(string letters, int end, HashSet<int> ends)
+        {
+            if (ends.Contains(end)) return true;
+            foreach (string ending in Endings)
+                if (end + ending.Length <= letters.Length && string.CompareOrdinal(letters, end, ending, 0, ending.Length) == 0 &&
+                    ends.Contains(end + ending.Length)) return true;
+            return false;
         }
     }
 }

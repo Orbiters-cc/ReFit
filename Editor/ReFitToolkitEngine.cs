@@ -21,12 +21,14 @@ namespace Orbiters.ReFit.Editor
         [InitializeOnLoadMethod]
         private static void Register() => RefitEngine.Register(new ReFitToolkitEngine());
 
+        // The Toolkit's refit cache keys results by this name: the algorithm revision makes results of an earlier one miss
+        // even when the package version stays the same.
         public string Name
         {
             get
             {
                 var info = UnityEditor.PackageManager.PackageInfo.FindForAssembly(typeof(ReFitToolkitEngine).Assembly);
-                return "ReFit " + (info != null ? info.version : "dev");
+                return "ReFit " + (info != null ? info.version : "dev") + " r" + ReFitCacheIdentity.Revision;
             }
         }
 
@@ -35,6 +37,7 @@ namespace Orbiters.ReFit.Editor
         {
             var settings = new ReFitSettings { replaceArmature = false, transferWeights = false, prefixTransferredShapes = false, savePrefab = false };
             ReFitSettingsPresets.ApplyTightness(settings, job.Tightness);
+            // A fit asks for the coverage itself; shapes added to a fit made with it keep it, read from the fit's own data.
             settings.coverDifferentBaseBody = job.Mode == RefitMode.Fit && job.CoverDifferentBaseBody;
             bool fit = job.Mode == RefitMode.Fit;
             return new ReFitRequest

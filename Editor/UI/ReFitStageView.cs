@@ -13,7 +13,8 @@ namespace Orbiters.ReFit.Editor
     /// back. After a refit one camera shows before and after, split by a handle the pointer drags (it sweeps open when the
     /// result arrives). Drawn with the Orbiters tools' shared preview camera (<see cref="OrbitCamera"/>,
     /// <see cref="OffscreenPreview"/>, which gives the editor its lighting back after every render). The scenes shown are
-    /// the window's: it disposes them, this element only draws them.
+    /// the window's: it disposes them, this element only draws them. Inline in a scrolling page, the wheel scrolls the page
+    /// unless the stage was clicked or Ctrl is held.
     /// </summary>
     internal sealed class ReFitStageView : VisualElement
     {
@@ -35,7 +36,7 @@ namespace Orbiters.ReFit.Editor
         private Quaternion facing = Quaternion.identity;
         private Vector3 viewDirection = ReFitScenePicture.Direction(ReFitScenePicture.View.ThreeQuarter);
         private float split = 1f, targetSplit = 1f;
-        private bool dirty;
+        private bool dirty, inline;
         private double lastTick;
         private int dragPointer = -1;
         private bool dragSplit, dragPans;
@@ -45,6 +46,8 @@ namespace Orbiters.ReFit.Editor
         public VisualElement Overlay { get; }
         /// <summary>Raised when objects are dropped on the stage.</summary>
         public event Action<Object[]> Dropped;
+        /// <summary>Whether dragged objects can be dropped (the stage shows it while they hover); null takes none.</summary>
+        public Func<Object[], bool> Accepts;
 
         public bool Comparing => beforeScene != null && afterScene != null;
         public bool HasScene => beforeScene != null || afterScene != null;
@@ -111,6 +114,7 @@ namespace Orbiters.ReFit.Editor
             RegisterCallback<DragUpdatedEvent>(OnDragUpdated);
             RegisterCallback<DragPerformEvent>(OnDragPerform);
             RegisterCallback<DragLeaveEvent>(_ => RemoveFromClassList("refit-stage--drop"));
+            RegisterCallback<DragExitedEvent>(_ => RemoveFromClassList("refit-stage--drop"));
             schedule.Execute(Tick).Every(15);
             ShowEmpty("Pick the clothing to refit", "Select it in the Hierarchy, click it, or drop it here.");
         }
@@ -174,6 +178,15 @@ namespace Orbiters.ReFit.Editor
                     facing = main.facing;
                     Aim(true);
                 }
+                else if (reveal)
+                {
+                    // The result may stand elsewhere (a larger body): the camera takes both in, from where it looks now.
+                    frame = before.accessoryBounds;
+                    frame.Encapsulate(after.accessoryBounds);
+                    orbit.TargetPivot = frame.center;
+                    orbit.TargetDistance = Mathf.Max(orbit.TargetDistance, orbit.Fit(frame) * FrameMargin);
+                    dirty = true;
+                }
             }
             if (!Comparing) split = targetSplit = 1f;
             else if (reveal)
@@ -190,6 +203,16 @@ namespace Orbiters.ReFit.Editor
         {
             viewDirection = localDirection;
             Aim(false);
+        }
+
+        /// <summary>Inline in a scrolling page (a narrow window): the wheel scrolls the page unless the stage has focus or Ctrl is held.</summary>
+        public void SetInline(bool value)
+        {
+            inline = value;
+            EnableInClassList("refit-stage--inline", value);
+            hint.text = value
+                ? "Drag to turn  ·  Ctrl+scroll to zoom  ·  Right-drag to move  ·  Double-click to frame"
+                : "Drag to turn  ·  Scroll to zoom  ·  Right-drag to move  ·  Double-click to frame";
         }
 
         /// <summary>A short line over the stage while the scene is made or a refit runs; null hides it.</summary>
@@ -314,6 +337,8 @@ namespace Orbiters.ReFit.Editor
         private void OnWheel(WheelEvent evt)
         {
             if (!HasScene) return;
+            // Inline, the page scrolls past the stage until the stage is clicked.
+            if (inline && !evt.ctrlKey && !evt.commandKey && focusController?.focusedElement != this) return;
             float fit = orbit.Fit(frame);
             orbit.Zoom(evt.delta.y, fit * 0.15f, Mathf.Max(orbit.Fit(everything) * 1.6f, fit * 3f));
             dirty = true;
@@ -321,18 +346,24 @@ namespace Orbiters.ReFit.Editor
             evt.PreventDefault();
         }
 
+        private bool CanDrop()
+        {
+            var objects = DragAndDrop.objectReferences;
+            return objects != null && objects.Length > 0 && Accepts != null && Accepts(objects);
+        }
+
         private void OnDragUpdated(DragUpdatedEvent evt)
         {
-            if (DragAndDrop.objectReferences == null || DragAndDrop.objectReferences.Length == 0) return;
-            DragAndDrop.visualMode = DragAndDropVisualMode.Link;
-            AddToClassList("refit-stage--drop");
+            bool accepted = CanDrop();
+            DragAndDrop.visualMode = accepted ? DragAndDropVisualMode.Link : DragAndDropVisualMode.Rejected;
+            EnableInClassList("refit-stage--drop", accepted);
         }
 
         private void OnDragPerform(DragPerformEvent evt)
         {
             RemoveFromClassList("refit-stage--drop");
+            if (!CanDrop()) return;
             var objects = DragAndDrop.objectReferences;
-            if (objects == null || objects.Length == 0) return;
             DragAndDrop.AcceptDrag();
             Dropped?.Invoke(objects);
         }
@@ -389,28 +420,17 @@ namespace Orbiters.ReFit.Editor
             preview.lights[0].transform.rotation = rotation * Quaternion.Euler(25f, -30f, 0f);
             preview.lights[1].intensity = 0.75f;
             preview.lights[1].transform.rotation = rotation * Quaternion.Euler(0f, 140f, 0f);
-            foreach (var part in scene.parts)
-            {
-                if (part.mesh == null) continue;
-                for (int submesh = 0; submesh < part.mesh.subMeshCount; submesh++)
-                {
-                    var material = part.materials != null && part.materials.Length > 0
-                        ? part.materials[Mathf.Min(submesh, part.materials.Length - 1)] : null;
-                    // A renderer without its material still shows, in plain grey.
-                    preview.DrawMesh(part.mesh, part.matrix, material != null ? material : fallback, submesh);
-                }
-            }
+            foreach (var part in scene.parts) ReFitScenePicture.Draw(preview, part, fallback);
             OffscreenPreview.Render(preview, texture);
         }
 
+        // The fallback first and on its own: a renderer made without it would draw missing materials with nothing, every frame.
         private void EnsureResources()
         {
+            if (fallback == null) fallback = ReFitScenePicture.Fallback();
             if (preview != null) return;
             preview = new PreviewRenderUtility();
             preview.camera.allowHDR = false;
-            var shader = Shader.Find("Standard");
-            fallback = new Material(shader != null ? shader : Shader.Find("Hidden/InternalErrorShader"))
-                { hideFlags = HideFlags.HideAndDontSave, color = new Color(0.62f, 0.63f, 0.66f) };
         }
     }
 }

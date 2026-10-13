@@ -1,5 +1,6 @@
 using System;
 using System.Collections.Generic;
+using System.Threading;
 using System.Threading.Tasks;
 using UnityEngine;
 
@@ -10,7 +11,9 @@ namespace Orbiters.ReFit
     /// it, turned the same way, straight beneath, inside the same part of the body) pushes the fabric out over it. The push
     /// spreads over the fabric around it like cloth draped over the body, so fabric spans breasts, a belly or buttocks much
     /// larger than the base's instead of tenting at single points. Fabric authored under the skin (a collar under fluff)
-    /// stays under it, and openings (head, cuffs closed over a tube) and closed details are not moved by the skin.
+    /// stays under it, and openings (head, cuffs closed over a tube) and closed details are not moved by the skin: a closed
+    /// ring (a belt, a collar) follows the draped fabric under each part of it, a small closed detail (a button) rides with it
+    /// whole. Built for shapes added to a fit later, the fit is where the clothing was made, on the target itself.
     /// </summary>
     internal sealed class ReFitDrape
     {
@@ -26,9 +29,13 @@ namespace Orbiters.ReFit
         private const float ExposedTolerance = .001f;
         // How far around the fabric the skin needed at first, the drape may lift it as much (rings of neighbours).
         private const int NeedRings = 8;
+        // The fabric's hierarchy follows it every iteration and is built again this often: its bounds loosen as it moves.
+        private const int RebuildEvery = 16;
 
         private readonly MeshSnapshot asset;
-        private readonly bool[] authoredUnder, fixedGroups, details;
+        private readonly bool[] authoredUnder, fixedGroups, details, rings;
+        // Where each group was made, on the body it was made for (as authored, or as fitted for shapes added to a fit).
+        private readonly Vector3[] made;
         // The target body's vertex neighbours (same topology for its shapes).
         private readonly List<int>[] neighbours;
         // The clothing groups' body regions, or null.
@@ -53,15 +60,22 @@ namespace Orbiters.ReFit
         private const float MacroDifference = .9f;
 
 
+        /// <param name="rest">
+        /// Per group, from the asset as captured to where it was made on <paramref name="source"/>: null when it was made as
+        /// captured; the fit, for shapes added to a fitted clothing (then <paramref name="source"/> is the target).
+        /// </param>
         /// <param name="source">The body the clothing was made for, in the staged pose the asset was captured in.</param>
         /// <param name="target">The target body at rest: the skin the drape keeps covered.</param>
         /// <param name="hidden">Clipped groups covered by the clothing's own fabric: left where they are.</param>
         /// <param name="targetRegions">The target body's triangle regions, or null.</param>
-        public ReFitDrape(MeshSnapshot asset, MeshSnapshot source, SurfaceBvh sourceIndex, MeshSnapshot target, BodyRegion[] targetRegions,
+        /// <param name="tubes">Closed rings (<see cref="ReFitTubeField"/>), or null.</param>
+        public ReFitDrape(MeshSnapshot asset, Vector3[] rest, MeshSnapshot source, SurfaceBvh sourceIndex, MeshSnapshot target, BodyRegion[] targetRegions,
             BodyRegion[] regions, bool[] tubes, bool[] hidden)
         {
             this.asset = asset;
             groupRegions = regions;
+            made = new Vector3[asset.GroupCount];
+            for (int g = 0; g < made.Length; g++) made[g] = asset.worldVertices[asset.groupRep[g]] + (rest != null ? rest[g] : Vector3.zero);
             var unique = new HashSet<(int, int)>();
             for (int t = 0; t + 2 < asset.triangles.Length; t += 3)
                 for (int k = 0; k < 3; k++)
@@ -71,6 +85,7 @@ namespace Orbiters.ReFit
                 }
             edges = new List<(int, int)>(unique);
             details = ReFitSurfaceCoverage.DetailGroups(asset, tubes);
+            rings = tubes != null ? (bool[])tubes.Clone() : new bool[asset.GroupCount];
             fixedGroups = ReFitSurfaceCoverage.ProtectOpenings(asset, regions, details);
             if (hidden != null)
                 for (int g = 0; g < hidden.Length && g < fixedGroups.Length; g++) fixedGroups[g] |= hidden[g];
@@ -78,20 +93,28 @@ namespace Orbiters.ReFit
             covered = new bool[target.worldVertices.Length];
             neighbours = Neighbours(target);
             if (source == null || sourceIndex == null) return;
+            var madeVertices = asset.worldVertices;
+            var madeNormals = asset.worldNormals;
+            if (rest != null)
+            {
+                madeVertices = new Vector3[asset.worldVertices.Length];
+                for (int i = 0; i < madeVertices.Length; i++) madeVertices[i] = asset.worldVertices[i] + rest[asset.groupOfVertex[i]];
+                madeNormals = VertexNormals(madeVertices, asset.triangles);
+            }
             var under = authoredUnder;
             var targetIndex = SurfaceBvh.Build(target);
             Parallel.For(0, asset.GroupCount, g =>
             {
                 int rep = asset.groupRep[g];
-                var normal = asset.worldNormals[rep];
+                var normal = madeNormals[rep];
                 if (normal.sqrMagnitude < 1e-12f) return;
                 // Out of the fabric, the first skin met is the way out of the body: the fabric was made under it.
-                var hit = sourceIndex.Raycast(asset.worldVertices[rep], normal, Reach);
+                var hit = sourceIndex.Raycast(madeVertices[rep], normal, Reach);
                 // Skin the target lacks there (the base's tail lying over the back) does not keep the fabric under it.
                 under[g] = hit.found && Vector3.Dot(source.FaceNormal(hit.triangle), normal) > 0 &&
                            targetIndex.ClosestPoint(hit.position, Unmatched).found;
             });
-            var authored = new MeshSnapshot { worldVertices = asset.worldVertices, triangles = asset.triangles };
+            var authored = new MeshSnapshot { worldVertices = madeVertices, triangles = asset.triangles };
             var authoredIndex = SurfaceBvh.Build(authored);
             // Source skin at a point, turned up: under the fabric as authored, and not through it (fluff, a tail).
             bool Covered(Vector3 position, Vector3 up)
@@ -245,12 +268,11 @@ namespace Orbiters.ReFit
         /// <param name="primary">For a shape frame: the refit the frame adds to, otherwise null.</param>
         /// <param name="deltas">The fabric's displacement (primary refit, or a frame's), corrected in place.</param>
         /// <param name="bodyDelta">For a shape frame: the body's world displacement at the frame, otherwise null.</param>
-        public void Apply(MeshSnapshot body, Vector3[] bodyDelta, Vector3[] primary, Vector3[] deltas, ReFitReport report, string label)
+        /// <param name="progress">0..1 through the drape, from the worker thread.</param>
+        public void Apply(MeshSnapshot body, Vector3[] bodyDelta, Vector3[] primary, Vector3[] deltas, ReFitReport report, string label,
+            CancellationToken cancellation = default, Action<float> progress = null)
         {
             int groups = asset.GroupCount;
-            var (tangled, untangled) = Untangle(primary, deltas);
-            if (tangled > 0)
-                report?.Info("drape-untangle", $"{label}: {tangled} fabric edges crossed the fabric where they did not as authored; {untangled} left after relaxing the fit around them.");
             var skin = body;
             if (bodyDelta != null)
             {
@@ -260,7 +282,11 @@ namespace Orbiters.ReFit
                 skin.worldNormals = VertexNormals(moved, body.triangles);
             }
             var skinIndex = SurfaceBvh.Build(skin);
-            Bridge(primary, deltas, skin, skinIndex);
+            var (tangled, untangled) = Untangle(primary, deltas, skin, skinIndex, cancellation);
+            if (tangled > 0)
+                report?.Info("drape-untangle", $"{label}: {tangled} fabric edges crossed the fabric where they did not as authored; {untangled} left after relaxing the fit around them.");
+            // A shape frame bridges only folds of the skin: elsewhere a dip of its displacement is the shape (skin shrinking).
+            Bridge(primary, deltas, skin, skinIndex, bodyDelta != null);
             var enclosed = skin.HiddenVertices();
             var basis = new Vector3[groups];
             for (int g = 0; g < groups; g++) basis[g] = asset.worldVertices[asset.groupRep[g]] + (primary != null ? primary[g] : Vector3.zero) + deltas[g];
@@ -277,11 +303,15 @@ namespace Orbiters.ReFit
             var need = new float[groups];
             int exposed = 0, first = -1;
             float deepest = 0, firstDeepest = 0;
+            SurfaceBvh index = null;
             // One more pass than pushes: it counts what the last push left.
             for (int iteration = 0; iteration <= Iterations; iteration++)
             {
+                cancellation.ThrowIfCancellationRequested();
+                progress?.Invoke((float)iteration / (Iterations + 1));
                 for (int i = 0; i < vertices.Length; i++) vertices[i] = basis[asset.groupOfVertex[i]] + push[asset.groupOfVertex[i]];
-                var index = SurfaceBvh.Build(cloth);
+                if (index == null || iteration % RebuildEvery == 0) index = SurfaceBvh.Build(cloth);
+                else index.Refit(cloth);
                 Parallel.For(0, hits.Length, i =>
                 {
                     hits[i] = (-1, Vector3.zero, 0, Vector3.zero);
@@ -379,6 +409,7 @@ namespace Orbiters.ReFit
                 }
             }
             CarryDetails(basis, push);
+            progress?.Invoke(1f);
 
             float largest = 0;
             for (int g = 0; g < groups; g++) { deltas[g] += push[g]; largest = Mathf.Max(largest, push[g].magnitude); }
@@ -391,21 +422,28 @@ namespace Orbiters.ReFit
         }
 
         // Fabric crossing its own fabric where it did not as authored (a pleat where the fit follows a fold of the body, at
-        // the back of a thigh overhanging the knee): the displacement around it is smoothed, a round at a time.
+        // the back of a thigh overhanging the knee): the displacement around it is smoothed, a round at a time. A shape frame
+        // relaxes only the crossings it adds: those the refit left at rest are the refit's.
         private const int UntangleRounds = 12, UntangleRings = 2, UntanglePasses = 4;
+        // How far from the skin relaxed fabric is kept out of it.
+        private const float GuardReach = .05f;
 
-        private (int first, int last) Untangle(Vector3[] primary, Vector3[] deltas)
+        private (int first, int last) Untangle(Vector3[] primary, Vector3[] deltas, MeshSnapshot skin, SurfaceBvh skinIndex, CancellationToken cancellation)
         {
             int groups = asset.GroupCount;
             var positions = new Vector3[groups];
             var vertices = new Vector3[asset.worldVertices.Length];
             var cloth = new MeshSnapshot { worldVertices = vertices, triangles = asset.triangles };
+            SurfaceBvh index = null;
             int first = -1, count = 0;
+            Vector3 Rest(int g) => Authored(g) + primary[g];
             for (int round = 0; round <= UntangleRounds; round++)
             {
-                for (int g = 0; g < groups; g++) positions[g] = asset.worldVertices[asset.groupRep[g]] + (primary != null ? primary[g] : Vector3.zero) + deltas[g];
+                cancellation.ThrowIfCancellationRequested();
+                for (int g = 0; g < groups; g++) positions[g] = Authored(g) + (primary != null ? primary[g] : Vector3.zero) + deltas[g];
                 for (int i = 0; i < vertices.Length; i++) vertices[i] = positions[asset.groupOfVertex[i]];
-                var index = SurfaceBvh.Build(cloth);
+                if (index == null) index = SurfaceBvh.Build(cloth);
+                else index.Refit(cloth);
                 var tangled = new bool[groups];
                 int found = 0;
                 Parallel.For(0, edges.Count, e =>
@@ -420,8 +458,9 @@ namespace Orbiters.ReFit
                     int x = asset.groupOfVertex[asset.triangles[t3]], y = asset.groupOfVertex[asset.triangles[t3 + 1]], z = asset.groupOfVertex[asset.triangles[t3 + 2]];
                     // Layers made crossing (a collar through its fold) stay as they are, and so do the two legs pressed
                     // into each other: neither can give way.
-                    if (SegmentCrosses(Authored(ga), Authored(gb), Authored(x), Authored(y), Authored(z)) || Opposite(ga, x)) return;
-                    System.Threading.Interlocked.Increment(ref found);
+                    if (SegmentCrosses(made[ga], made[gb], made[x], made[y], made[z]) || Opposite(ga, x)) return;
+                    if (primary != null && SegmentCrosses(Rest(ga), Rest(gb), Rest(x), Rest(y), Rest(z))) return;
+                    Interlocked.Increment(ref found);
                     tangled[ga] = tangled[gb] = tangled[x] = tangled[y] = tangled[z] = true;
                 });
                 count = found;
@@ -434,20 +473,42 @@ namespace Orbiters.ReFit
                         if (tangled[g]) foreach (int n in asset.groupAdjacency[g]) wider[n] = true;
                     tangled = wider;
                 }
+                var relaxed = new bool[groups];
+                for (int g = 0; g < groups; g++)
+                    relaxed[g] = tangled[g] && !fixedGroups[g] && !details[g] && asset.groupAdjacency[g].Count > 0;
                 for (int pass = 0; pass < UntanglePasses; pass++)
                 {
                     var next = (Vector3[])deltas.Clone();
                     for (int g = 0; g < groups; g++)
                     {
-                        if (!tangled[g] || fixedGroups[g] || details[g] || asset.groupAdjacency[g].Count == 0) continue;
+                        if (!relaxed[g]) continue;
                         var average = Vector3.zero;
                         foreach (int n in asset.groupAdjacency[g]) average += deltas[n];
                         next[g] = Vector3.Lerp(deltas[g], average / asset.groupAdjacency[g].Count, .5f);
                     }
+                    KeepOutOfSkin(primary, deltas, next, relaxed, skin, skinIndex);
                     Array.Copy(next, deltas, groups);
                 }
             }
             return (first, count);
+        }
+
+        // Relaxing a crossing never takes fabric into the skin, nor deeper into it than it was: smoothed toward fabric lying
+        // lower (an inner layer's side of a fold, the skin side of a pleat), it stops at the skin.
+        private void KeepOutOfSkin(Vector3[] primary, Vector3[] before, Vector3[] after, bool[] moved, MeshSnapshot skin, SurfaceBvh skinIndex)
+        {
+            Parallel.For(0, after.Length, g =>
+            {
+                if (!moved[g]) return;
+                var basePoint = Authored(g) + (primary != null ? primary[g] : Vector3.zero);
+                var position = basePoint + after[g];
+                var nearest = skinIndex.ClosestPoint(position, GuardReach);
+                if (!nearest.found) return;
+                var normal = skin.BaryNormal(nearest.triangle, nearest.bary);
+                float height = Vector3.Dot(position - nearest.position, normal);
+                float floor = Mathf.Min(Vector3.Dot(basePoint + before[g] - nearest.position, normal), Clearance);
+                if (height < floor) after[g] += normal * (floor - height);
+            });
         }
 
         // Fabric pulled into a fold of the body more than the fabric around it (the gluteal crease, under a breast) spans
@@ -456,7 +517,8 @@ namespace Orbiters.ReFit
         // Fabric farther than this from the skin bridges nothing.
         private const float BridgeReach = .1f;
 
-        private void Bridge(Vector3[] primary, Vector3[] deltas, MeshSnapshot skin, SurfaceBvh skinIndex)
+        /// <param name="foldsOnly">Only fabric over a fold of the skin (a wall facing other skin) is lifted.</param>
+        private void Bridge(Vector3[] primary, Vector3[] deltas, MeshSnapshot skin, SurfaceBvh skinIndex, bool foldsOnly)
         {
             int groups = asset.GroupCount;
             // Out of the body at the fabric: the skin nearest to it turned out. Lifting along the fabric's own normal would
@@ -466,7 +528,11 @@ namespace Orbiters.ReFit
             {
                 var position = Authored(g) + (primary != null ? primary[g] : Vector3.zero) + deltas[g];
                 var nearest = skinIndex.ClosestPoint(position, BridgeReach);
-                if (nearest.found) normals[g] = skin.BaryNormal(nearest.triangle, nearest.bary);
+                if (!nearest.found) return;
+                var normal = skin.BaryNormal(nearest.triangle, nearest.bary);
+                if (foldsOnly && !skinIndex.Raycast(nearest.position + normal * .001f, normal, FoldWidth,
+                        t => Vector3.Dot(skin.FaceNormal(t), normal) < 0).found) return;
+                normals[g] = normal;
             });
             var next = new Vector3[groups];
             for (int iteration = 0; iteration < BridgeIterations; iteration++)
@@ -525,7 +591,12 @@ namespace Orbiters.ReFit
             return t > 0 && t < 1;
         }
 
-        // A closed detail (a zipper pull, a button) rides with the draped fabric nearest to it as one rigid piece.
+        // A closed detail (a zipper pull, a button) rides with the draped fabric nearest to it as one rigid piece. A closed
+        // ring (a belt, a collar, a bracelet) goes around the body: each part of it follows the fabric under that part,
+        // smoothed along the ring so it stays whole. Carried whole by the largest push, a belt slid forward over a grown belly
+        // and its back half sank into the body.
+        private const int RingPasses = 4;
+
         private void CarryDetails(Vector3[] basis, Vector3[] push)
         {
             var visited = new bool[details.Length];
@@ -543,17 +614,64 @@ namespace Orbiters.ReFit
                     int g = queue.Dequeue(); members.Add(g);
                     foreach (int n in asset.groupAdjacency[g]) if (details[n] && !visited[n]) { visited[n] = true; queue.Enqueue(n); }
                 }
+                var carried = new Vector3[members.Count];
+                var found = new bool[members.Count];
                 var carry = Vector3.zero;
-                foreach (int g in members)
+                bool ring = false;
+                for (int m = 0; m < members.Count; m++)
                 {
+                    int g = members[m];
+                    ring |= rings[g];
                     var hit = index.ClosestPoint(basis[g], .04f, t => !details[asset.groupOfVertex[asset.triangles[t * 3]]]);
                     if (!hit.found) continue;
                     int t3 = hit.triangle * 3;
                     var d = push[asset.groupOfVertex[asset.triangles[t3]]] * hit.bary.x + push[asset.groupOfVertex[asset.triangles[t3 + 1]]] * hit.bary.y +
                             push[asset.groupOfVertex[asset.triangles[t3 + 2]]] * hit.bary.z;
+                    carried[m] = d;
+                    found[m] = true;
                     if (d.sqrMagnitude > carry.sqrMagnitude) carry = d;
                 }
-                foreach (int g in members) push[g] = carry;
+                if (!ring)
+                {
+                    foreach (int g in members) push[g] = carry;
+                    continue;
+                }
+                FollowAlong(members, carried, found);
+                for (int m = 0; m < members.Count; m++) push[members[m]] = carried[m];
+            }
+        }
+
+        // A ring's carry: parts away from the fabric take it from their neighbours along the ring, then the whole is smoothed
+        // over the ring (its cross-sections stay round, its path unkinked).
+        private void FollowAlong(List<int> members, Vector3[] carried, bool[] found)
+        {
+            var member = new Dictionary<int, int>(members.Count);
+            for (int m = 0; m < members.Count; m++) member[members[m]] = m;
+            var queue = new Queue<int>();
+            for (int m = 0; m < members.Count; m++) if (found[m]) queue.Enqueue(m);
+            while (queue.Count > 0)
+            {
+                int m = queue.Dequeue();
+                foreach (int n in asset.groupAdjacency[members[m]])
+                {
+                    if (!member.TryGetValue(n, out int other) || found[other]) continue;
+                    found[other] = true;
+                    carried[other] = carried[m];
+                    queue.Enqueue(other);
+                }
+            }
+            var next = new Vector3[carried.Length];
+            for (int pass = 0; pass < RingPasses; pass++)
+            {
+                for (int m = 0; m < members.Count; m++)
+                {
+                    var sum = Vector3.zero;
+                    int count = 0;
+                    foreach (int n in asset.groupAdjacency[members[m]])
+                        if (member.TryGetValue(n, out int other)) { sum += carried[other]; count++; }
+                    next[m] = count > 0 ? Vector3.Lerp(carried[m], sum / count, .5f) : carried[m];
+                }
+                Array.Copy(next, carried, carried.Length);
             }
         }
 
@@ -566,7 +684,7 @@ namespace Orbiters.ReFit
                 var n = Vector3.Cross(vertices[b] - vertices[a], vertices[c] - vertices[a]);
                 normals[a] += n; normals[b] += n; normals[c] += n;
             }
-            for (int i = 0; i < normals.Length; i++) normals[i] = normals[i].normalized;
+            for (int i = 0; i < normals.Length; i++) normals[i] = MeshSnapshot.Unit(normals[i]);
             return normals;
         }
     }

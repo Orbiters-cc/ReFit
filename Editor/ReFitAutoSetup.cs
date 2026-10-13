@@ -5,6 +5,9 @@ using Orbiters.Toolkit.Editor.Refit;
 using UnityEditor;
 using UnityEngine;
 using UnityEngine.SceneManagement;
+#if REFIT_VRCHAT_AVATARS
+using Orbiters.Toolkit.Editor.VRChat.Attachments;
+#endif
 using Object = UnityEngine.Object;
 
 namespace Orbiters.ReFit.Editor
@@ -87,19 +90,47 @@ namespace Orbiters.ReFit.Editor
             return avatar;
         }
 
-        /// <summary>The avatar's body: a renderer named "Body", else the skinned mesh with the most vertices.</summary>
+        /// <summary>
+        /// The avatar's body, as the Orbiters tools pick it (Toolkit's AttachmentPlanner: skinned to the avatar's skeleton,
+        /// named "Body", else with the most blendshapes); else a renderer named "Body", then the one skinned to the most humanoid
+        /// bones, the most blendshapes, the most vertices. The densest mesh alone is not the body: a dense outfit outweighs
+        /// many bodies.
+        /// </summary>
         internal static SkinnedMeshRenderer Body(GameObject avatar, SkinnedMeshRenderer exclude = null)
         {
             if (avatar == null) return null;
+#if REFIT_VRCHAT_AVATARS
+            var planned = AttachmentPlanner.Body(avatar.transform, exclude != null ? exclude.transform : null);
+            if (planned != null && !IsHelper(planned.transform, avatar.transform)) return planned;
+#endif
+            var humanoid = HumanoidBones(avatar);
             SkinnedMeshRenderer best = null;
-            int bestVerts = -1;
+            var bestRank = (named: -1, bones: 0, shapes: 0, vertices: 0);
             foreach (var smr in avatar.GetComponentsInChildren<SkinnedMeshRenderer>(true))
             {
                 if (smr == exclude || smr.sharedMesh == null || IsHelper(smr.transform, avatar.transform)) continue;
-                if (string.Equals(smr.name, "Body", StringComparison.OrdinalIgnoreCase)) return smr;
-                if (smr.sharedMesh.vertexCount > bestVerts) { bestVerts = smr.sharedMesh.vertexCount; best = smr; }
+                int bones = 0;
+                if (humanoid.Count > 0)
+                    foreach (var bone in smr.bones) if (bone != null && humanoid.Contains(bone)) bones++;
+                var rank = (named: string.Equals(smr.name, "Body", StringComparison.OrdinalIgnoreCase) ? 1 : 0, bones,
+                    shapes: smr.sharedMesh.blendShapeCount, vertices: smr.sharedMesh.vertexCount);
+                if (best == null || rank.CompareTo(bestRank) > 0) { best = smr; bestRank = rank; }
             }
             return best;
+        }
+
+        // The humanoid bones of the avatar's Animator (none for a generic rig).
+        private static HashSet<Transform> HumanoidBones(GameObject avatar)
+        {
+            var bones = new HashSet<Transform>();
+            var animator = avatar.GetComponent<Animator>();
+            if (animator == null || animator.avatar == null || !animator.avatar.isValid || !animator.avatar.isHuman) return bones;
+            for (var bone = HumanBodyBones.Hips; bone < HumanBodyBones.LastBone; bone++)
+            {
+                var transform = animator.GetBoneTransform(bone);
+                if (transform != null) bones.Add(transform);
+            }
+            return bones;
         }
 
         /// <summary>Skinned meshes an avatar wears besides its body: clothing and accessories, editor helpers left out.</summary>

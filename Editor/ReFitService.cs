@@ -1,5 +1,6 @@
 using System;
 using System.Collections;
+using System.Collections.Generic;
 using System.Threading;
 using UnityEditor;
 using UnityEngine;
@@ -161,15 +162,50 @@ namespace Orbiters.ReFit.Editor
             return result;
         }
 
+        // Staged checks of the same asset and avatars, kept until the scene changes (ClearValidationCache): staging copies both
+        // avatars, far too slow to repeat for every blendshape picked.
+        private static readonly Dictionary<string, ReFitReport> StagedChecks = new Dictionary<string, ReFitReport>();
+        private const int StagedChecksKept = 16;
+
+        /// <summary>
+        /// Dry run (<see cref="ReFitEngine.Validate"/>). With the target body given, the staged part is kept per asset, avatars,
+        /// bodies and fit options, and only the blendshapes are checked again.
+        /// </summary>
         public static ReFitReport Validate(ReFitRequest request)
         {
-            try { return new ReFitEngine().Validate(request); }
+            try
+            {
+                string key = StagedKey(request);
+                if (key == null) return new ReFitEngine().Validate(request);
+                if (!StagedChecks.TryGetValue(key, out var staged))
+                {
+                    if (StagedChecks.Count >= StagedChecksKept) StagedChecks.Clear();
+                    staged = StagedChecks[key] = new ReFitEngine().ValidateStaging(request);
+                }
+                var report = new ReFitReport();
+                report.messages.AddRange(staged.messages);
+                if (!staged.HasErrors) ReFitEngine.ValidateShapes(request, request.targetBodyRenderer, report);
+                return report;
+            }
             catch (Exception e)
             {
                 var report = new ReFitReport();
                 report.Error("validate-exception", e.Message);
                 return report;
             }
+        }
+
+        /// <summary>Forgets the kept staged checks: the scene changed (objects added, removed, undone, a scene opened).</summary>
+        public static void ClearValidationCache() => StagedChecks.Clear();
+
+        private static string StagedKey(ReFitRequest request)
+        {
+            if (request?.assetRenderer == null || request.targetAvatar == null || request.targetBodyRenderer == null) return null;
+            var settings = request.settings ?? new ReFitSettings();
+            return string.Join("|", request.assetRenderer.GetInstanceID(), request.targetAvatar.GetInstanceID(),
+                request.targetBodyRenderer.GetInstanceID(), request.sourceAvatar != null ? request.sourceAvatar.GetInstanceID() : 0,
+                request.sourceBodyRenderer != null ? request.sourceBodyRenderer.GetInstanceID() : 0, request.mode == ReFitMode.Blendshape,
+                settings.coverDifferentBaseBody, settings.replaceArmature, settings.proportionWarningThreshold);
         }
 
         private static ReFitReport PrepareSceneAsset(ReFitRequest request)

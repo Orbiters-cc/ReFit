@@ -50,11 +50,17 @@ edges sag into curved bodies as authored). It lifts a sample only through corner
 lifting it through a lone movable corner pulls that corner into a spike.
 `garmentKind` permits an explicit override instead of depending on ancestor names.
 With the different-base coverage, skin enclosed in another part of the target (`MeshSnapshot.HideEnclosedSkin`: out of
-it, the first surface met faces the same way) is left out of every target query, and `ReFitDrape` ends the primary and
-each transferred field. It keeps covered only target skin whose counterpart on the source lay under the authored
-clothing (fold walls and skin without a counterpart take the decision of the skin around them), relaxes fabric crossing
-itself where it did not as authored, lets fabric span the folds of the body, then pushes the fabric out over covered skin
-still showing through, spreading the push over the fabric and capping it at what the skin around needed.
+it, the first surface met faces the same way, and from halfway out every way along the skin leaves through a surface too,
+so a single-sided fluff card encloses nothing) is left out of every target query, and `ReFitDrape` follows the body's
+coverage repair of the primary and each transferred field; the inner layers' repair and the covers come after it. It
+keeps covered only target skin whose counterpart on the source lay under the authored clothing (fold walls and skin
+without a counterpart take the decision of the skin around them), relaxes fabric crossing itself where it did not as
+authored (a shape frame only the crossings it adds, never into the skin), lets fabric span the folds of the body (a
+shape frame only over folds of its skin), then pushes the fabric out over covered skin still showing through, spreading
+the push over the fabric and capping it at what the skin around needed. Closed rings follow the fabric under each part
+of them; small closed details ride with it whole. The fabric's BVH is refitted between rebuilds, and the drape reports
+progress and stops on cancellation. A fit made with the coverage records it, and shapes added to it later are covered
+and draped the same way, the fit standing for where the clothing was made.
 
 World-space deformation becomes mesh-local pre-skin deltas. Keeping the original rig requires inverse skin
 conversion; replacing it uses planned bindposes and a target-space basis. This is not an exact surface-fitting

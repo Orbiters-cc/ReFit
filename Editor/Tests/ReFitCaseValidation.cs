@@ -13,7 +13,7 @@ namespace Orbiters.ReFit.Editor.Tests
     /// <summary>
     /// Opt-in replays of reported refits, from private local assets under <c>Assets/ReFitCases</c>: a jockstrap made for the
     /// Winterpaw base refitted onto an Ultipaw ("made for another avatar base", then "Yes, it was made for it"), and a
-    /// Wickerbeast onesie refitted onto a ThiccWiker ("No, I placed it myself": the different-base coverage). Transforms and
+    /// Wickerbeast onesie refitted onto a ThiccWiker ("Placed by hand": the different-base coverage). Transforms and
     /// mesh references are copied into a preview scene; the user's scene, selection and avatars are never touched.
     /// Images, CSV and reports go to <see cref="Output"/>.
     /// </summary>
@@ -30,7 +30,7 @@ namespace Orbiters.ReFit.Editor.Tests
             public Dictionary<string, float> targetWeights = new Dictionary<string, float>();
             /// <summary>Body shapes transferred with the fit (MeshAndBlendshape when any).</summary>
             public List<string> shapes = new List<string>();
-            /// <summary>The wizard's "No, I placed it myself": the different-base coverage pass.</summary>
+            /// <summary>The window's "Placed by hand": the different-base coverage pass.</summary>
             public bool coverDifferentBaseBody;
             /// <summary>Close-ups around the crotch in addition to views framing the whole clothing.</summary>
             public bool fullBody;

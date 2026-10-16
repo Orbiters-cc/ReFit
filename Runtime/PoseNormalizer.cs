@@ -36,6 +36,8 @@ namespace Orbiters.ReFit
         public Transform assetStageRoot;
         /// <summary>Nested target-space asset copy inside <see cref="targetRoot"/> that must be ignored for target skeleton/body indexing.</summary>
         public Transform targetExcludedAssetRoot;
+        /// <summary>Body shapes the asset sets while worn (see <see cref="ReFitRequest.wornBodyShapes"/>).</summary>
+        internal Dictionary<string, float> wornBodyShapes;
         /// <summary>True when the asset renderer is part of the source avatar hierarchy (shares its armature).</summary>
         public bool assetOnSourceAvatar;
         /// <summary>
@@ -102,6 +104,7 @@ namespace Orbiters.ReFit
 
                 if (!stage.sourceIsTarget) ScaleAndAlign(stage, report);
 
+                stage.wornBodyShapes = request.wornBodyShapes;
                 PoseAsset(stage, report);
                 if (!stage.assetOnSourceAvatar && stage.assetRenderer != null &&
                     BakeCurrentSkinPoseAsDefault(stage.assetRenderer, report))
@@ -867,7 +870,7 @@ namespace Orbiters.ReFit
             if (applied > 0)
             {
                 stage.sourceSurface = MeshSnapshot.Capture(stage.sourceBody, false,
-                    ZeroBlendShapeOverrides(stage.sourceBody), report);
+                    ReFitWornShapes.Overrides(stage.sourceBody, stage.wornBodyShapes), report);
                 stage.sourceSurfaceIndex = SurfaceBvh.Build(stage.sourceSurface);
                 var afterPose = MeshSnapshot.Capture(stage.assetRenderer, false,
                     ZeroBlendShapeOverrides(stage.assetRenderer), null);

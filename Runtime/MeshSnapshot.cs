@@ -221,19 +221,71 @@ namespace Orbiters.ReFit
         // Topology: welding groups + adjacency
         // ------------------------------------------------------------------
 
+        // Vertices on open edges this close in the world are one point of the surface: a seam the modelling tool split a hair
+        // apart opens into a crack once its two sides are moved apart. Closed pieces touching (a chain's links) stay apart.
+        private const float WeldDistance = 1e-4f;
+
         private void BuildTopology()
         {
             int vertexCount = localVertices.Length;
             groupOfVertex = new int[vertexCount];
+            var root = new int[vertexCount];
+            for (int i = 0; i < vertexCount; i++) root[i] = i;
+            int Find(int x) { while (root[x] != x) x = root[x] = root[root[x]]; return x; }
+            void Join(int a, int b) { a = Find(a); b = Find(b); if (a != b) root[Mathf.Max(a, b)] = Mathf.Min(a, b); }
             var byPosition = new Dictionary<Vector3, int>(vertexCount);
+            for (int i = 0; i < vertexCount; i++)
+            {
+                if (byPosition.TryGetValue(localVertices[i], out int same)) Join(i, same);
+                else byPosition[localVertices[i]] = i;
+            }
+            if (worldVertices != null && worldVertices.Length == vertexCount)
+            {
+                // The vertices on open edges (an edge of one triangle), once vertices at the same mesh position are one.
+                var edgeUse = new Dictionary<(int, int), int>(triangles.Length);
+                for (int t = 0; t + 2 < triangles.Length; t += 3)
+                    for (int k = 0; k < 3; k++)
+                    {
+                        int a = Find(triangles[t + k]), b = Find(triangles[t + (k + 1) % 3]);
+                        if (a == b) continue;
+                        var key = a < b ? (a, b) : (b, a);
+                        edgeUse[key] = edgeUse.TryGetValue(key, out int used) ? used + 1 : 1;
+                    }
+                var onOpenEdge = new bool[vertexCount];
+                foreach (var edge in edgeUse)
+                    if (edge.Value == 1) { onOpenEdge[edge.Key.Item1] = true; onOpenEdge[edge.Key.Item2] = true; }
+                for (int i = 0; i < vertexCount; i++) onOpenEdge[i] = onOpenEdge[Find(i)];
+
+                var cells = new Dictionary<Vector3Int, List<int>>();
+                for (int i = 0; i < vertexCount; i++)
+                {
+                    if (!onOpenEdge[i]) continue;
+                    var cell = Vector3Int.FloorToInt(worldVertices[i] / WeldDistance);
+                    if (!cells.TryGetValue(cell, out var list)) cells[cell] = list = new List<int>(1);
+                    list.Add(i);
+                }
+                for (int i = 0; i < vertexCount; i++)
+                {
+                    if (!onOpenEdge[i]) continue;
+                    var cell = Vector3Int.FloorToInt(worldVertices[i] / WeldDistance);
+                    for (int x = -1; x <= 1; x++)
+                        for (int y = -1; y <= 1; y++)
+                            for (int z = -1; z <= 1; z++)
+                                if (cells.TryGetValue(cell + new Vector3Int(x, y, z), out var near))
+                                    foreach (int j in near)
+                                        if (j > i && (worldVertices[j] - worldVertices[i]).sqrMagnitude <= WeldDistance * WeldDistance) Join(i, j);
+                }
+            }
+            var groupOfRoot = new Dictionary<int, int>();
             var reps = new List<int>();
             var members = new List<List<int>>();
             for (int i = 0; i < vertexCount; i++)
             {
-                if (!byPosition.TryGetValue(localVertices[i], out int g))
+                int r = Find(i);
+                if (!groupOfRoot.TryGetValue(r, out int g))
                 {
                     g = reps.Count;
-                    byPosition[localVertices[i]] = g;
+                    groupOfRoot[r] = g;
                     reps.Add(i);
                     members.Add(new List<int>(2));
                 }
@@ -322,6 +374,41 @@ namespace Orbiters.ReFit
             var hidden = new bool[visible.Length];
             for (int v = 0; v < hidden.Length; v++) hidden[v] = !visible[v];
             return hidden;
+        }
+
+        /// <summary>
+        /// The vertices of the largest connected part (vertices at the same place joined): a body's main surface, not its fluff
+        /// cards, horns or hair.
+        /// </summary>
+        public bool[] MainSurface()
+        {
+            int count = worldVertices.Length;
+            var root = new int[count];
+            for (int i = 0; i < count; i++) root[i] = i;
+            int Find(int x) { while (root[x] != x) x = root[x] = root[root[x]]; return x; }
+            void Join(int a, int b) { a = Find(a); b = Find(b); if (a != b) root[a] = b; }
+            var byPosition = new Dictionary<Vector3, int>(count);
+            for (int i = 0; i < count; i++)
+            {
+                if (byPosition.TryGetValue(worldVertices[i], out int same)) Join(i, same);
+                else byPosition[worldVertices[i]] = i;
+            }
+            for (int t = 0; t + 2 < triangles.Length; t += 3)
+            {
+                Join(triangles[t], triangles[t + 1]);
+                Join(triangles[t], triangles[t + 2]);
+            }
+            var sizes = new Dictionary<int, int>();
+            for (int i = 0; i < count; i++)
+            {
+                int r = Find(i);
+                sizes[r] = sizes.TryGetValue(r, out int n) ? n + 1 : 1;
+            }
+            int largest = -1, most = 0;
+            foreach (var pair in sizes) if (pair.Value > most) { most = pair.Value; largest = pair.Key; }
+            var main = new bool[count];
+            for (int i = 0; i < count; i++) main[i] = Find(i) == largest;
+            return main;
         }
 
         /// <summary>World-space point at barycentric coordinates of a triangle.</summary>

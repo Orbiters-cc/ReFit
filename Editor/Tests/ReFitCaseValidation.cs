@@ -26,6 +26,12 @@ namespace Orbiters.ReFit.Editor.Tests
         public sealed class Case
         {
             public string name, sourcePath, targetPath, clothingPath;
+            /// <summary>The clothing model's renderer to refit (null: its first one).</summary>
+            public string clothingName;
+            /// <summary>The body renderers' names in the source and target models.</summary>
+            public string sourceBodyName = "Body", targetBodyName = "Body";
+            /// <summary>Body shapes the outfit's toggle sets while the clothing is worn (both bodies), as its prefab has them.</summary>
+            public Dictionary<string, float> wornShapes = new Dictionary<string, float>();
             /// <summary>Target body blendshape weights as set in the user's scene (by name).</summary>
             public Dictionary<string, float> targetWeights = new Dictionary<string, float>();
             /// <summary>Body shapes transferred with the fit (MeshAndBlendshape when any).</summary>
@@ -66,7 +72,72 @@ namespace Orbiters.ReFit.Editor.Tests
             return true;
         }
 
-        public static Case Find(string name) => name == Onesie.name ? Onesie : name == Jockstrap.name ? Jockstrap : null;
+        private const string NovabeastPath = "Assets/Novabeast_V1_2/FBX/Novabeast.fbx";
+
+        /// <summary>Novabeast clothing refitted onto a Novabeast-derived body: the Hypernova (latex set) or the Ultinova (LunaVRC).</summary>
+        private static Case Novabeast(string name, string targetPath, string clothingPath, string clothingName)
+        {
+            var setup = new Case
+            {
+                name = name, sourcePath = NovabeastPath, targetPath = targetPath, clothingPath = clothingPath, clothingName = clothingName, fullBody = true,
+            };
+            // The LunaVRC prefabs' VRCFury toggles: what each part sets on the body while it is worn.
+            foreach (var shape in clothingName == "Turtle neck" ? new[] { "shrinkChest", "shrinkUpperarms", "hideChestfluff", "hideCollar" }
+                     : clothingName == "Sweater" ? new[] { "shrinkUpperarms", "hideChestfluff" }
+                     : clothingName == "Dress Pants" || clothingName == "Sweats" ? new[] { "shrinkHips", "shrinkThighs" } : new string[0])
+                setup.wornShapes[shape] = 100;
+            if (targetPath == Ultinova)
+            {
+                // As MCB sets up an Ultinova: its default shapes on, its muscle shapes followed.
+                foreach (var shape in new[] { "orbit muscles 9", "handsome", "round ears", "goatee", "beard", "hideCollar", "hide blush" })
+                    setup.targetWeights[shape] = 100;
+                setup.shapes.Add("orbit muscles 9");
+                setup.shapes.Add("bodybuilder");
+            }
+            else
+                // The Hypernova's body shapes, followed (all at 100 for the shaped measurements).
+                setup.shapes.AddRange(new[] { "Muscular", "Wider Torso", "Bigger Arms", "Bigger Legs", "Bigger Ass" });
+            return setup;
+        }
+
+        private const string Hypernova = "Assets/ReFitCases/Hypernova/hyperbeastv3_bald.fbx", Latex = "Assets/ReFitCases/Hypernova/Novabeast Latex Cosmetics v1.2.fbx";
+        private const string Ultinova = "Assets/MCB/Authoring/Ultinova/Source/ultinova_27.fbx";
+        private const string Classy = "Assets/LunaVRC/Classy/FBX/Novabeast Classy.fbx", Comfy = "Assets/LunaVRC/Comfy/FBX/Novabeast Comfy.fbx";
+
+        public static readonly Case[] NovabeastCases =
+        {
+            Novabeast("latex-catsuit", Hypernova, Latex, "Catsuit"),
+            Novabeast("latex-corset", Hypernova, Latex, "Corset"),
+            Novabeast("latex-panties", Hypernova, Latex, "Panties"),
+            Novabeast("latex-legs", Hypernova, Latex, "Legs"),
+            Novabeast("latex-arms", Hypernova, Latex, "Arms"),
+            Novabeast("latex-sleevetop", Hypernova, Latex, "Sleevetop"),
+            Novabeast("latex-collar", Hypernova, Latex, "Rubber Collar"),
+            Novabeast("classy-turtleneck", Ultinova, Classy, "Turtle neck"),
+            Novabeast("classy-pants", Ultinova, Classy, "Dress Pants"),
+            Novabeast("classy-chain", Ultinova, Classy, "Chain"),
+            Novabeast("comfy-sweater", Ultinova, Comfy, "Sweater"),
+            Novabeast("comfy-sweats", Ultinova, Comfy, "Sweats"),
+            Novabeast("comfy-tanktop", Ultinova, Comfy, "Tank top"),
+        };
+
+        /// <summary>The v1 FBX fixture: a sleeve on body A refitted onto the sculpted body B (all in one model).</summary>
+        public static readonly Case FbxFixture = new Case
+        {
+            name = "fbx", sourcePath = "Packages/orbiters.refit/ReFit unit test v1.fbx", targetPath = "Packages/orbiters.refit/ReFit unit test v1.fbx",
+            clothingPath = "Packages/orbiters.refit/ReFit unit test v1.fbx", clothingName = "Body Clothing for A", targetBodyName = "Body custom edit", fullBody = true,
+        };
+
+        /// <summary>The v1 FBX fixture's authored result on body B, worn by both bodies (its "unfitted" pictures show it on B).</summary>
+        public static readonly Case FbxExpected = new Case
+        {
+            name = "fbx-expected", sourcePath = FbxFixture.sourcePath, targetPath = FbxFixture.targetPath, clothingPath = FbxFixture.clothingPath,
+            clothingName = "Body Result Clothing for B", targetBodyName = "Body custom edit", fullBody = true,
+        };
+
+        public static Case Find(string name) => name == Onesie.name ? Onesie : name == Jockstrap.name ? Jockstrap : name == FbxFixture.name ? FbxFixture :
+            name == FbxExpected.name ? FbxExpected :
+            NovabeastCases.FirstOrDefault(c => c.name == name);
 
         /// <summary>"queued", "done ..." or "failed ..." of the last <see cref="Queue"/>d run.</summary>
         public static string Status => SessionState.GetString(StatusKey, "");
@@ -123,9 +194,9 @@ namespace Orbiters.ReFit.Editor.Tests
                 var fixture = new Fixture { setup = setup, scene = EditorSceneManager.NewPreviewScene() };
                 try
                 {
-                    fixture.source = ReFitShortsValidation.CopyModel(setup.sourcePath, "Body", fixture.roots);
-                    fixture.target = ReFitShortsValidation.CopyModel(setup.targetPath, "Body", fixture.roots);
-                    fixture.clothing = ReFitShortsValidation.CopyModel(setup.clothingPath, null, fixture.roots);
+                    fixture.source = ReFitShortsValidation.CopyModel(setup.sourcePath, setup.sourceBodyName, fixture.roots);
+                    fixture.target = ReFitShortsValidation.CopyModel(setup.targetPath, setup.targetBodyName, fixture.roots);
+                    fixture.clothing = ReFitShortsValidation.CopyModel(setup.clothingPath, setup.clothingName, fixture.roots);
                     foreach (var root in fixture.roots) UnityEngine.SceneManagement.SceneManager.MoveGameObjectToScene(root, fixture.scene);
                     // Worn on the avatar it should fit, where its creator placed it (its own armature).
                     fixture.clothing.transform.root.SetParent(fixture.target.transform.root, true);
@@ -135,6 +206,13 @@ namespace Orbiters.ReFit.Editor.Tests
                         int index = mesh.GetBlendShapeIndex(pair.Key);
                         if (index >= 0) fixture.target.SetBlendShapeWeight(index, pair.Value);
                     }
+                    // Both bodies as the clothing is worn.
+                    foreach (var body in new[] { fixture.source, fixture.target })
+                        foreach (var pair in setup.wornShapes)
+                        {
+                            int index = body.sharedMesh.GetBlendShapeIndex(pair.Key);
+                            if (index >= 0) body.SetBlendShapeWeight(index, pair.Value);
+                        }
                     return fixture;
                 }
                 catch { fixture.Dispose(); throw; }
@@ -151,7 +229,8 @@ namespace Orbiters.ReFit.Editor.Tests
                     sourceAvatar = source.transform.root.gameObject, targetAvatar = target.transform.root.gameObject,
                     targetBlendshapes = setup.shapes.Count > 0 ? new List<string>(setup.shapes) : null,
                     settings = new ReFitSettings { replaceArmature = replaceArmature, transferWeights = replaceArmature, savePrefab = false,
-                        captureProjectionDebug = true, maxProjectionDebugGroups = 0, coverDifferentBaseBody = setup.coverDifferentBaseBody }
+                        captureProjectionDebug = true, maxProjectionDebugGroups = 0, coverDifferentBaseBody = setup.coverDifferentBaseBody },
+                    wornBodyShapes = new Dictionary<string, float>(setup.wornShapes)
                 };
                 // Clothing (underwear and swimwear included) fits snug, as the window's default.
                 ReFitSettingsPresets.ApplyTightness(request.settings, ReFitClothingDetection.IsClothing(clothing, request.targetAvatar) ? .93f : 0f);
@@ -182,15 +261,37 @@ namespace Orbiters.ReFit.Editor.Tests
                 {
                     var request = fixture.Request(replaceArmature);
                     Override(request.settings, settings);
+                    bool[] coveredSkin = null, unmatchedSkin = null;
+                    ReFitClothFit.CoverageCaptured = (covered, unmatched) => { coveredSkin = covered; unmatchedSkin = unmatched; };
+                    Vector3[] registeredSkin = null; int[] registeredTriangles = null;
+                    ReFitBodyRegistration.Captured = (registration, target) =>
+                    {
+                        registeredSkin = (Vector3[])registration.registered.Clone();
+                        registeredTriangles = (int[])registration.source.triangles.Clone();
+                        // How far the registration moved the source skin, by height band (feet, shins, thighs, torso).
+                        var original = registration.source.worldVertices;
+                        var bands = new[] { (0f, .15f, "feet"), (.15f, .5f, "shins"), (.5f, .95f, "thighs"), (.95f, 1.5f, "torso") };
+                        var parts = new List<string>();
+                        foreach (var (low, high, name) in bands)
+                        {
+                            var moves = Enumerable.Range(0, original.Length).Where(i => original[i].y >= low && original[i].y < high)
+                                .Select(i => (registeredSkin[i] - original[i]).magnitude).OrderBy(d => d).ToList();
+                            if (moves.Count > 0) parts.Add($"{name} p50={moves[moves.Count / 2] * 1000:F0}mm p90={moves[(int)(moves.Count * .9f)] * 1000:F0}mm");
+                        }
+                        lines.Add("registration moves: " + string.Join(", ", parts) + $"; lies within p50 {registration.medianGap * 1000:F1}mm p95 {registration.p95Gap * 1000:F1}mm");
+                    };
                     var watch = System.Diagnostics.Stopwatch.StartNew();
-                    var comp = new ReFitEngine().Run(request);
+                    ReFitComputation comp;
+                    try { comp = new ReFitEngine().Run(request); }
+                    finally { ReFitClothFit.CoverageCaptured = null; ReFitBodyRegistration.Captured = null; }
                     watch.Stop();
                     if (!comp.success) throw new InvalidOperationException(string.Join("\n", comp.report.messages));
                     owned.Add(comp.mesh);
                     lines.Add($"label={label}, replaceArmature={replaceArmature}, cover={request.settings.coverDifferentBaseBody}, settings={settings}, " +
                               $"tightness={request.settings.clearanceTightnessFactor:F3}, engineMs={watch.ElapsedMilliseconds}");
                     lines.AddRange(comp.report.messages.Where(m => m.severity != ReFitSeverity.Info || m.code.Contains("spread") ||
-                        m.code.Contains("star") || m.code.Contains("weights") || m.code.Contains("enclosed") || m.code.Contains("drape") || m.code == "surface-coverage").Select(m => m.ToString()));
+                        m.code.Contains("star") || m.code.Contains("weights") || m.code.Contains("enclosed") || m.code.Contains("drape") || m.code.StartsWith("cloth-fit") || m.code == "surface-coverage" ||
+                        m.code.Contains("registration") || m.code.Contains("retarget") || m.code.Contains("armature-kept")).Select(m => m.ToString()));
 
                     var outputBones = OutputBones(comp, fixture);
                     lines.Add(Bindings(comp, fixture.clothing));
@@ -200,6 +301,26 @@ namespace Orbiters.ReFit.Editor.Tests
                     lines.Add(BodyCorrespondence(fixture));
                     lines.Add("target " + Enclosed(fixture.target) + "; source " + Enclosed(fixture.source));
                     var shapeName = comp.secondaryShapeNames?.FirstOrDefault();
+                    if (fits && coveredSkin != null)
+                    {
+                        // The target skin the fit keeps covered (green) and skin without a source counterpart (red), at rest.
+                        var skin = Bake(fixture.target, fixture.target.sharedMesh, fixture.target.bones, setup.wornShapes); owned.Add(skin);
+                        var colors = new Color[skin.vertexCount];
+                        for (int i = 0; i < colors.Length; i++)
+                            colors[i] = i < coveredSkin.Length && coveredSkin[i] ? new Color(.2f, .75f, .3f) : i < unmatchedSkin.Length && unmatchedSkin[i] ? new Color(.9f, .2f, .15f) : new Color(.45f, .4f, .38f);
+                        var empty = new Mesh(); owned.Add(empty);
+                        if (registeredSkin != null)
+                        {
+                            // The source body laid onto the target (blue) over the target body.
+                            var laid = new Mesh { indexFormat = UnityEngine.Rendering.IndexFormat.UInt32 }; owned.Add(laid);
+                            laid.vertices = registeredSkin; laid.triangles = registeredTriangles; laid.RecalculateNormals();
+                            var bodyBounds = skin.bounds;
+                            RenderViews(label + "-registration", skin, laid, false, bodyBounds.center, bodyBounds.extents.y * 1.05f, "front", "side", "back");
+                        }
+                        var bounds = fixture.clothing.bounds;
+                        RenderViews(label + "-coverage", empty, Colored(skin, colors, owned), true, bounds.center, Mathf.Max(bounds.extents.y, bounds.extents.x * .9f) * 1.15f,
+                            "front", "side", "back");
+                    }
 
                     foreach (string pose in new[] { "rest", "spread", "crouch" })
                     {
@@ -209,7 +330,7 @@ namespace Orbiters.ReFit.Editor.Tests
                             var none = new Dictionary<string, float>();
                             var bodyWeights = Weights(fixture.target);
                             var body = Bake(fixture.target, fixture.target.sharedMesh, fixture.target.bones, bodyWeights); owned.Add(body);
-                            var sourceBody = Bake(fixture.source, fixture.source.sharedMesh, fixture.source.bones, none); owned.Add(sourceBody);
+                            var sourceBody = Bake(fixture.source, fixture.source.sharedMesh, fixture.source.bones, setup.wornShapes); owned.Add(sourceBody);
                             var original = Bake(fixture.clothing, fixture.clothing.sharedMesh, fixture.clothing.bones, none); owned.Add(original);
                             var fitted = Bake(fixture.clothing, comp.mesh, outputBones, Mirrored(comp, bodyWeights, null)); owned.Add(fitted);
                             var metrics = Measure(sourceBody, original, body, fitted, out string text);
@@ -975,6 +1096,8 @@ namespace Orbiters.ReFit.Editor.Tests
                 RenderViews(label + "-knees", body, clothing, colored, (leftKnee.position + rightKnee.position) / 2 + Vector3.up * .15f, .32f, "front", "side", "back");
             if (setup.fullBody && map.TryGetValue(HumanBodyBones.Chest, out var chest))
                 RenderViews(label + "-chest", body, clothing, colored, chest.position + Vector3.up * .05f, .3f, "front", "side", "back");
+            if (setup.fullBody && map.TryGetValue(HumanBodyBones.LeftLowerArm, out var elbow) && clothing.bounds.Contains(elbow.position))
+                RenderViews(label + "-arm", body, clothing, colored, elbow.position, .25f, "front", "back", "below");
         }
 
         private static void RenderViews(string label, Mesh body, Mesh clothing, bool colored, Vector3 center, float size, params string[] views)

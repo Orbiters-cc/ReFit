@@ -59,6 +59,16 @@ namespace Orbiters.ReFit
         /// <summary>Keep lower-body cloth over dense body surfaces between garment vertices, including inward-facing hems.</summary>
         public bool preserveLowerBodyCoverage = true;
 
+        /// <summary>
+        /// Mesh refits between two bodies: lay the source body onto the target as one surface first (see
+        /// <c>ReFitBodyRegistration</c>), so clothing points find their counterparts consistently instead of each on its own.
+        /// </summary>
+        public bool registerBodies = true;
+        /// <summary>
+        /// With <see cref="registerBodies"/>: fit the clothing like cloth (see <c>ReFitClothFit</c>): it moves with the skin
+        /// around it, then is draped out of the target skin it covered on the source; its body shapes are draped the same way.
+        /// </summary>
+        public bool clothFit = true;
         /// <summary>Opt-in residual body coverage for clothing detected on a different avatar base.</summary>
         public bool coverDifferentBaseBody;
         /// <summary>
@@ -184,6 +194,12 @@ namespace Orbiters.ReFit
         /// garment, and clipping they cover as authored is not visible and stays as it is.
         /// </summary>
         public List<SkinnedMeshRenderer> coverageLayers = new List<SkinnedMeshRenderer>();
+        /// <summary>
+        /// Body blendshapes the asset sets while it is worn (its toggle hiding fluff or shrinking the skin under it), by name,
+        /// 0..100: both bodies are compared and fitted as worn. Null: the editor reads them from the asset's own toggles
+        /// (VRCFury toggles, Modular Avatar Shape Changers). Shapes a body lacks are left out.
+        /// </summary>
+        public Dictionary<string, float> wornBodyShapes;
         /// <summary>Name of the blendshape on the target body to transfer (Blendshape / MeshAndBlendshape modes).</summary>
         public string targetBlendshape;
         /// <summary>
@@ -204,6 +220,7 @@ namespace Orbiters.ReFit
             copy.settings = settings?.Clone() ?? new ReFitSettings();
             copy.targetBlendshapes = targetBlendshapes != null ? new List<string>(targetBlendshapes) : null;
             copy.coverageLayers = coverageLayers != null ? new List<SkinnedMeshRenderer>(coverageLayers) : new List<SkinnedMeshRenderer>();
+            copy.wornBodyShapes = wornBodyShapes != null ? new Dictionary<string, float>(wornBodyShapes) : null;
             return copy;
         }
     }

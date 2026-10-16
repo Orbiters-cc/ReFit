@@ -78,6 +78,8 @@ namespace Orbiters.ReFit.Editor
         private readonly HashSet<int> createdTransformIds = new HashSet<int>();
         private readonly List<PropertyState> propertyStates = new List<PropertyState>();
         private readonly List<RemovedObject> removedObjects = new List<RemovedObject>();
+        // Objects of a prefab instance the replacement hid instead of removing (Restore shows them again).
+        private readonly List<(GameObject gameObject, string path)> hiddenObjects = new List<(GameObject, string)>();
         private static Scene backupScene;
         private static Transform backupRoot;
 
@@ -170,6 +172,13 @@ namespace Orbiters.ReFit.Editor
             RemoveCreatedObjects(undoName);
             RestoreSnapshotRoot(undoName);
             RestoreRemovedObjects(root, statesByPath, restored, undoName);
+            foreach (var hidden in hiddenObjects)
+            {
+                var shown = hidden.gameObject != null ? hidden.gameObject.transform : (hidden.path != null && root != null ? root.Find(hidden.path) : null);
+                if (shown == null || shown.gameObject.activeSelf) continue;
+                Undo.RecordObject(shown.gameObject, undoName);
+                shown.gameObject.SetActive(true);
+            }
             for (int i = 0; i < transformStates.Count; i++)
             {
                 var state = transformStates[i];
@@ -285,6 +294,12 @@ namespace Orbiters.ReFit.Editor
                 name = removed.name,
                 transformIds = ids
             });
+        }
+
+        /// <summary>Records an object of a prefab instance about to be hidden instead of removed.</summary>
+        internal void RecordHidden(GameObject hidden)
+        {
+            if (hidden != null) hiddenObjects.Add((hidden, GetPath(snapshotRoot, hidden.transform)));
         }
 
         /// <summary>Drops the removed-object copies of a transaction that was rolled back.</summary>
@@ -734,8 +749,10 @@ namespace Orbiters.ReFit.Editor
                                !container.parent.IsChildOf(targetInstance.transform) && container.parent != targetInstance.transform &&
                                container.parent.GetComponentsInChildren<SkinnedMeshRenderer>(true).Length == 1)
                             container = container.parent;
-                        if (MakeRestructurable(container, report))
+                        if (CanMoveWithoutUnpacking(container))
                             Undo.SetTransformParent(container, targetInstance.transform, "ReFit parent asset");
+                        else
+                            report.Info("asset-left-in-prefab", $"Left '{container.name}' where it is: moving it would unpack its prefab.");
                     }
                 }
                 ApplyGeneratedMetadata(renderer, comp.generatedMetadata);
@@ -1086,8 +1103,6 @@ namespace Orbiters.ReFit.Editor
             var rootBone = renderer.rootBone;
             if (!rootBone.IsChildOf(assetRoot))
                 return;
-            if (!MakeRestructurable(rootBone, report))
-                return;
 
             NormalizeTargetEquivalentBoneNames(renderer, renderer.bones, request.targetAvatar,
                 assetRoot, rootBone, report);
@@ -1173,8 +1188,7 @@ namespace Orbiters.ReFit.Editor
                 return false;
             }
 
-            if (!MakeRestructurable(assetInstanceRoot, report)) return false;
-
+            // The rebuilt armature is added to the clothing: a prefab instance accepts added objects and stays packed.
             var newArmatureRoot = CreateMaterializedArmature(assetInstanceRoot);
             resetJournal?.RecordCreated(newArmatureRoot.gameObject);
             var bones = MaterializeBonePlan(comp, sourceBones, targetInstance, assetInstanceRoot, newArmatureRoot, report);
@@ -1739,6 +1753,9 @@ namespace Orbiters.ReFit.Editor
                         if (component == null || component is Transform || !scanned.Add(component)) continue;
                         if (IsInsideAnyRoot(component.transform, staleArmatureRoots)) continue;
                         if (IsVrcfuryArmatureLinkComponent(component)) continue;
+                        // The outfit's other parts keep their bones: their meshes are bound to them (bindposes), and moved onto
+                        // the rebuilt bones they would bend wherever the two skeletons differ.
+                        if (component is SkinnedMeshRenderer other && other != renderer) continue;
                         RebindComponentReferences(component, transformMap, newArmatureRoot, report, ref stats, unresolved);
                     }
                 }
@@ -1816,12 +1833,34 @@ namespace Orbiters.ReFit.Editor
                     var current = currentObject != null ? currentObject.transform : null;
                     if (!ShouldRepairVrcfuryArmatureLink(component, current, assetInstanceRoot, newArmatureRoot, transformMap))
                         continue;
+                    // A link merging another part's armature (one an earlier refit rebuilt) is that part's.
+                    if (current != null && transformMap != null && transformMap.Count > 0 &&
+                        !transformMap.Keys.Any(old => old != null && old.IsChildOf(current)) && !current.IsChildOf(newArmatureRoot))
+                        continue;
 
                     var replacement = ResolveVrcfuryLinkFrom(current, renderer, transformMap, newArmatureRoot);
                     if (replacement == null)
                     {
                         report?.Warn("vrcfury-armature-link-unresolved",
                             $"Could not find a rebuilt Link From bone for VRCFury Armature Link at '{HierarchyPath(component.transform)}'.");
+                        continue;
+                    }
+
+                    // Other parts of the outfit are still skinned to the armature this link merges: it stays theirs, and the
+                    // rebuilt armature gets a link of its own (VRCFury merges every linked armature).
+                    if (current != null && current != replacement.transform && newArmatureRoot != null &&
+                        OtherRenderersUse(current, renderer, assetInstanceRoot))
+                    {
+                        var own = CopyComponentTo(component, newArmatureRoot.gameObject);
+                        if (own != null && TryGetVrcfuryArmatureLinkContent(own, out var ownSerialized, out var ownContent))
+                        {
+                            ownContent.FindPropertyRelative("propBone").objectReferenceValue = replacement.gameObject;
+                            ConfigureRebuiltLink(ownContent);
+                            ownSerialized.ApplyModifiedPropertiesWithoutUndo();
+                            report?.Info("vrcfury-armature-link-added",
+                                $"Gave the rebuilt armature its own VRCFury Armature Link: '{HierarchyPath(component.transform)}' still links the armature the outfit's other parts use.");
+                            repaired++;
+                        }
                         continue;
                     }
 
@@ -1834,18 +1873,7 @@ namespace Orbiters.ReFit.Editor
                         changed = true;
                     }
 
-                    changed |= SetBool(content, "recursive", true);
-                    // ReFit has already rebuilt the clothing armature into the target pose.
-                    // VRCFury should merge/rewrite skins from that pose, not pre-align the
-                    // clothing bones and preserve the aligned deformation.
-                    changed |= SetBool(content, "alignPosition", false);
-                    changed |= SetBool(content, "alignRotation", false);
-                    changed |= SetBool(content, "alignScale", false);
-                    changed |= SetBool(content, "autoScaleFactor", false);
-                    changed |= SetBool(content, "scalingFactorPowersOf10Only", false);
-                    changed |= SetFloat(content, "skinRewriteScalingFactor", 1f);
-                    changed |= SetInt(content, "version", 7);
-
+                    changed |= ConfigureRebuiltLink(content);
                     if (!changed) continue;
 
                     serialized.ApplyModifiedProperties();
@@ -1855,6 +1883,50 @@ namespace Orbiters.ReFit.Editor
                 }
             }
             return repaired;
+        }
+
+        // A renderer of the outfit other than the refitted one is skinned to bones under (or at) the linked bone.
+        private static bool OtherRenderersUse(Transform linked, SkinnedMeshRenderer refitted, Transform outfitRoot)
+        {
+            if (linked == null || outfitRoot == null) return false;
+            foreach (var other in outfitRoot.GetComponentsInChildren<SkinnedMeshRenderer>(true))
+            {
+                if (other == refitted || IsTransientDebugObject(other.transform)) continue;
+                if (other.rootBone != null && other.rootBone.IsChildOf(linked)) return true;
+                foreach (var bone in other.bones)
+                    if (bone != null && bone.IsChildOf(linked)) return true;
+            }
+            return false;
+        }
+
+        // An undoable copy of a component added to another object (the copy belongs to that object's lifetime).
+        private static Component CopyComponentTo(Component component, GameObject target)
+        {
+            if (component == null || target == null) return null;
+            var before = target.GetComponents(component.GetType());
+            if (!UnityEditorInternal.ComponentUtility.CopyComponent(component) ||
+                !UnityEditorInternal.ComponentUtility.PasteComponentAsNew(target))
+                return null;
+            foreach (var added in target.GetComponents(component.GetType()))
+                if (System.Array.IndexOf(before, added) < 0) return added;
+            return null;
+        }
+
+        // The link settings for an armature ReFit rebuilt in the target pose: VRCFury merges it as it is, without aligning it.
+        private static bool ConfigureRebuiltLink(SerializedProperty content)
+        {
+            bool changed = SetBool(content, "recursive", true);
+            // ReFit has already rebuilt the clothing armature into the target pose.
+            // VRCFury should merge/rewrite skins from that pose, not pre-align the
+            // clothing bones and preserve the aligned deformation.
+            changed |= SetBool(content, "alignPosition", false);
+            changed |= SetBool(content, "alignRotation", false);
+            changed |= SetBool(content, "alignScale", false);
+            changed |= SetBool(content, "autoScaleFactor", false);
+            changed |= SetBool(content, "scalingFactorPowersOf10Only", false);
+            changed |= SetFloat(content, "skinRewriteScalingFactor", 1f);
+            changed |= SetInt(content, "version", 7);
+            return changed;
         }
 
         private static bool IsVrcfuryArmatureLinkComponent(Component component)
@@ -2340,8 +2412,7 @@ namespace Orbiters.ReFit.Editor
             foreach (var root in roots)
             {
                 if (root == null) continue;
-                resetJournal?.RecordRemoved(root.gameObject);
-                Undo.DestroyObjectImmediate(root.gameObject);
+                RemoveOrHide(root.gameObject, report);
                 removed++;
             }
 
@@ -2402,7 +2473,7 @@ namespace Orbiters.ReFit.Editor
                             continue;
                         }
 
-                        Undo.DestroyObjectImmediate(branch.gameObject);
+                        RemoveOrHide(branch.gameObject, report);
                         removed++;
                     }
                 }
@@ -2471,8 +2542,7 @@ namespace Orbiters.ReFit.Editor
                 foreach (var root in roots)
                 {
                     if (root == null) continue;
-                    resetJournal?.RecordRemoved(root.gameObject);
-                    Undo.DestroyObjectImmediate(root.gameObject);
+                    RemoveOrHide(root.gameObject, report);
                     removed++;
                 }
             }
@@ -2581,9 +2651,16 @@ namespace Orbiters.ReFit.Editor
                     if (!IsTreeUsedBySkinning(child, assetRoot, renderer, bones) && CanDeleteTransformTree(child))
                     {
                         var removedPath = HierarchyPath(child);
-                        Undo.DestroyObjectImmediate(child.gameObject);
+                        RemoveOrHide(child.gameObject, report);
                         report.Info("final-unused-armature-removed",
                             $"Removed unused armature-like object '{removedPath}' during final hierarchy validation.");
+                        continue;
+                    }
+                    // The armature the outfit's other parts are skinned to (and its link merges): theirs, not a stale copy.
+                    if (OtherRenderersUse(child, renderer, assetRoot) && !bones.Any(b => b != null && b.IsChildOf(child)))
+                    {
+                        report.Info("armature-shared-kept",
+                            $"Kept '{HierarchyPath(child)}': the outfit's other parts are skinned to it.");
                         continue;
                     }
                     extraContainers.Add(HierarchyPath(child));
@@ -2853,7 +2930,8 @@ namespace Orbiters.ReFit.Editor
                 if (!LooksLikeArmatureTransform(candidate) && !ContainsHumanoidBoneName(candidate)) continue;
                 var parent = candidate.parent;
                 if (parent == null) continue;
-                if (!MakeRestructurable(candidate, report)) continue;
+                // Collapsing moves children out of the container: a prefab's own container stays (hidden when unused).
+                if (!CanMoveWithoutUnpacking(candidate) || PrefabUtility.IsPartOfPrefabInstance(candidate)) continue;
 
                 for (int i = candidate.childCount - 1; i >= 0; i--)
                 {
@@ -2952,24 +3030,34 @@ namespace Orbiters.ReFit.Editor
         }
 
         /// <summary>
-        /// Unity forbids restructuring prefab instances; unpack (outermost first) until <paramref name="t"/> can be
-        /// reparented. Returns false when it could not be made restructurable.
+        /// Removes a stale object of the clothing, or hides it when it belongs to a prefab instance. Unity keeps a prefab
+        /// instance's own objects; unpacking the prefab to delete them would cut the outfit from its prefab (updates, the
+        /// VRCFury and Modular Avatar setup its creator made). A hidden unused bone does nothing.
         /// </summary>
-        private static bool MakeRestructurable(Transform t, ReFitReport report)
+        private static void RemoveOrHide(GameObject gameObject, ReFitReport report)
         {
-            for (int guard = 0; guard < 6; guard++)
+            if (gameObject == null) return;
+            if (PrefabUtility.IsPartOfPrefabInstance(gameObject) && !PrefabUtility.IsAddedGameObjectOverride(gameObject))
             {
-                if (!PrefabUtility.IsPartOfPrefabInstance(t)) return true;
-                // Reparenting the instance ROOT itself is allowed without unpacking.
-                var root = PrefabUtility.GetOutermostPrefabInstanceRoot(t);
-                if (root == t.gameObject) return true;
-                if (root == null) return true;
-                // Include prefab connectivity in the operation's Undo transaction as well as transforms.
-                PrefabUtility.UnpackPrefabInstance(root, PrefabUnpackMode.OutermostRoot, InteractionMode.UserAction);
-                report.Info("prefab-unpacked", $"Unpacked the prefab instance '{root.name}' to allow moving '{t.name}'.");
+                if (!gameObject.activeSelf) return;
+                resetJournal?.RecordHidden(gameObject);
+                Undo.RecordObject(gameObject, "ReFit hide stale armature");
+                gameObject.SetActive(false);
+                report?.Info("prefab-object-hidden", $"Hid '{HierarchyPath(gameObject.transform)}' instead of removing it: it belongs to a prefab, which stays packed.");
+                return;
             }
-            report.Warn("prefab-unpack-failed", $"Could not unpack the prefab instance containing '{t.name}'.");
-            return false;
+            resetJournal?.RecordRemoved(gameObject);
+            Undo.DestroyObjectImmediate(gameObject);
+        }
+
+        /// <summary>
+        /// Moving <paramref name="t"/> keeps every prefab packed: it is not part of a prefab instance, or it is the root of
+        /// one (or added to one), which Unity lets move.
+        /// </summary>
+        private static bool CanMoveWithoutUnpacking(Transform t)
+        {
+            if (t == null || !PrefabUtility.IsPartOfPrefabInstance(t)) return true;
+            return PrefabUtility.IsOutermostPrefabInstanceRoot(t.gameObject) || PrefabUtility.IsAddedGameObjectOverride(t.gameObject);
         }
 
         // ------------------------------------------------------------------

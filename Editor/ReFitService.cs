@@ -213,6 +213,14 @@ namespace Orbiters.ReFit.Editor
             var report = new ReFitReport();
             try { ReFitAssetPipeline.ValidateSceneAssetArmature(request, report); }
             catch (Exception e) { report.Error("preflight-exception", e.Message); }
+            // The bodies are fitted as the clothing is worn: with the shapes its toggles set (hidden fluff, shrunk skin).
+            try
+            {
+                if (request != null && request.wornBodyShapes == null && request.assetRenderer != null)
+                    request.wornBodyShapes = ReFitOutfitToggles.WornBodyShapes(request.assetRenderer,
+                        request.targetBodyRenderer != null ? request.targetBodyRenderer : ReFitAutoSetup.Body(request.targetAvatar, request.assetRenderer));
+            }
+            catch (Exception e) { report.Warn("worn-shapes-unread", "The clothing's toggles could not be read: " + e.Message); }
             return report;
         }
 

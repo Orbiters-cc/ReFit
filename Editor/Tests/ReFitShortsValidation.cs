@@ -131,7 +131,7 @@ namespace Orbiters.ReFit.Editor.Tests
 
         private static Transform CopyTransforms(Transform source, Transform parent, Dictionary<Transform, Transform> map)
         {
-            var copy = new GameObject(source.name) { hideFlags = HideFlags.HideAndDontSave }.transform;
+            var copy = EditorUtility.CreateGameObjectWithHideFlags(source.name, HideFlags.HideAndDontSave).transform;
             copy.SetParent(parent, false); copy.localPosition = source.localPosition;
             copy.localRotation = source.localRotation; copy.localScale = source.localScale;
             map.Add(source, copy);

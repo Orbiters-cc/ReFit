@@ -1,5 +1,50 @@
 # Validation Records
 
+## 2026-10-16: Prefab Outfits, Body Registration and Cloth Fit (0.6.0)
+
+Three reports: VRCFury outfits had to be unpacked and then "freaked out" once refitted; the Novabeast latex clothing
+clipped a lot on the Hypernova; the LunaVRC Novabeast clothing (Classy, Comfy) looked poor on the Ultinova.
+
+The freak-out had four causes, all fixed: the refit unpacked the outfit prefab to rebuild the armature; it pointed the
+outfit's one VRCFury Armature Link at the refitted part's new armature, unlinking the other parts; it rebound the other
+parts' bones onto the new armature without their bindposes (the Ultinova's custom model has its forearms 21 mm off and
+its breast bones turned 180 degrees, so they bent there); and it gave the clothing the body's weights on the base's
+fluff and tail physics bones. `ReFitPrefabOutfitValidation.Run` (the Ultinova custom model, the Classy prefab, Turtle
+neck and Dress Pants refitted) reports the prefab still connected, the untouched Chain moved 0.00 mm, and one link per
+armature with one skinned user each, with and without an offset armature. A deterministic check refits the v2 fixture's
+clothing as a model prefab instance and finds it still packed.
+
+Outfit replays (`ReFitCaseValidation`, at rest; "before" is the 0.5.10 path on the same cases, `registerBodies=false`):
+
+| Case | Spikes over 5 mm | Clipping samples over 3 mm | Shape lag over 3 mm | Reversed triangles | Engine |
+| --- | --- | --- | --- | --- | --- |
+| Latex catsuit, Hypernova, five shapes | 422 (66 mm) → 45 (15 mm) | 166 (27 mm) → 257 (15 mm) | 117 (176 mm) → 73 (32 mm) | 137 → 2 | 17.0 → 11.2 s |
+| Turtle neck, Ultinova | 810 (100 mm) → 354 (32 mm) | 331 (26 mm) → 223 (56 mm) | 179 (16 mm) → 42 (7 mm) | 75 → 86 | 2.5 → 11.7 s |
+| Sweater, Ultinova | 720 (62 mm) → 193 (31 mm) | 194 (17 mm) → 113 (27 mm) | 234 (24 mm) → 71 (13 mm) | 197 → 90 | 25.2 → 12.2 s |
+
+The other cases after: latex corset 74 spikes, 467 samples over 3 mm (the deepest, 16 mm, under the tip of the
+Hypernova's chest fluff, which lies over the corset's top);
+panties 0 and 136; legs 0 and 154; arms 0 and 11; sleeve top 18 and 54; collar 56 and 59; dress pants 183 and 136;
+sweats 180 and 28; tank top 123 and 81. The Classy chain went from torn (edges stretched up to 134 times, 2666 reversed
+triangles) to whole (0 spikes, no stretched or reversed triangle): proximity welding had fused its 91 touching links
+into two pieces, and now joins only vertices on open edges. Every case lays the bodies onto each other with at most
+0.1 % of the skin under the clothing out of reach.
+
+The catsuit has more shallow clipping samples than before (166 to 257 over 3 mm) at half the depth, mostly the
+Hypernova's wrist and ankle fluff, which the Novabeast has no counterpart for; the deepest turtleneck samples lie inside
+the Ultinova's chest fluff at the front of the neck, and the chain's inside the mane. In the renders the catsuit's
+neckline, shoulders and V stay clean with all five shapes on, and the Classy and Comfy pieces show no tenting or tears.
+
+FBX fixtures: the sculpted body B reaches up to 90 cm out of the base's surface. 8 % of its skin under the clothing is
+out of the registration's reach, so the fit falls back to the earlier passes (2 % limit): 8.4 mm generated to expected
+(at most 10 mm), as before. Tried and left out: a pull of the target's skin back onto the source in the registration
+(13.4 to 12.8 mm on the fixture, and skin patches on the catsuit's shoulders with all shapes on), and leaving skin near
+open fabric edges out of the drape (no change on the fixture).
+
+Deterministic suite (stepped runner): 86 passed, 2 opt-in scene/VRCFury checks skipped, and the window run test failed
+only for want of a log scope; run inside one, it passes. Orbiters Toolkit: AttachmentTests and AttachmentVolumeFitTests
+28 passed; ClothingCoverage, FitCheck, RefitBuild and RefitRecords 44 passed.
+
 ## 2026-10-11: Different-Base Drape (onesie on the ThiccWiker: chest and rear)
 
 The reported onesie still showed the ThiccWiker's breasts and the gluteal crease. Three causes: the target's flat chest

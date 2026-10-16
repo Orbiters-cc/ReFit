@@ -23,7 +23,7 @@ namespace Orbiters.ReFit.Editor.Tests
             RunCase(failures, "Staging meshes are released after validation and abandoned jobs", Staging_ReleasesOwnedMeshes);
             RunCase(failures, "Cancelled engine jobs never bake a mesh", Engine_CancellationDoesNotBake);
             RunCase(failures, "Late cancellation and completion callbacks preserve output ownership", Engine_CallbackOwnership);
-            RunCase(failures, "Unpacking an imported prefab restores connectivity on undo", Application_PrefabConnectivityUndo);
+            RunCase(failures, "Refitting clothing in a prefab instance keeps the prefab packed", Application_PrefabInstanceStaysPacked);
             RunCase(failures, "Failed armature application restores the original hierarchy and mesh", Application_FailureRollsBack);
             RunCase(failures, "Input edits with unchanged mesh counts invalidate asynchronous results", InputState_DetectsMeshEdits);
             RunCase(failures, "Transfer cache rejects changed settings and same-count shape data", Cache_RejectsChangedInputs);
@@ -297,30 +297,43 @@ namespace Orbiters.ReFit.Editor.Tests
             }
         }
 
-        private static void Application_PrefabConnectivityUndo()
+        // An outfit is usually a prefab (VRCFury, Modular Avatar): refitting one of its parts, armature replaced, must leave it a
+        // prefab instance. The clothing of the v2 fixture (its own armature, with a clothing-only bone) as a model prefab
+        // instance, the fixture's other models in it switched off.
+        private static void Application_PrefabInstanceStaysPacked()
         {
-            var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(FbxFixtureV1Path);
-            if (prefab == null) throw new SkippedTestException("Authored v1 FBX is missing.");
-            var instance = (GameObject)PrefabUtility.InstantiatePrefab(prefab);
-            Undo.IncrementCurrentGroup();
-            int group = Undo.GetCurrentGroup();
-            try
+            var prefab = AssetDatabase.LoadAssetAtPath<GameObject>(FbxFixtureV2DifferentArmaturePath);
+            if (prefab == null) throw new SkippedTestException("Authored v2 FBX is missing.");
+            using (var fixture = FbxResultFixture.Create(FbxFixtureV2DifferentArmaturePath))
             {
-                var renderer = instance.GetComponentInChildren<SkinnedMeshRenderer>();
-                AssertTrue(renderer != null && renderer.transform != instance.transform, "Fixture needs a nested renderer.");
-                var method = typeof(ReFitAssetPipeline).GetMethod("MakeRestructurable",
-                    System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.NonPublic);
-                AssertTrue((bool)method.Invoke(null, new object[] { renderer.transform, new ReFitReport() }), "Could not unpack fixture.");
-                AssertTrue(!PrefabUtility.IsPartOfPrefabInstance(instance), "Fixture was not unpacked.");
-                Undo.FlushUndoRecordObjects();
-                Undo.RevertAllDownToGroup(group);
-                AssertTrue(PrefabUtility.IsPartOfPrefabInstance(instance), "Rollback lost prefab connectivity.");
-                AssertTrue(PrefabUtility.GetCorrespondingObjectFromSource(instance) == prefab, "Rollback restored the wrong prefab.");
-            }
-            finally
-            {
-                Undo.RevertAllDownToGroup(group);
-                if (instance != null) Object.DestroyImmediate(instance);
+                Undo.IncrementCurrentGroup();
+                int group = Undo.GetCurrentGroup();
+                var instance = (GameObject)PrefabUtility.InstantiatePrefab(prefab);
+                Undo.RegisterCreatedObjectUndo(instance, "ReFit packed prefab test");
+                ReFitComputation comp = null;
+                try
+                {
+                    foreach (Transform child in instance.transform)
+                        if (child.name != "Armature Clothing for A" && child.name != "Body Clothing for A") child.gameObject.SetActive(false);
+                    var clothing = instance.transform.Find("Body Clothing for A").GetComponent<SkinnedMeshRenderer>();
+                    var request = FbxRequest(fixture, clothing);
+                    comp = new ReFitEngine().Run(request);
+                    AssertComputationSucceeded(comp);
+                    var generated = ReFitAssetPipeline.ApplyToScene(request, comp, comp.report);
+                    AssertTrue(generated != null, "ApplyToScene returned no renderer for the prefab instance.");
+                    AssertTrue(PrefabUtility.IsPartOfPrefabInstance(generated) && PrefabUtility.GetOutermostPrefabInstanceRoot(generated) == instance,
+                        "Refitting a part of a prefab instance unpacked it.");
+                    AssertTrue(generated.sharedMesh != clothing.sharedMesh || generated == clothing, "The refitted mesh was not applied.");
+                    AssertTrue(!RendererHasBone(generated, "middle arm"),
+                        "The clothing-only 'middle arm' bone should resolve onto the target armature in a prefab instance too.");
+                    AssertRootBoneInRendererBones(generated, "packed prefab");
+                }
+                finally
+                {
+                    DestroyComputationMesh(comp);
+                    Undo.RevertAllDownToGroup(group);
+                    if (instance != null) Object.DestroyImmediate(instance);
+                }
             }
         }
 

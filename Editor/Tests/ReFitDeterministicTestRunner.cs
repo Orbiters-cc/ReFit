@@ -401,43 +401,62 @@ namespace Orbiters.ReFit.Editor.Tests
                 "Gravity relaxation should bake a stronger full-weight shape instead of relying on 200% preview weight.");
         }
 
+        /// <summary>Investigation only: changes the FBX fixture's settings before it runs.</summary>
+        internal static Action<ReFitSettings> FbxSettingsOverride;
+
+        /// <summary>Investigation only: the v1 FBX fixture with <paramref name="settings"/> ("field=value;..."); its metrics go to the log.</summary>
+        public static string RunFbxFixtureWith(string settings)
+        {
+            FbxSettingsOverride = s => ReFitCaseValidation.Override(s, settings);
+            try { RunFbxFixtureAgainstAuthoredResult(FbxFixtureV1Path, "FBX v1 [" + settings + "]"); return "passed"; }
+            catch (Exception e) { return "failed: " + e.Message; }
+            finally { FbxSettingsOverride = null; }
+        }
+
+        // The FBX fixtures' request: <paramref name="clothing"/> from body A onto the sculpted body B, mesh and shape.
+        private static ReFitRequest FbxRequest(FbxResultFixture fixture, SkinnedMeshRenderer clothing)
+        {
+            return new ReFitRequest
+            {
+                mode = ReFitMode.MeshAndBlendshape,
+                assetRenderer = clothing,
+                sourceAvatar = fixture.sourceAvatar,
+                targetAvatar = fixture.targetAvatar,
+                sourceBodyRenderer = fixture.sourceBody,
+                targetBodyRenderer = fixture.targetBody,
+                targetBlendshape = FbxShapeName,
+                settings = new ReFitSettings
+                {
+                    maxProjectionDistance = 0.25f,
+                    falloffStartDistance = 0.08f,
+                    primarySmoothingIterations = ReFitSettings.DefaultPrimarySmoothingIterations,
+                    primarySmoothingStrength = ReFitSettings.DefaultPrimarySmoothingStrength,
+                    transferredBlendshapeSmoothingIterations = 0,
+                    transferredBlendshapeSmoothingStrength = 0f,
+                    filterByNormal = false,
+                    filterByBoneRegion = false,
+                    transferWeights = true,
+                    replaceArmature = true,
+                    keepExtraBoneVertices = true,
+                    blendshapeName = "refit",
+                    prefixTransferredShapes = false,
+                    offsetMode = OffsetMode.Translate,
+                    recalculateNormalDeltas = false,
+                    savePrefab = false,
+                    proportionWarningThreshold = 1f
+                }
+            };
+        }
+
         private static void RunFbxFixtureAgainstAuthoredResult(string fixturePath, string label)
         {
             using (var fixture = FbxResultFixture.Create(fixturePath))
             {
                 bool asymmetricAuthoredCoverage =
                     fixturePath == FbxFixtureV1Path || fixturePath == FbxFixtureV2DifferentArmaturePath;
-                var request = new ReFitRequest
-                {
-                    mode = ReFitMode.MeshAndBlendshape,
-                    assetRenderer = fixture.clothingA,
-                    sourceAvatar = fixture.sourceAvatar,
-                    targetAvatar = fixture.targetAvatar,
-                    sourceBodyRenderer = fixture.sourceBody,
-                    targetBodyRenderer = fixture.targetBody,
-                    targetBlendshape = FbxShapeName,
-                    settings = new ReFitSettings
-                    {
-                        maxProjectionDistance = 0.25f,
-                        falloffStartDistance = 0.08f,
-                        primarySmoothingIterations = ReFitSettings.DefaultPrimarySmoothingIterations,
-                        primarySmoothingStrength = ReFitSettings.DefaultPrimarySmoothingStrength,
-                        transferredBlendshapeSmoothingIterations = 0,
-                        transferredBlendshapeSmoothingStrength = 0f,
-                        filterByNormal = false,
-                        filterByBoneRegion = false,
-                        transferWeights = true,
-                        replaceArmature = true,
-                        keepExtraBoneVertices = true,
-                        blendshapeName = "refit",
-                        prefixTransferredShapes = false,
-                        offsetMode = OffsetMode.Translate,
-                        recalculateNormalDeltas = false,
-                        savePrefab = false,
-                        proportionWarningThreshold = 1f
-                    }
-                };
+                var request = FbxRequest(fixture, fixture.clothingA);
 
+                FbxSettingsOverride?.Invoke(request.settings);
                 var originalClothing = MeshSnapshot.Capture(fixture.clothingA, false, null, new ReFitReport());
                 var comp = new ReFitEngine().Run(request);
                 try
@@ -549,9 +568,17 @@ namespace Orbiters.ReFit.Editor.Tests
         /// bridge. Progress and failures go to Temp/ReFitTests/stepped.txt after every case, the summary to latest.txt at the
         /// end, when the recent-blendshape history is given back.
         /// </summary>
-        public static void QueueStepped()
+        public static void QueueStepped() => QueueStepped(null);
+
+        /// <summary>As <see cref="QueueStepped()"/>, only the cases whose name contains one of the '|'-separated parts of <paramref name="filter"/>.</summary>
+        public static void QueueStepped(string filter)
         {
             var cases = Collect();
+            if (!string.IsNullOrEmpty(filter))
+            {
+                var parts = filter.Split('|');
+                cases = cases.FindAll(c => Array.Exists(parts, part => c.name.IndexOf(part, StringComparison.OrdinalIgnoreCase) >= 0));
+            }
             var restoreHistory = KeepHistory();
             TestOutcomes.Clear();
             var failures = new List<string>();
@@ -821,9 +848,9 @@ namespace Orbiters.ReFit.Editor.Tests
         {
             using (var fixture = ReFitTestFixture.Create())
             {
-                var disabledRequest = BuildMeshAndBlendshapeRequest(fixture, fixture.sourceSpaceAccessory.renderer, false);
+                var disabledRequest = BuildLegacyMeshAndBlendshapeRequest(fixture, fixture.sourceSpaceAccessory.renderer, false);
                 disabledRequest.settings.enableClearanceCorrection = false;
-                var enabledRequest = BuildMeshAndBlendshapeRequest(fixture, fixture.sourceSpaceAccessory.renderer, false);
+                var enabledRequest = BuildLegacyMeshAndBlendshapeRequest(fixture, fixture.sourceSpaceAccessory.renderer, false);
                 enabledRequest.settings.enableClearanceCorrection = true;
 
                 var disabled = new ReFitEngine().Run(disabledRequest);
@@ -866,10 +893,10 @@ namespace Orbiters.ReFit.Editor.Tests
         {
             using (var fixture = ReFitTestFixture.Create())
             {
-                var defaultRequest = BuildMeshAndBlendshapeRequest(fixture, fixture.sourceSpaceAccessory.renderer, false);
+                var defaultRequest = BuildLegacyMeshAndBlendshapeRequest(fixture, fixture.sourceSpaceAccessory.renderer, false);
                 defaultRequest.settings.enableClearanceCorrection = true;
 
-                var strongRequest = BuildMeshAndBlendshapeRequest(fixture, fixture.sourceSpaceAccessory.renderer, false);
+                var strongRequest = BuildLegacyMeshAndBlendshapeRequest(fixture, fixture.sourceSpaceAccessory.renderer, false);
                 strongRequest.settings.enableClearanceCorrection = true;
                 strongRequest.settings.clearanceTightnessFactor = 0f;
                 strongRequest.settings.clearanceMinimumSafetyDistance = 0.001f;
@@ -915,7 +942,7 @@ namespace Orbiters.ReFit.Editor.Tests
         {
             using (var fixture = ReFitTestFixture.Create())
             {
-                var request = BuildMeshAndBlendshapeRequest(fixture, fixture.sourceSpaceAccessory.renderer, false);
+                var request = BuildLegacyMeshAndBlendshapeRequest(fixture, fixture.sourceSpaceAccessory.renderer, false);
                 ApplyHighTightnessSettings(request.settings);
 
                 var comp = new ReFitEngine().Run(request);
@@ -968,11 +995,11 @@ namespace Orbiters.ReFit.Editor.Tests
             {
                 AddPartialTransferLaceCluster(fixture.sourceSpaceAccessory.mesh, fixture.sourceSpaceAccessory.renderer);
 
-                var disabledRequest = BuildMeshAndBlendshapeRequest(fixture, fixture.sourceSpaceAccessory.renderer, false);
+                var disabledRequest = BuildLegacyMeshAndBlendshapeRequest(fixture, fixture.sourceSpaceAccessory.renderer, false);
                 disabledRequest.settings.enableClearanceCorrection = false;
                 disabledRequest.settings.stabilizeDetachedTransferredComponents = false;
 
-                var enabledRequest = BuildMeshAndBlendshapeRequest(fixture, fixture.sourceSpaceAccessory.renderer, false);
+                var enabledRequest = BuildLegacyMeshAndBlendshapeRequest(fixture, fixture.sourceSpaceAccessory.renderer, false);
                 enabledRequest.settings.enableClearanceCorrection = false;
                 enabledRequest.settings.stabilizeDetachedTransferredComponents = true;
 
@@ -1058,12 +1085,12 @@ namespace Orbiters.ReFit.Editor.Tests
             {
                 AddDetachedChestIsland(fixture.sourceSpaceAccessory.mesh, fixture.sourceSpaceAccessory.renderer);
 
-                var disabledRequest = BuildMeshAndBlendshapeRequest(fixture, fixture.sourceSpaceAccessory.renderer, false);
+                var disabledRequest = BuildLegacyMeshAndBlendshapeRequest(fixture, fixture.sourceSpaceAccessory.renderer, false);
                 ApplyHighTightnessSettings(disabledRequest.settings);
                 disabledRequest.settings.clearancePropagateDisconnectedIslands = false;
                 disabledRequest.settings.clearanceOpenBoundaryCorrectionScale = 0f;
 
-                var enabledRequest = BuildMeshAndBlendshapeRequest(fixture, fixture.sourceSpaceAccessory.renderer, false);
+                var enabledRequest = BuildLegacyMeshAndBlendshapeRequest(fixture, fixture.sourceSpaceAccessory.renderer, false);
                 ApplyHighTightnessSettings(enabledRequest.settings);
                 enabledRequest.settings.clearancePropagateDisconnectedIslands = true;
                 enabledRequest.settings.clearanceOpenBoundaryCorrectionScale = 0f;
@@ -3166,6 +3193,16 @@ namespace Orbiters.ReFit.Editor.Tests
                 targetBlendshape = BodyShapeName,
                 settings = CreateDeterministicSettings(replaceArmature)
             };
+        }
+
+        // The clearance, hem and detached-island passes the cloth fit replaces between two bodies: they still fit shapes-only and
+        // placed-by-hand refits, so their own tests keep running them.
+        private static ReFitRequest BuildLegacyMeshAndBlendshapeRequest(
+            ReFitTestFixture fixture, SkinnedMeshRenderer accessory, bool replaceArmature)
+        {
+            var request = BuildMeshAndBlendshapeRequest(fixture, accessory, replaceArmature);
+            request.settings.clothFit = false;
+            return request;
         }
 
         private static ReFitRequest BuildBlendshapeOnlyRequest(ReFitTestFixture fixture, SkinnedMeshRenderer accessory)

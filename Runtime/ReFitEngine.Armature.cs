@@ -11,6 +11,135 @@ namespace Orbiters.ReFit
         // Bone plan (armature replacement) — main thread only
         // ------------------------------------------------------------------
 
+        // The humanoid segments the source skeleton is carried onto the target's by: each joint onto its counterpart, the
+        // segment to its child turned onto the target's (never the bones' own axes: exporters roll bones differently).
+        private static readonly (HumanBodyBones bone, HumanBodyBones child)[] RetargetSegments =
+        {
+            (HumanBodyBones.Hips, HumanBodyBones.Spine), (HumanBodyBones.Spine, HumanBodyBones.Chest), (HumanBodyBones.Chest, HumanBodyBones.Neck),
+            (HumanBodyBones.UpperChest, HumanBodyBones.Neck), (HumanBodyBones.Neck, HumanBodyBones.Head), (HumanBodyBones.Head, HumanBodyBones.LastBone),
+            (HumanBodyBones.LeftShoulder, HumanBodyBones.LeftUpperArm), (HumanBodyBones.LeftUpperArm, HumanBodyBones.LeftLowerArm),
+            (HumanBodyBones.LeftLowerArm, HumanBodyBones.LeftHand), (HumanBodyBones.LeftHand, HumanBodyBones.LastBone),
+            (HumanBodyBones.RightShoulder, HumanBodyBones.RightUpperArm), (HumanBodyBones.RightUpperArm, HumanBodyBones.RightLowerArm),
+            (HumanBodyBones.RightLowerArm, HumanBodyBones.RightHand), (HumanBodyBones.RightHand, HumanBodyBones.LastBone),
+            (HumanBodyBones.LeftUpperLeg, HumanBodyBones.LeftLowerLeg), (HumanBodyBones.LeftLowerLeg, HumanBodyBones.LeftFoot),
+            (HumanBodyBones.LeftFoot, HumanBodyBones.LeftToes), (HumanBodyBones.LeftToes, HumanBodyBones.LastBone),
+            (HumanBodyBones.RightUpperLeg, HumanBodyBones.RightLowerLeg), (HumanBodyBones.RightLowerLeg, HumanBodyBones.RightFoot),
+            (HumanBodyBones.RightFoot, HumanBodyBones.RightToes), (HumanBodyBones.RightToes, HumanBodyBones.LastBone),
+        };
+
+        /// <summary>
+        /// Per bone of the source body: the transform carrying it onto the target skeleton. A humanoid joint goes onto its
+        /// counterpart, turned so its segment lies along the target's and scaled by their length (half to double); a joint
+        /// without a child segment turns and scales with its parent; other bones follow their nearest humanoid ancestor.
+        /// Identity where the skeletons coincide. Null without humanoid joints in common. Main thread (reads transforms).
+        /// </summary>
+        private static Matrix4x4[] SkeletonRetarget(NormalizedStage stage, SkinnedMeshRenderer sourceBody)
+        {
+            if (stage?.sourceHumanMap == null || stage.targetHumanMap == null || sourceBody == null || sourceBody.bones == null) return null;
+            var byJoint = new Dictionary<Transform, Matrix4x4>();
+            var turnOf = new Dictionary<HumanBodyBones, (Quaternion turn, float scale)>();
+            foreach (var (role, childRole) in RetargetSegments)
+            {
+                if (!stage.sourceHumanMap.TryGetValue(role, out var source) || source == null ||
+                    !stage.targetHumanMap.TryGetValue(role, out var target) || target == null) continue;
+                var turn = Quaternion.identity;
+                float scale = 1f;
+                if (childRole != HumanBodyBones.LastBone &&
+                    stage.sourceHumanMap.TryGetValue(childRole, out var sourceChild) && sourceChild != null &&
+                    stage.targetHumanMap.TryGetValue(childRole, out var targetChild) && targetChild != null)
+                {
+                    var from = sourceChild.position - source.position;
+                    var to = targetChild.position - target.position;
+                    if (from.sqrMagnitude > 1e-8f && to.sqrMagnitude > 1e-8f)
+                    {
+                        turn = Quaternion.FromToRotation(from, to);
+                        scale = Mathf.Clamp(to.magnitude / from.magnitude, .5f, 2f);
+                    }
+                }
+                else
+                {
+                    // A hand, a head, toes: as its parent segment.
+                    for (var parent = source.parent; parent != null; parent = parent.parent)
+                    {
+                        HumanBodyBones parentRole = HumanBodyBones.LastBone;
+                        foreach (var pair in stage.sourceHumanMap) if (pair.Value == parent) { parentRole = pair.Key; break; }
+                        if (parentRole != HumanBodyBones.LastBone && turnOf.TryGetValue(parentRole, out var inherited)) { (turn, scale) = inherited; break; }
+                    }
+                }
+                turnOf[role] = (turn, scale);
+                byJoint[source] = Matrix4x4.Translate(target.position) * Matrix4x4.Rotate(turn) * Matrix4x4.Scale(Vector3.one * scale) *
+                                  Matrix4x4.Translate(-source.position);
+            }
+            if (byJoint.Count == 0) return null;
+            var bones = sourceBody.bones;
+            var result = new Matrix4x4[bones.Length];
+            for (int k = 0; k < bones.Length; k++)
+            {
+                result[k] = Matrix4x4.identity;
+                for (var bone = bones[k]; bone != null; bone = bone.parent)
+                    if (byJoint.TryGetValue(bone, out var carried)) { result[k] = carried; break; }
+            }
+            return result;
+        }
+
+        // A clothing bone stands on its target bone within this distance and turn.
+        private const float SameSkeletonDistance = 0.002f, SameSkeletonDegrees = 2f;
+
+        /// <summary>
+        /// The clothing's armature already is the target's skeleton, as the clothing is worn: every bone its mesh is weighted
+        /// to stands on the target bone of the same name (or humanoid role), turned the same way, except bones of the clothing
+        /// only (skirt or strap chains) under such a bone. Replacing it would copy those bones into a second armature, and
+        /// restructure a prefab, or an outfit a linker (VRCFury, Modular Avatar) merges onto the avatar, for nothing: other
+        /// parts of the outfit share the armature and the linker links it.
+        /// </summary>
+        private static bool ArmatureMatchesTarget(NormalizedStage stage, MeshSnapshot asset, out int matched)
+        {
+            matched = 0;
+            if (asset.bones == null || asset.boneWeights == null || stage.targetRoot == null) return false;
+            var weighted = new bool[asset.bones.Length];
+            foreach (var w in asset.boneWeights)
+            {
+                if (w.weight0 > 0f && w.boneIndex0 < weighted.Length) weighted[w.boneIndex0] = true;
+                if (w.weight1 > 0f && w.boneIndex1 < weighted.Length) weighted[w.boneIndex1] = true;
+                if (w.weight2 > 0f && w.boneIndex2 < weighted.Length) weighted[w.boneIndex2] = true;
+                if (w.weight3 > 0f && w.boneIndex3 < weighted.Length) weighted[w.boneIndex3] = true;
+            }
+            var targetRoot = stage.targetRoot.transform;
+            var byName = HumanoidBoneMapper.BuildNameIndex(targetRoot, stage.targetExcludedAssetRoot);
+            var byRole = HumanoidBoneMapper.BuildHumanoidBoneIndex(targetRoot, stage.targetHumanMap, stage.targetExcludedAssetRoot);
+            var counterpart = new Dictionary<Transform, Transform>();
+            Transform Counterpart(Transform bone)
+            {
+                if (bone == null) return null;
+                if (counterpart.TryGetValue(bone, out var known)) return known;
+                Transform found = null;
+                if (byName.TryGetValue(BoneNames.Normalize(bone.name), out var named)) found = named;
+                else if (BoneNames.TryInferHumanoid(bone.name, out var role) && HumanoidBoneMapper.TryGetHumanoidEquivalent(byRole, role, out var byHuman))
+                    found = byHuman;
+                counterpart[bone] = found;
+                return found;
+            }
+            for (int k = 0; k < weighted.Length; k++)
+            {
+                var bone = asset.bones[k];
+                if (!weighted[k] || bone == null) continue;
+                var target = Counterpart(bone);
+                if (target == null)
+                {
+                    // A bone of the clothing only: it stays with the clothing under a bone that matches.
+                    var parent = bone.parent;
+                    while (parent != null && Counterpart(parent) == null) parent = parent.parent;
+                    if (parent == null) return false;
+                    continue;
+                }
+                if ((bone.position - target.position).magnitude > SameSkeletonDistance ||
+                    Quaternion.Angle(bone.rotation, target.rotation) > SameSkeletonDegrees)
+                    return false;
+                matched++;
+            }
+            return matched > 0;
+        }
+
         private static bool BuildBonePlan(NormalizedStage stage, MeshSnapshot asset, MeshSnapshot targetBody,
             MeshSnapshot sourceBody, ReFitComputation comp, Dictionary<Transform, BodyRegion> sourceRegions,
             Dictionary<Transform, BodyRegion> targetRegions, ReFitReport report,
@@ -250,7 +379,26 @@ namespace Orbiters.ReFit
             // 5) target body weights are projected onto the hoodie-represented bone set. Target bones that
             // do not have a hoodie equivalent are remapped to the nearest represented ancestor, so the output
             // armature does not grow lower legs/fingers/etc. just because the target avatar has them.
-            var bodyBoneToNew = BuildBodyBoneRemap(targetBody.bones, indexOf, comp.rootBoneIndex);
+            // Only bones the clothing is weighted to count: an armature exported whole lists the base's fluff, tail and ear
+            // bones too, and the body's weights on them would make the clothing swing with their physics.
+            var weighted = new HashSet<int>();
+            if (asset.boneWeights != null)
+                foreach (var w in asset.boneWeights)
+                {
+                    if (w.weight0 > 0f) weighted.Add(w.boneIndex0);
+                    if (w.weight1 > 0f) weighted.Add(w.boneIndex1);
+                    if (w.weight2 > 0f) weighted.Add(w.boneIndex2);
+                    if (w.weight3 > 0f) weighted.Add(w.boneIndex3);
+                }
+            var represented = new Dictionary<Transform, int>();
+            foreach (var pair in indexOf)
+            {
+                bool clothing = false;
+                for (int k = 0; k < assetBoneToNew.Length && !clothing; k++)
+                    clothing = assetBoneToNew[k] == pair.Value && weighted.Contains(k);
+                if (clothing || pair.Value == comp.rootBoneIndex) represented[pair.Key] = pair.Value;
+            }
+            var bodyBoneToNew = BuildBodyBoneRemap(targetBody.bones, represented, comp.rootBoneIndex);
             // The source body's bones through their target equivalents (by name or humanoid role), so both bodies'
             // weights compare in the new bone list. A source bone without one counts as its nearest resolved ancestor.
             var sourceBones = sourceBody != null && sourceBody.bones != null ? sourceBody.bones : Array.Empty<Transform>();
@@ -261,7 +409,7 @@ namespace Orbiters.ReFit
                     sourceAsTarget[i] = ResolveDirect(bone);
                     if (bone == stage.sourceRoot.transform) break;
                 }
-            var sourceBoneToNew = BuildBodyBoneRemap(sourceAsTarget, indexOf, comp.rootBoneIndex);
+            var sourceBoneToNew = BuildBodyBoneRemap(sourceAsTarget, represented, comp.rootBoneIndex);
 
             // 6) bindposes captured in the staged pose, relative to the staged asset renderer
             var rendererL2W = stage.assetRenderer.transform.localToWorldMatrix;

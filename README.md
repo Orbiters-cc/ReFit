@@ -1,5 +1,34 @@
 # ReFit
 
+## 0.6.0 — 2026-10-16
+
+- Outfits stay prefabs. Refitting a part of a prefab outfit (VRCFury, Modular Avatar) no longer unpacks it, from the
+  ReFit window, MCB or My Avatar: the rebuilt armature is added to the instance, objects the prefab owns that the refit
+  no longer uses are hidden instead of deleted (undo shows them again), and the clothing stays where it is in the
+  hierarchy when moving it would break the prefab.
+- The outfit's other parts are left alone. Their bones are no longer re-pointed at the refitted part's armature (they
+  bent wherever the two skeletons differ), and the outfit's VRCFury Armature Link is no longer moved onto one refitted
+  part: the rebuilt armature gets its own copy of the link while the other parts keep theirs. This is what made
+  Novabeast outfits "freak out" when refitted.
+- Clothing made for the same skeleton (Novabeast clothing on the Ultinova or the Hypernova) keeps its armature, its
+  weights and its links: only its mesh is refitted.
+- Skin weights go only to the bones the clothing was weighted to: the base's fluff, tail and ear bones listed by an
+  armature exported whole no longer make the clothing swing with their physics.
+- Shapes the outfit sets while it is worn count: ReFit reads the clothing's own VRCFury toggles (blendshape actions on
+  the body or on every renderer) and Modular Avatar Shape Changers and fits with them on, on both bodies. A turtleneck
+  that hides the chest fluff and shrinks the chest is fitted over the shrunk chest, not over the fluff.
+- A new fit between two bodies. The source body is laid onto the target as one surface (starting from where the
+  skeletons put it), the clothing moves with the skin under it, then it is draped over the target like cloth: where it
+  covered the source and the target's skin comes through, the fabric is pushed out and the push spreads over the fabric
+  around it. Body shapes are draped the same way from the fitted clothing. On the reported outfits: the Novabeast latex
+  catsuit on the Hypernova goes from 422 spikes over 5 mm (66 mm at worst) to 45 (15 mm), with a clean neckline and
+  shoulders that hold with all five Hypernova shapes on; the Classy and Comfy clothing on the Ultinova no longer tents
+  or tears (turtleneck 810 spikes to 354, sweater 720 to 193). Refits with shapes take 5 to 15 s on these outfits
+  (the catsuit 17 s before, the sweater 25 s, the turtleneck 3 s). Bodies sculpted far beyond the base (the authored
+  FBX fixture) are fitted by the earlier passes.
+- Seams split a hair apart (under 0.1 mm) no longer open into cracks, and a chain's links stay whole (the Classy
+  chain was torn).
+
 ## 0.5.10 — 2026-10-13
 
 - While a refit runs, the window's choices are locked and the run keeps the ones it started with. It holds the avatar,
@@ -184,9 +213,10 @@ local API at `http://127.0.0.1:4100/refit` in development.
 - A new mesh saved under `Assets/ReFit/<asset name>/` with the `refit` blendshape (and a second blendshape when
   transferring a body shape, e.g. `refit_Belly_Big`).
 - The scene renderer is switched to the new mesh; when fitting to a different avatar, the asset's armature is
-  replaced with the target's bones, the asset's skin weights follow the difference between the two bodies' skinning
-  where it lies on the skin, and bones with no target equivalent (skirt/physics bones, props) are preserved and
-  re-parented.
+  replaced with the target's bones (kept when it already is the target's skeleton), the asset's skin weights follow the
+  difference between the two bodies' skinning where it lies on the skin, and bones with no target equivalent
+  (skirt/physics bones, props) are preserved and re-parented. A prefab instance stays packed, and the outfit's other
+  parts keep their own bones and VRCFury Armature Links.
 - When the armature is **not** replaced (blendshape-only mode), a standalone prefab is also saved when possible.
 - Scene application is undoable (`Ctrl+Z`); undo does not delete successfully saved output files.
 - Failed armature application rolls back scene changes and does not save a partial result. Optional prefab
@@ -329,9 +359,10 @@ debug snapshots, editor load and asset saving are separate costs from engine-onl
 ## How it works
 
 See `Documentation~/DESIGN.md` for the algorithm: authored-pose staging and scene-pose baking, scale matching,
-once-computed BVH surface bindings with normal / body-region filtering, normal projection between differing bodies,
-barycentric delta transfer, Laplacian smoothing with distance falloff, inverse-skinning of the deltas into blendshape
-space, and skin weights that follow the change of skinning between the bodies.
+once-computed BVH surface bindings with normal / body-region filtering, between two bodies a non-rigid registration of
+one body onto the other and a cloth-like drape of the clothing over the target (normal projection where the bodies
+differ too much), barycentric delta transfer, Laplacian smoothing with distance falloff, inverse-skinning of the deltas
+into blendshape space, and skin weights that follow the change of skinning between the bodies.
 
 ## Requirements
 

@@ -257,22 +257,5 @@
 .refit-msg--error { color: #ff9a8f; }
 .refit-msg--info { color: #c8c8c8; }
 
-/* ---- Body shapes picker (Orbiters Toolkit's, in the window's look) ----------------------------------------------- */
+/* ---- Body shapes picker (Orbiters Toolkit's flat one, in a frame) ----------------------------------------------- */
 .refit-shape-picker { margin-top: 10px; padding: 10px; border-radius: 12px; background-color: #1f1f1f; border-width: 0; }
-.refit-shape-picker .orbiters-shape-search { margin: 0 0 10px 0; height: 30px; min-height: 30px; padding: 0 4px; border-width: 0; border-radius: 15px; background-color: #2c2c2c; }
-.refit-shape-picker .orbiters-shape-search .unity-text-field__input { min-height: 24px; padding: 3px 8px; border-radius: 12px; color: #e6e6e6; font-size: 11px; }
-.refit-shape-picker .orbiters-shape-search .unity-text-field__input:focus { background-color: #333333; }
-.refit-shape-picker .unity-toolbar-search-field__search-button, .refit-shape-picker .unity-search-field-base__search-button { margin-left: 6px; opacity: 0.6; }
-.refit-shape-picker .orbiters-shape-toolbar { margin-bottom: 8px; }
-.refit-shape-picker .orbiters-shape-count { margin: 0 8px 0 2px; padding: 0; color: #8f8f8f; font-size: 11px; }
-.refit-shape-picker .orbiters-shape-action { height: 24px; min-height: 24px; margin: 0 0 0 6px; padding: 0 10px; border-width: 0; border-radius: 6px; background-color: rgba(255, 255, 255, 0.06); color: #d0d0d0; font-size: 11px; transition-property: background-color, scale; transition-duration: 0.12s, 0.18s; }
-.refit-shape-picker .orbiters-shape-action:hover { background-color: rgba(255, 255, 255, 0.12); color: #ffffff; }
-.refit-shape-picker .orbiters-shape-action:active { scale: 0.96 0.96; }
-.refit-shape-picker .orbiters-shape-suggestion { height: 24px; min-height: 24px; margin: 0 4px 4px 0; padding: 0 10px; border-width: 0; border-radius: 12px; background-color: #2e2e2e; color: #d0d0d0; font-size: 11px; white-space: nowrap; transition-property: background-color, scale; transition-duration: 0.12s, 0.18s; }
-.refit-shape-picker .orbiters-shape-suggestion:hover { background-color: #363636; color: #ffffff; }
-.refit-shape-picker .orbiters-shape-suggestion:active { scale: 0.95 0.95; background-color: #3a3a3a; }
-.refit-shape-picker .orbiters-shape-suggestion--selected, .refit-shape-picker .orbiters-shape-suggestion--selected:hover { background-color: rgba(0, 218, 109, 0.14); color: #00DA6D; }
-.refit-shape-picker .orbiters-shape-scroll { margin-bottom: 6px; }
-.refit-shape-picker .orbiters-selection-scroll { padding-top: 8px; border-top-width: 1px; border-color: rgba(255, 255, 255, 0.05); }
-.refit-shape-picker .orbiters-help { margin: 2px 2px 8px 2px; color: #8f8f8f; }
-.refit-shape-picker .unity-scroller--vertical { width: 6px; }

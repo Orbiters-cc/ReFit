@@ -646,6 +646,7 @@ namespace Orbiters.ReFit.Editor
                 // The chips above follow the picker on its next close; the button state follows now.
             });
             picker.AddToClassList("refit-shape-picker");
+            picker.AddToClassList("orbiters-shape-picker--flat");
             card.Add(picker);
         }
 

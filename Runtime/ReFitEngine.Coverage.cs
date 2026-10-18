@@ -69,6 +69,7 @@ namespace Orbiters.ReFit
                     snapshot.worldNormals[a] += normal; snapshot.worldNormals[b] += normal; snapshot.worldNormals[c] += normal;
                 }
                 for (int v = 0; v < snapshot.worldNormals.Length; v++) snapshot.worldNormals[v].Normalize();
+                snapshot.CacheFaceNormals();
                 state.coverageLayers.Add(snapshot);
                 state.coverageLayerNames.Add(original.name);
                 // As authored: without the layer's own refit (its primary shape), body shapes at zero.

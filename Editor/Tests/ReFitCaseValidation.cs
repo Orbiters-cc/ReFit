@@ -19,7 +19,7 @@ namespace Orbiters.ReFit.Editor.Tests
     /// </summary>
     public static class ReFitCaseValidation
     {
-        public const string Output = "Temp/ReFitTests/cases/";
+        public const string Output = "Library/ReFitTests/cases/";
         private const string StatusKey = "Orbiters.ReFit.CaseValidation.Status";
 
         /// <summary>One reported refit: the avatars and the clothing as the user had them, and the wizard's choices.</summary>
@@ -40,6 +40,8 @@ namespace Orbiters.ReFit.Editor.Tests
             public bool coverDifferentBaseBody;
             /// <summary>Close-ups around the crotch in addition to views framing the whole clothing.</summary>
             public bool fullBody;
+            /// <summary>Made for another avatar and placed over this one by hand: refitted onto the same body (source = target).</summary>
+            public bool sameBody;
         }
 
         public static readonly Case Jockstrap = new Case
@@ -135,9 +137,44 @@ namespace Orbiters.ReFit.Editor.Tests
             clothingName = "Body Result Clothing for B", targetBodyName = "Body custom edit", fullBody = true,
         };
 
-        public static Case Find(string name) => name == Onesie.name ? Onesie : name == Jockstrap.name ? Jockstrap : name == FbxFixture.name ? FbxFixture :
-            name == FbxExpected.name ? FbxExpected :
-            NovabeastCases.FirstOrDefault(c => c.name == name);
+        private const string MuscleDruffle = "Assets/Marvii edits/Buffle/Muscle Druffle.prefab", FashionSuit = "Assets/[P.0.E] - FashionSuit/Fbx/[P.0.E] - FashionSuit - Vulper.fbx";
+
+        /// <summary>A FashionSuit part (made for the Vulper) placed by hand over the Muscle Druffle, following its MarvEdit shape.</summary>
+        private static Case Suit(string name, string part) => new Case
+        {
+            name = name, sourcePath = MuscleDruffle, targetPath = MuscleDruffle, clothingPath = FashionSuit, clothingName = part,
+            shapes = { "MarvEdit" }, coverDifferentBaseBody = true, sameBody = true, fullBody = true,
+        };
+
+        /// <summary>
+        /// Outfits from the user's refit folder and the project: the Song Bird jacket made for the Rexouium on the Ultirex V5.1
+        /// custom base, the Hoodie made for the Winterpaw on the Ultipaw, the FashionSuit placed over the Muscle Druffle.
+        /// </summary>
+        public static readonly Case[] OutfitCases =
+        {
+            new Case
+            {
+                name = "rex-jacket", sourcePath = "Assets/MCB/Authoring/Ultirex/Originals/RexouiumRig1.5_V264_FthrOptions.fbx",
+                targetPath = "Assets/MCB/Authoring/Ultirex/Ultirex V5.1 custom model.prefab", clothingPath = "Assets/Jacket_V2.0_Rex/FBX/Jacket_V1.fbx",
+                clothingName = "Jacket_V1_Chest_Up", fullBody = true,
+            },
+            new Case
+            {
+                name = "hoodie", sourcePath = "Assets/my custom winterpaw orbit/default_MasculineCanine.v1.5.fbx",
+                targetPath = "Assets/my custom winterpaw orbit/ulti paw v2.8.fbx", clothingPath = "Assets/Hoodie/Model/Hoodie.fbx", clothingName = "Hoodie",
+                shapes = { "orbit muscles" },
+            },
+            Suit("suit-jacket", "FashionSuitJacket"),
+            Suit("suit-pants", "FashionSuitPants"),
+            Suit("suit-vest", "FashionSuitVest"),
+            Suit("suit-tie", "FashionSuitTie"),
+            Suit("suit-bowtie", "FashionSuitBowtie"),
+        };
+
+        /// <summary>Every replayable case, in the order the regression suite runs them.</summary>
+        public static IEnumerable<Case> AllCases => NovabeastCases.Concat(OutfitCases).Concat(new[] { Jockstrap, Onesie, FbxFixture });
+
+        public static Case Find(string name) => name == FbxExpected.name ? FbxExpected : AllCases.FirstOrDefault(c => c.name == name);
 
         /// <summary>"queued", "done ..." or "failed ..." of the last <see cref="Queue"/>d run.</summary>
         public static string Status => SessionState.GetString(StatusKey, "");
@@ -176,6 +213,11 @@ namespace Orbiters.ReFit.Editor.Tests
             public int weightTears = -1;
             /// <summary>Share of the fitted clothing's leg weight on the leg of the other side than the vertex.</summary>
             public float oppositeLegShare = -1;
+            /// <summary>The whole engine run (staging, geometry, bake), and each background phase as the report times it.</summary>
+            public long engineMs;
+            /// <summary>The refitted clothing in motion, or null when not checked.</summary>
+            public ReFitMotionCheck.Result motion;
+            public readonly List<(string phase, double ms)> phases = new List<(string, double)>();
             public string text;
         }
 
@@ -226,7 +268,7 @@ namespace Orbiters.ReFit.Editor.Tests
                 var request = new ReFitRequest
                 {
                     mode = setup.shapes.Count > 0 ? ReFitMode.MeshAndBlendshape : ReFitMode.MeshToMesh, assetRenderer = clothing,
-                    sourceAvatar = source.transform.root.gameObject, targetAvatar = target.transform.root.gameObject,
+                    sourceAvatar = (setup.sameBody ? target : source).transform.root.gameObject, targetAvatar = target.transform.root.gameObject,
                     targetBlendshapes = setup.shapes.Count > 0 ? new List<string>(setup.shapes) : null,
                     settings = new ReFitSettings { replaceArmature = replaceArmature, transferWeights = replaceArmature, savePrefab = false,
                         captureProjectionDebug = true, maxProjectionDebugGroups = 0, coverDifferentBaseBody = setup.coverDifferentBaseBody },
@@ -287,6 +329,14 @@ namespace Orbiters.ReFit.Editor.Tests
                     watch.Stop();
                     if (!comp.success) throw new InvalidOperationException(string.Join("\n", comp.report.messages));
                     owned.Add(comp.mesh);
+                    result.engineMs = watch.ElapsedMilliseconds;
+                    foreach (var message in comp.report.messages.Where(m => m.code == "phase-timing"))
+                    {
+                        int colon = message.text.LastIndexOf(':');
+                        if (colon > 0 && double.TryParse(message.text.Substring(colon + 1).Replace("ms", "").Trim(), System.Globalization.NumberStyles.Float,
+                                System.Globalization.CultureInfo.InvariantCulture, out double ms))
+                            result.phases.Add((message.text.Substring(0, colon), ms));
+                    }
                     lines.Add($"label={label}, replaceArmature={replaceArmature}, cover={request.settings.coverDifferentBaseBody}, settings={settings}, " +
                               $"tightness={request.settings.clearanceTightnessFactor:F3}, engineMs={watch.ElapsedMilliseconds}");
                     lines.AddRange(comp.report.messages.Where(m => m.severity != ReFitSeverity.Info || m.code.Contains("spread") ||
@@ -320,6 +370,31 @@ namespace Orbiters.ReFit.Editor.Tests
                         var bounds = fixture.clothing.bounds;
                         RenderViews(label + "-coverage", empty, Colored(skin, colors, owned), true, bounds.center, Mathf.Max(bounds.extents.y, bounds.extents.x * .9f) * 1.15f,
                             "front", "side", "back");
+                    }
+
+                    if (MotionCheck)
+                    {
+                        // The refit worn by the copy (its mesh on its new bones), posed.
+                        var savedMesh = fixture.clothing.sharedMesh;
+                        var savedBones = fixture.clothing.bones;
+                        try
+                        {
+                            fixture.clothing.sharedMesh = comp.mesh;
+                            fixture.clothing.bones = outputBones;
+                            // Its blendshapes as the body's own are set (the refit shape on), by name: indices are the old mesh's.
+                            var shapeWeights = Mirrored(comp, Weights(fixture.target), null);
+                            for (int i = 0; i < comp.mesh.blendShapeCount; i++)
+                                fixture.clothing.SetBlendShapeWeight(i, shapeWeights.TryGetValue(comp.mesh.GetBlendShapeName(i), out float w) ? w : 0f);
+                            var motionWatch = System.Diagnostics.Stopwatch.StartNew();
+                            result.motion = ReFitMotionCheck.Run(fixture.target.transform.root.gameObject, fixture.target, fixture.clothing);
+                            lines.Add(result.motion + $" ({motionWatch.ElapsedMilliseconds} ms)");
+                        }
+                        catch (Exception e) { lines.Add("motion check failed: " + e.Message); }
+                        finally
+                        {
+                            fixture.clothing.sharedMesh = savedMesh;
+                            fixture.clothing.bones = savedBones;
+                        }
                     }
 
                     foreach (string pose in new[] { "rest", "spread", "crouch" })
@@ -400,6 +475,9 @@ namespace Orbiters.ReFit.Editor.Tests
 
         /// <summary>When set, a run also writes the refitted clothing at rest (skinned, world space) to <see cref="Output"/> as JSON.</summary>
         public static bool ExportFit;
+
+        /// <summary>When set, a run also checks the refitted clothing in motion (<see cref="ReFitMotionCheck"/>).</summary>
+        public static bool MotionCheck = true;
 
         /// <summary>
         /// The refitted clothing as plain JSON for an external FBX writer: baked world vertices at rest, UVs, submeshes with
@@ -768,8 +846,15 @@ namespace Orbiters.ReFit.Editor.Tests
                 renderer.bones = bones;
                 var overrides = Enumerable.Range(0, mesh.blendShapeCount).ToDictionary(i => i, i => weights.TryGetValue(mesh.GetBlendShapeName(i), out float w) ? w / 100f : 0f);
                 var snapshot = MeshSnapshot.Capture(renderer, false, overrides, null);
-                var baked = Object.Instantiate(mesh); baked.ClearBlendShapes();
-                baked.vertices = snapshot.worldVertices; baked.normals = snapshot.worldNormals; baked.RecalculateBounds();
+                // A new mesh, never a copy: a copy of a body with hundreds of blendshapes (the Ultirex's 488 over 129k vertices,
+                // over 2 GB of shape data) overflowed Unity's allocation and killed the editor.
+                var baked = new Mesh { indexFormat = UnityEngine.Rendering.IndexFormat.UInt32, name = mesh.name + " baked" };
+                baked.vertices = snapshot.worldVertices;
+                baked.normals = snapshot.worldNormals;
+                baked.uv = mesh.uv;
+                baked.subMeshCount = mesh.subMeshCount;
+                for (int s = 0; s < mesh.subMeshCount; s++) baked.SetTriangles(mesh.GetTriangles(s), s, false);
+                baked.RecalculateBounds();
                 return baked;
             }
             finally { Object.DestroyImmediate(go); }
@@ -1100,7 +1185,7 @@ namespace Orbiters.ReFit.Editor.Tests
                 RenderViews(label + "-arm", body, clothing, colored, elbow.position, .25f, "front", "back", "below");
         }
 
-        private static void RenderViews(string label, Mesh body, Mesh clothing, bool colored, Vector3 center, float size, params string[] views)
+        internal static void RenderViews(string label, Mesh body, Mesh clothing, bool colored, Vector3 center, float size, params string[] views)
         {
             var preview = new PreviewRenderUtility();
             var skin = new Material(Shader.Find("Standard")) { color = new Color(.62f, .5f, .45f) };

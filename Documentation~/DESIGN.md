@@ -56,9 +56,13 @@ in `MCBIntegrationService`, not repeated in commission UI code.
    normal. Neighbouring clothing points keep neighbouring counterparts, where independent nearest points jump into
    creases and onto fluff. On the Novabeast to Ultinova bodies the registered source lies on the target within 1 mm
    (95 %), on the Hypernova within 15 mm (its larger fluff has no source counterpart).
-   The registration is not used, and the passes below take over, where it disagrees with the skin met along the source
-   normal: when 15 % of the clothing within 10 cm of the skin lies 3 cm or more from that skin's registered
-   counterpart (a body scaled far beyond the base, where the registration cannot reach).
+   The registration is not used, and the passes below take over, where it cannot reach the target under the clothing
+   (a body scaled far beyond the base): when 15 % of the clothing within 10 cm of the skin lies 3 cm or more from the
+   skin met along the source normal (`registrationDisagreementLimit`) and the laid source is more than 1 cm from the
+   target skin under 10 % of that clothing. Laid that close, the registration is trusted over the normal, which meets
+   fluff, feathers or another sheet of a body sculpted in layers (the Rexouium jacket on the Ultirex: 68 % disagreed with
+   the source laid within 1 mm). Bodies laid onto each other are kept (three, keyed by every input): refitting several
+   pieces between the same bodies lays them once.
 
 ## Deformation and Skinning
 
@@ -69,8 +73,10 @@ clearance, coverage and drape passes below:
   compatible region, within its distance to the skin plus 2.5 spreads (a spread is 1.5 cm or 0.3 of that distance,
   whichever is larger; 15 cm at most), weighted down from the nearest; skin the authored fabric covers drives it, other
   skin only where none is under it. The motion is smooth over the fabric, so nothing jumps between body parts, and
-  distance falloff scales it as before. Pieces smaller than 3 cm (a chain's links, a button) take the mean motion of
-  their groups: a link lying across the neck and the chest would otherwise tear.
+  distance falloff scales it as before. Pieces smaller than 3 cm (a chain's links, a button) move rigidly: the turn and
+  move closest to their groups' motions (`RigidFit`, Horn's unit quaternions), the turn at most 30 degrees (motions far
+  from rigid, a link half in the skin pushed out at one end, would flip it over). A link lying across the neck and the
+  chest would otherwise tear; turning, it lies on the skin instead of sliding through it.
 - **Coverage.** A target vertex is covered where its counterpart on the source (the registered source within 1.2 cm,
   facing the same way; for main skin farther away, the registered source met along its normal, 30 cm inward or 5 cm
   outward) was under the authored fabric: fabric turned the same way met straight out of the skin, or along two of four
@@ -84,7 +90,8 @@ clearance, coverage and drape passes below:
   adds. Pushes move at most 6 mm a pass (1.5 mm in the last eight) and 12 cm in all; they spread over the fabric (two
   Laplacian passes of the correction each pass, lighter in the last eight), and a push lifts the fabric around it at
   most 0.4 less per metre away, so a bump tents the fabric as a cone instead of lifting a whole panel. Pieces smaller
-  than 3 cm move as one.
+  than 3 cm move as one rigid piece. Fabric looks for covered skin in a hierarchy of the covered triangles only, not
+  past the rest of the body.
 - **Shapes.** Body shapes are draped the same way from the fitted clothing: its groups take the shape motion of the
   target skin under them, then the drape runs over the shaped body with the coverage of the fitted clothing. A shape
   corrects only what it adds: clipping the fit left is measured once and allowed, since shapes are summed when several
@@ -132,11 +139,50 @@ appropriate target child (shin after thigh, wrist after forearm), with original-
 not added to the renderer's deforming bone list. The clothing's mapped weights follow the change between the
 target and source skinning at each group's matched points (both bodies' bones mapped into the new bone list),
 scaled by the distance falloff and by contact (full within 1 cm of the skin, none from 4 cm), lightly smoothed over
-the clothing, and rejected when they would move weight onto another limb. Vertices without mapped weights take the
+the clothing, and rejected when they would move weight onto another limb. With `inpaintSkinningChange` (on), the
+change is known only where the clothing lies on the skin (within 1 cm) and known to be none where it stands far off it
+(4 cm or more) or where the binding is not trusted; between them, and at points without a match, it is filled in as
+smoothly as the clothing allows (the weight inpainting of Abdrashitov et al., SIGGRAPH Asia 2023: the cotangent
+Laplacian L and lumped mass M, minimising xᵀ(L + L M⁻¹ L)x with the known values held). `WeightInpainting` splits the
+unknowns into the parts of the clothing they connect, solves a part only for the bones known to change around it, fills
+it harmonically first (well conditioned, solved to convergence) and refines that with 300 iterations of the smoother
+system, whose residual cannot tell when it converged. Vertices without mapped weights take the
 target's projected weights; extras are preserved according to the configured policy, with four normalized
 influences per vertex. Only bones the clothing is weighted to receive body weights: an armature exported whole lists
 the base's fluff, tail and ear bones, and their body weights would make the clothing swing with their physics; the
 body's weight on them goes to their nearest weighted ancestor.
+
+## After the Fit (VRChat avatar projects)
+
+The ReFit window's result page checks each refitted piece in motion, offers a body shrink, a push-out brush and kept fits.
+
+- **In motion** (`ReFitMotionCheck`). A hidden copy of the avatar (Orbiters Toolkit's `HiddenAvatarCopy`) is posed ten
+  ways: arms up, forward, down, twisted left and right, a step on either leg, a crouch, elbows at the sides and forward,
+  each bone aimed in the avatar's frame. Clothing follows as the build will make it (`AttachmentFollow`: VRCFury Armature
+  Links, My Avatar attachments, the bone matcher for unlinked armatures). A body vertex is covered where fabric facing
+  the same way lies over it within 5 cm, straight out of it, and it is under that fabric at rest; skin already through at
+  rest (a part enclosed in a pouch, fluff) is not covered. In each pose a covered vertex is measured against the fabric
+  of its patch only (the fabric within 4 cm of where it was, turned within 60 degrees), so it never jumps to another
+  fold or layer. The check takes 0.2 to 0.4 s per piece and runs as the result shows, one piece per frame.
+- **Body shrink.** On request the covered skin that comes through moves straight in (against its normal) by its depth
+  and 3 mm, at most 3 cm and never closer than 1 mm to its bone. Six rounds: a move that takes a vertex through the
+  fabric in another pose is tried at half its length in the next round. Kept, it is recorded with the refit
+  (`OrbitersRefit.bodyShrinkVertices`, mesh-space offsets) and Orbiters Toolkit's build adds it to the body as a
+  blendshape that every animation showing or hiding the clothing sets too (`RefitShrinkBuild`). A new fit drops it.
+- **Push out** (`ReFitClipFixTool`). A Scene view brush: fabric under it lying inside the body or closer than the room
+  asked moves out along the body's distance field, most at the brush's centre, shared with its neighbours so no spike is
+  made, into the piece's rest shape through each vertex's skinning, with Undo. The field (`ReFitBodyField`) is a signed
+  distance grid over the piece (4 million cells at most) whose inside and outside come from a flood of the air from the
+  grid's border, not from the nearest triangle's normal: skin sheets inside the body do not make the air around them
+  inside. It is built on a worker thread (about 3 s for a sweater); the brush shows at once and pushes once it is there.
+  Sealing (closing gaps narrower than a few cells, so air in a crease counts as inside, with its distance the way out of
+  the crease) is available but off: tight trousers wrap each thigh, and a sealed gap between them would push the
+  inner-leg fabric out of it.
+- **Kept fits** (`OrbitersRefit.keptFits`). A fit kept by name stays when the piece is refitted again; using a kept fit
+  puts the renderer back as that fit left it (mesh, bones, pose) and keeps the current one. Orbiters Toolkit's build
+  turns every kept fit other than the worn one into a blendshape of (a copy of) the worn mesh and adds VRCFury toggles,
+  one at a time, under the avatar menu's "Fits/piece" (`RefitKeptFitsBuild`, before VRCFury builds the menu). Fits kept
+  for another custom base are dropped with it.
 
 ## Ownership and Application
 
@@ -185,6 +231,17 @@ integrity checking.
   projection order; a bounds-only BVH-refit experiment was rejected after measurable output drift.
 - Emit phase timings and compare geometry against an independently recorded baseline. Native/GPU backends
   are not included: redundant work was removable without platform binaries or numeric changes.
+- Filter BVH queries with structs over cached face normals (`FacingFilter`, `MeshSnapshot.FaceNormals`): no delegate,
+  closure or cross product per triangle tested. Build hierarchies with a median quickselect. Query a hierarchy of only
+  the triangles that may be found when few are left (`SurfaceBvh.Build(snapshot, include)`), not the whole surface with
+  a filter rejecting the rest.
+- Skip work whose result cannot change: the coverage regularization re-tests a limit only when one of its groups moved
+  since it was last met (same order, same arithmetic, identical output); the drape tests whether a skin vertex is a fold
+  wall once; inpainting skips parts with no known change.
+- Record where the time goes inside the slow phases (`registration-timing`, `deformation-timing`, the cloth drape's
+  passes, the coverage's build, passes and regularization) and measure before optimizing.
+- Distance ties (a point equally close to two triangles) break by the hierarchy's layout: a new layout moves results
+  computed through many iterations, and metrics signed by the nearest face, by a few samples in either direction.
 
 ## Verification and Limits
 

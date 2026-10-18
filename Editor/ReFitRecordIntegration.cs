@@ -35,6 +35,15 @@ namespace Orbiters.ReFit.Editor
             }
         }
 
+        /// <summary>A fit kept for a refitted renderer (Orbiters Toolkit's record keeps it): one choice of the avatar's "Fits" menu.</summary>
+        internal sealed class KeptFit
+        {
+            public string name;
+            /// <summary>The renderer wears it now.</summary>
+            public bool current;
+            internal object fit;
+        }
+
         /// <summary>A refit taken back to its original for a new run: <see cref="Keep"/> puts it back when the run fails.</summary>
         internal sealed class PreviousFit
         {
@@ -167,6 +176,71 @@ namespace Orbiters.ReFit.Editor
             RefitRecords.Register(renderer, original, result.mesh, result.meshAssetPath, body, shapes, kind, baseKey, baseName, "ReFit");
             return true;
         }
+
+        /// <summary>The body a refitted renderer was fitted to, as its record keeps it (null when it has no record).</summary>
+        public static SkinnedMeshRenderer BodyOf(SkinnedMeshRenderer renderer)
+        {
+            var record = RefitRecords.Find(renderer);
+            return record != null && record.Applied ? record.body : null;
+        }
+
+        /// <summary>The body shrink recorded with a refitted renderer: how many skin points and how far at most (mm), or null.</summary>
+        public static (int points, float largestMm)? BodyShrinkOf(SkinnedMeshRenderer renderer)
+        {
+            var record = RefitRecords.Find(renderer);
+            if (record == null || !record.Applied || !record.HasBodyShrink) return null;
+            float largest = 0f;
+            foreach (var offset in record.bodyShrinkOffsets) largest = Mathf.Max(largest, offset.magnitude);
+            return (record.bodyShrinkVertices.Count, largest * 1000f);
+        }
+
+        /// <summary>The fits kept for a refitted renderer, in the order they were kept.</summary>
+        public static List<KeptFit> KeptFits(SkinnedMeshRenderer renderer)
+        {
+            var record = RefitRecords.Find(renderer);
+            var list = new List<KeptFit>();
+            if (record == null) return list;
+            var current = RefitRecords.CurrentFit(record);
+            foreach (var fit in record.keptFits)
+                if (fit != null && fit.Mesh != null) list.Add(new KeptFit { name = fit.name, current = fit == current, fit = fit });
+            return list;
+        }
+
+        /// <summary>Whether the renderer's current fit is kept already.</summary>
+        public static bool IsKept(SkinnedMeshRenderer renderer) => RefitRecords.CurrentFit(RefitRecords.Find(renderer)) != null;
+
+        /// <summary>Keeps the renderer's current fit under <paramref name="name"/>, with Undo; false when it has no applied refit.</summary>
+        public static bool KeepFit(SkinnedMeshRenderer renderer, string name)
+        {
+            var record = RefitRecords.Find(renderer);
+            return record != null && record.Applied && RefitRecords.KeepFit(record, name) != null;
+        }
+
+        /// <summary>Puts a kept fit back on the renderer, with Undo (the current one is kept first); false when it cannot be.</summary>
+        public static bool UseFit(SkinnedMeshRenderer renderer, KeptFit fit) =>
+            fit?.fit is RefitKeptFit kept && RefitRecords.UseFit(RefitRecords.Find(renderer), kept);
+
+        /// <summary>Forgets a kept fit, with Undo.</summary>
+        public static void ForgetFit(SkinnedMeshRenderer renderer, KeptFit fit)
+        {
+            if (fit?.fit is RefitKeptFit kept) RefitRecords.RemoveKeptFit(RefitRecords.Find(renderer), kept);
+        }
+
+        /// <summary>Where the avatar's menu offers a renderer's kept fits.</summary>
+        public static string FitsMenu(SkinnedMeshRenderer renderer) => RefitKeptFitsBuild.MenuRoot + "/" + (renderer != null ? renderer.name : "");
+
+        /// <summary>
+        /// Keeps a body shrink with a refitted renderer's record, with Undo: the avatar's build moves that skin in while the
+        /// clothing shows. Null removes it. False when the renderer has no record to keep it with.
+        /// </summary>
+        public static bool SetBodyShrink(SkinnedMeshRenderer renderer, SkinnedMeshRenderer body, ReFitMotionCheck.BodyShrink shrink)
+        {
+            var record = RefitRecords.Find(renderer);
+            if (record == null || !record.Applied) return false;
+            if (shrink == null || shrink.vertices.Length == 0) RefitRecords.SetBodyShrink(record, null, new int[0], new Vector3[0]);
+            else RefitRecords.SetBodyShrink(record, body != null ? body.sharedMesh : null, shrink.vertices, shrink.offsets);
+            return true;
+        }
 #else
         public static bool IsAvailable => false;
         public static IReadOnlyList<RefittedAsset> GetRefittedAssets() => new List<RefittedAsset>();
@@ -174,6 +248,15 @@ namespace Orbiters.ReFit.Editor
         public static IDisposable Hold(GameObject avatar) => new Release(null);
         public static PreviousFit StartAgain(SkinnedMeshRenderer renderer) => null;
         public static bool TryRegister(ReFitRequest request, ReFitResult result, string baseKey, string baseName) => false;
+        public static SkinnedMeshRenderer BodyOf(SkinnedMeshRenderer renderer) => null;
+        public static (int points, float largestMm)? BodyShrinkOf(SkinnedMeshRenderer renderer) => null;
+        public static bool SetBodyShrink(SkinnedMeshRenderer renderer, SkinnedMeshRenderer body, ReFitMotionCheck.BodyShrink shrink) => false;
+        public static List<KeptFit> KeptFits(SkinnedMeshRenderer renderer) => new List<KeptFit>();
+        public static bool IsKept(SkinnedMeshRenderer renderer) => false;
+        public static bool KeepFit(SkinnedMeshRenderer renderer, string name) => false;
+        public static bool UseFit(SkinnedMeshRenderer renderer, KeptFit fit) => false;
+        public static void ForgetFit(SkinnedMeshRenderer renderer, KeptFit fit) { }
+        public static string FitsMenu(SkinnedMeshRenderer renderer) => "";
 #endif
     }
 }

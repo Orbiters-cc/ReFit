@@ -115,19 +115,21 @@ namespace Orbiters.ReFit
                            targetIndex.ClosestPoint(hit.position, Unmatched).found;
             });
             var authored = new MeshSnapshot { worldVertices = madeVertices, triangles = asset.triangles };
+            var authoredNormals = authored.CacheFaceNormals();
+            var sourceNormals = source.FaceNormals ?? source.CacheFaceNormals();
             var authoredIndex = SurfaceBvh.Build(authored);
             // Source skin at a point, turned up: under the fabric as authored, and not through it (fluff, a tail).
             bool Covered(Vector3 position, Vector3 up)
             {
-                Func<int, bool> facing = t => Vector3.Dot(authored.FaceNormal(t), up) >= Facing;
+                var facing = new FacingFilter(authoredNormals, up, Facing);
                 bool under = authoredIndex.Raycast(position + up * .0005f, up, AuthoredCover, facing).found;
                 // In a fold of the body (the gluteal crease) the skin faces other skin, and the fabric bridges the fold.
-                if (!under && sourceIndex.Raycast(position + up * .001f, up, AuthoredCover, t => Vector3.Dot(source.FaceNormal(t), up) < 0).found)
+                if (!under && sourceIndex.Raycast(position + up * .001f, up, AuthoredCover, FacingFilter.Against(sourceNormals, up)).found)
                     under = authoredIndex.ClosestPoint(position, FoldCover).found;
                 if (!under || !authoredIndex.Raycast(position - up * .0005f, -up, Reach, facing).found) return under;
                 // Through the fabric where another part of the source hides it, one the target lacks (the base's tail
                 // over the gluteal crease): the target shows that skin, so it is covered.
-                var over = sourceIndex.Raycast(position + up * .001f, up, AuthoredCover, t => Vector3.Dot(source.FaceNormal(t), up) < 0);
+                var over = sourceIndex.Raycast(position + up * .001f, up, AuthoredCover, FacingFilter.Against(sourceNormals, up));
                 return over.found && !targetIndex.ClosestPoint(over.position, Unmatched).found;
             }
             var cover = covered;
@@ -196,7 +198,8 @@ namespace Orbiters.ReFit
         private static bool FoldWall(MeshSnapshot body, SurfaceBvh index, int vertex)
         {
             var normal = body.worldNormals[vertex];
-            return index.Raycast(body.worldVertices[vertex] + normal * .001f, normal, FoldWidth, t => Vector3.Dot(body.FaceNormal(t), normal) < 0).found;
+            return index.Raycast(body.worldVertices[vertex] + normal * .001f, normal, FoldWidth,
+                FacingFilter.Against(body.FaceNormals ?? body.CacheFaceNormals(), normal)).found;
         }
 
         private static List<int>[] Neighbours(MeshSnapshot body)
@@ -288,6 +291,9 @@ namespace Orbiters.ReFit
             // A shape frame bridges only folds of the skin: elsewhere a dip of its displacement is the shape (skin shrinking).
             Bridge(primary, deltas, skin, skinIndex, bodyDelta != null);
             var enclosed = skin.HiddenVertices();
+            var skinNormals = skin.FaceNormals ?? skin.CacheFaceNormals();
+            // Whether each skin vertex is a wall of a fold (the skin does not move during the drape): 0 not known yet, 1 yes, 2 no.
+            var foldWall = new sbyte[skin.worldVertices.Length];
             var basis = new Vector3[groups];
             for (int g = 0; g < groups; g++) basis[g] = asset.worldVertices[asset.groupRep[g]] + (primary != null ? primary[g] : Vector3.zero) + deltas[g];
             var push = new Vector3[groups];
@@ -310,6 +316,7 @@ namespace Orbiters.ReFit
                 cancellation.ThrowIfCancellationRequested();
                 progress?.Invoke((float)iteration / (Iterations + 1));
                 for (int i = 0; i < vertices.Length; i++) vertices[i] = basis[asset.groupOfVertex[i]] + push[asset.groupOfVertex[i]];
+                var clothNormals = cloth.CacheFaceNormals();
                 if (index == null || iteration % RebuildEvery == 0) index = SurfaceBvh.Build(cloth);
                 else index.Refit(cloth);
                 Parallel.For(0, hits.Length, i =>
@@ -321,18 +328,23 @@ namespace Orbiters.ReFit
                     if (normal.sqrMagnitude < 1e-12f) return;
                     // Along the skin's normal, and for a wall of a fold along the fold's opening (the fabric deeper in the
                     // gluteal crease than the skin of its walls).
-                    if (!Exposed(i, normal) && Vector3.Dot(macro[i], normal) < MacroDifference && FoldWall(skin, skinIndex, i)) Exposed(i, macro[i]);
+                    if (!Exposed(i, normal) && Vector3.Dot(macro[i], normal) < MacroDifference && IsFoldWall(i)) Exposed(i, macro[i]);
                     if (iteration == 0 && hits[i].triangle >= 0) wanted[i] = true;
                 });
+                bool IsFoldWall(int i)
+                {
+                    if (foldWall[i] == 0) foldWall[i] = FoldWall(skin, skinIndex, i) ? (sbyte)1 : (sbyte)2;
+                    return foldWall[i] == 1;
+                }
                 bool Exposed(int i, Vector3 normal)
                 {
                     var origin = skin.worldVertices[i] - normal * .0005f;
                     // Fabric turned the skin's way, or across it (fabric bridging a fold deeper than the fold's walls); not
                     // fabric facing the skin (a lining, the inside of the same tube).
-                    var hit = index.Raycast(origin, -normal, Reach, t => Vector3.Dot(cloth.FaceNormal(t), normal) > -Facing);
+                    var hit = index.Raycast(origin, -normal, Reach, new FacingFilter(clothNormals, normal, -Facing, strict: true));
                     if (!hit.found) return false;
                     // The fabric must be inside the same part of the body: not past the other side of a limb.
-                    var exit = skinIndex.Raycast(origin, -normal, hit.distance, t => Vector3.Dot(skin.FaceNormal(t), normal) < 0);
+                    var exit = skinIndex.Raycast(origin, -normal, hit.distance, FacingFilter.Against(skinNormals, normal));
                     if (exit.found) return false;
                     int t3 = hit.triangle * 3;
                     int a = asset.groupOfVertex[asset.triangles[t3]], b = asset.groupOfVertex[asset.triangles[t3 + 1]], c = asset.groupOfVertex[asset.triangles[t3 + 2]];
@@ -452,7 +464,7 @@ namespace Orbiters.ReFit
                     var a = positions[ga]; var direction = positions[gb] - a;
                     float length = direction.magnitude;
                     if (length < 1e-6f) return;
-                    var hit = index.Raycast(a, direction / length, length, t => !Touches(t, ga, gb));
+                    var hit = index.Raycast(a, direction / length, length, new NotTouching(asset, ga, gb));
                     if (!hit.found) return;
                     int t3 = hit.triangle * 3;
                     int x = asset.groupOfVertex[asset.triangles[t3]], y = asset.groupOfVertex[asset.triangles[t3 + 1]], z = asset.groupOfVertex[asset.triangles[t3 + 2]];
@@ -561,15 +573,30 @@ namespace Orbiters.ReFit
 
         private Vector3 Authored(int group) => asset.worldVertices[asset.groupRep[group]];
 
-        private bool Touches(int triangle, int a, int b)
+        // Triangles not touching either end of an edge.
+        private readonly struct NotTouching : ITriangleFilter
         {
-            int t3 = triangle * 3;
-            for (int k = 0; k < 3; k++)
+            private readonly int[] triangles, groupOf;
+            private readonly int a, b;
+
+            public NotTouching(MeshSnapshot asset, int a, int b)
             {
-                int g = asset.groupOfVertex[asset.triangles[t3 + k]];
-                if (g == a || g == b) return true;
+                triangles = asset.triangles;
+                groupOf = asset.groupOfVertex;
+                this.a = a;
+                this.b = b;
             }
-            return false;
+
+            public bool Accept(int triangle)
+            {
+                int t3 = triangle * 3;
+                for (int k = 0; k < 3; k++)
+                {
+                    int g = groupOf[triangles[t3 + k]];
+                    if (g == a || g == b) return false;
+                }
+                return true;
+            }
         }
 
         // The segment p-q passes through the triangle a-b-c (Moller-Trumbore).

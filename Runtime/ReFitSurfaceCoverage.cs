@@ -43,6 +43,8 @@ namespace Orbiters.ReFit
         private bool[] tubes;
         // What the supports keep the clothing outside of, for diagnostics: the body or an inner garment.
         private string surfaceName;
+        // Where the time went (diagnostics): building the supports, the passes, and the regularization within them.
+        private long buildMs;
 
         public static bool IsLowerBodyCloth(MeshSnapshot asset, BodyRegion[] regions, bool[] tubes)
         {
@@ -66,6 +68,7 @@ namespace Orbiters.ReFit
         {
             if (!settings.enableClearanceCorrection || (!settings.coverDifferentBaseBody &&
                 (!settings.preserveLowerBodyCoverage || !IsLowerBodyCloth(asset, regions, tubes)))) return null;
+            var watch = System.Diagnostics.Stopwatch.StartNew();
             var result = new ReFitSurfaceCoverage { basis = new Vector3[asset.GroupCount], adjacency = asset.groupAdjacency, repair = settings.coverDifferentBaseBody,
                 layer = authored != null, surfaceName = innerGarment != null ? $"inner garment '{innerGarment}'" : "the body surface" };
             result.tubes = result.repair ? DetailGroups(asset, tubes) : tubes;
@@ -106,6 +109,7 @@ namespace Orbiters.ReFit
                 foreach (var contact in contacts) if (contact.HasValue) result.vertexSupports.Add(contact.Value);
             }
             var cloth = new MeshSnapshot { worldVertices = vertices, triangles = asset.triangles };
+            var clothNormals = cloth.CacheFaceNormals();
             var index = SurfaceBvh.Build(cloth);
             // Different bases can begin several centimetres inside the body (notably at the crotch).
             // Keep the nearest face and opening tests: a larger search must not bridge an open hem.
@@ -118,13 +122,13 @@ namespace Orbiters.ReFit
                 if (enclosed != null && enclosed[i]) return;
                 var bodyNormal = body.worldNormals[i];
                 // Never search past a nearby opening/lining for a distant outward-facing triangle.
-                var hit = index.ClosestPoint(body.worldVertices[i], range, result.repair ? (Func<int, bool>)null : t => Vector3.Dot(cloth.FaceNormal(t), bodyNormal) >= .35f);
+                var facing = new FacingFilter(clothNormals, bodyNormal, .35f);
+                var hit = result.repair ? index.ClosestPoint(body.worldVertices[i], range) : index.ClosestPoint(body.worldVertices[i], range, facing);
                 if (!hit.found) return;
                 if (result.repair && Vector3.Dot(cloth.FaceNormal(hit.triangle), bodyNormal) < .35f)
                 {
                     // Look past a thin inward lining only to its immediately adjacent outer fabric.
-                    hit = index.ClosestPoint(body.worldVertices[i], Mathf.Min(range, hit.distance + .005f),
-                        face => Vector3.Dot(cloth.FaceNormal(face), bodyNormal) >= .35f);
+                    hit = index.ClosestPoint(body.worldVertices[i], Mathf.Min(range, hit.distance + .005f), facing);
                     if (!hit.found) return;
                 }
                 int t = hit.triangle * 3;
@@ -148,6 +152,7 @@ namespace Orbiters.ReFit
             });
             // The solver accumulates constraints in vertex order, regardless of query completion order.
             foreach (var sample in samples) if (sample.HasValue) result.supports.Add(sample.Value);
+            result.buildMs = watch.ElapsedMilliseconds;
             return result.supports.Count == 0 && result.vertexSupports.Count == 0 ? null : result;
         }
 
@@ -181,7 +186,9 @@ namespace Orbiters.ReFit
             var self = SurfaceBvh.Build(asset);
             // A button or a pocket square does not hide the fabric it sits on.
             var details = DetailGroups(asset, null);
-            var indices = others.Where(o => o.surface != null).Select(o => (snapshot: o.surface, index: SurfaceBvh.Build(o.surface), o.refitted)).ToList();
+            var indices = others.Where(o => o.surface != null)
+                .Select(o => (index: SurfaceBvh.Build(o.surface), normals: o.surface.FaceNormals ?? o.surface.CacheFaceNormals(), o.refitted)).ToList();
+            var assetNormals = asset.FaceNormals ?? asset.CacheFaceNormals();
             Parallel.For(0, asset.GroupCount, g =>
             {
                 var point = asset.worldVertices[asset.groupRep[g]];
@@ -214,12 +221,11 @@ namespace Orbiters.ReFit
                         for (int o = 0; o < indices.Count; o++)
                         {
                             if (!indices[o].refitted) continue;
-                            var surface = indices[o].snapshot;
-                            var hit = indices[o].index.ClosestPoint(probe, CoverReach, t => Vector3.Dot(surface.FaceNormal(t), outward) >= CoverFacing);
+                            var hit = indices[o].index.ClosestPoint(probe, CoverReach, new FacingFilter(indices[o].normals, outward, CoverFacing));
                             // A part not refitted yet does not move with the shapes: it will be refitted over this one later.
                             if (indices[o].refitted && hit.found && Outside(hit.position)) return new Cover { layer = o, triangle = hit.triangle, bary = hit.bary, normal = outward };
                         }
-                        var own = self.ClosestPoint(probe, CoverReach, t => Vector3.Dot(asset.FaceNormal(t), outward) >= CoverFacing);
+                        var own = self.ClosestPoint(probe, CoverReach, new FacingFilter(assetNormals, outward, CoverFacing));
                         if (own.found && Far(own.triangle)) return new Cover { layer = -1, triangle = own.triangle, bary = own.bary, normal = outward };
                     }
                     return null;
@@ -242,11 +248,10 @@ namespace Orbiters.ReFit
                         for (int o = 0; o < indices.Count; o++)
                         {
                             // Past a lining or the inner side of a collar to the outer fabric facing out.
-                            var surface = indices[o].snapshot;
-                            var hit = indices[o].index.ClosestPoint(probe, CoverReach, t => Vector3.Dot(surface.FaceNormal(t), outward) >= CoverFacing);
+                            var hit = indices[o].index.ClosestPoint(probe, CoverReach, new FacingFilter(indices[o].normals, outward, CoverFacing));
                             if (hit.found && (!indices[o].refitted || Outside(hit.position))) return o;
                         }
-                        var own = self.ClosestPoint(probe, CoverReach, t => Vector3.Dot(asset.FaceNormal(t), outward) >= CoverFacing);
+                        var own = self.ClosestPoint(probe, CoverReach, new FacingFilter(assetNormals, outward, CoverFacing));
                         if (own.found && Far(own.triangle)) return -1;
                     }
                     return int.MinValue;
@@ -404,10 +409,14 @@ namespace Orbiters.ReFit
             float residual = 0;
             // Clearance of the support most at risk of clipping (RisksClipping); infinite when none is.
             float clipping = float.PositiveInfinity;
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            var regularizeWatch = new System.Diagnostics.Stopwatch();
+            int passes = 0;
             var limits = repair ? BuildLimits(original, bodyDelta != null) : null;
             var positions = new Vector3[deltas.Length];
             for (int iteration = 0; iteration < 48; iteration++)
             {
+                passes++;
                 Array.Clear(corrections, 0, corrections.Length);
                 Array.Clear(weights, 0, weights.Length);
                 for (int g = 0; g < positions.Length; g++) positions[g] = basis[g] + deltas[g];
@@ -479,7 +488,9 @@ namespace Orbiters.ReFit
                 }
                 residual = worst;
                 clipping = closest;
+                regularizeWatch.Start();
                 if (repair) Regularize(deltas, original, bodyDelta != null, limits);
+                regularizeWatch.Stop();
                 if (worst <= .0001f && iteration >= 40) break;
             }
             float max = 0;
@@ -503,7 +514,8 @@ namespace Orbiters.ReFit
                 }
             }
             for (int g = 0; g < deltas.Length; g++) max = Mathf.Max(max, (deltas[g] - original[g]).magnitude);
-            report?.Info("surface-coverage", $"{label}: {supports.Count} supports on {surfaceName}, {corrected} constraint corrections, maximum coverage correction {max * 1000:F3}mm, last support residual {residual * 1000:F3}mm short of the targeted clearance. Support residual is not a full mesh-intersection test.");
+            report?.Info("surface-coverage", $"{label}: {supports.Count} supports on {surfaceName}, {corrected} constraint corrections, maximum coverage correction {max * 1000:F3}mm, last support residual {residual * 1000:F3}mm short of the targeted clearance. Support residual is not a full mesh-intersection test. " +
+                                             $"(build {buildMs} ms, {passes} passes {watch.ElapsedMilliseconds} ms, of which regularizing {regularizeWatch.ElapsedMilliseconds} ms)");
             if (clipping < ClipTolerance)
                 report?.Warn("surface-coverage-limited", LimitedWarning(label, surfaceName, clipping));
         }
@@ -599,6 +611,12 @@ namespace Orbiters.ReFit
             public readonly List<(int a, int b, float maximum)> edges = new List<(int, int, float)>();
             public readonly List<(int a, int b, int c, Vector3 da, Vector3 db, Vector3 dc, Vector3 normal, float minimum)> faces
                 = new List<(int, int, int, Vector3, Vector3, Vector3, Vector3, float)>();
+            // A limit depends only on its groups' displacements: one met when last tested, whose groups have not moved since,
+            // is met still and is skipped (the order and the arithmetic of the others are unchanged). Times on one clock: when
+            // each group last moved, when each limit was last tested; the displacements as the last regularization left them.
+            public int clock;
+            public int[] moved, edgeTested, faceTested;
+            public Vector3[] left;
         }
 
         // Capture invariant rest geometry once per frame, preserving constraint order and arithmetic.
@@ -621,19 +639,37 @@ namespace Orbiters.ReFit
                 if (normal.sqrMagnitude < 1e-16f) continue;
                 limits.faces.Add((a, b, c, da, db, dc, normal, normal.sqrMagnitude * .1f));
             }
+            limits.moved = new int[original.Length];
+            limits.edgeTested = new int[limits.edges.Count];
+            limits.faceTested = new int[limits.faces.Count];
+            for (int g = 0; g < original.Length; g++) limits.moved[g] = ++limits.clock;
             return limits;
         }
 
         private void Regularize(Vector3[] deltas, Vector3[] original, bool transferred, RegularizationLimits limits)
         {
+            // What moved since the last regularization (the passes between them).
+            var moved = limits.moved;
+            if (limits.left == null) limits.left = new Vector3[deltas.Length];
+            else
+                for (int g = 0; g < deltas.Length; g++)
+                {
+                    // Exactly (Vector3's own != lets moves under 0.01 mm through).
+                    Vector3 d = deltas[g], l = limits.left[g];
+                    if (d.x != l.x || d.y != l.y || d.z != l.z) moved[g] = ++limits.clock;
+                }
             // Bound the spatial gradient of the extra displacement. Short cuff/lining edges must
             // share the motion of their neighbours instead of being stretched into sharp spikes.
             for (int pass = 0; pass < 12; pass++)
             {
                 bool adjusted = false;
-                foreach (var edge in limits.edges)
+                for (int e = 0; e < limits.edges.Count; e++)
                     {
+                        var edge = limits.edges[e];
                         int a = edge.a, b = edge.b;
+                        int tested = limits.edgeTested[e];
+                        if (moved[a] < tested && moved[b] < tested) continue;
+                        limits.edgeTested[e] = ++limits.clock;
                         var da = deltas[a] - original[a]; var db = deltas[b] - original[b];
                         var difference = da - db;
                         float max = edge.maximum;
@@ -642,15 +678,15 @@ namespace Orbiters.ReFit
                         bool fixedA = protectedGroups[a], fixedB = protectedGroups[b];
                         if (fixedA && fixedB) continue;
                         if (excess.sqrMagnitude > 0) adjusted = true;
-                        if (!fixedA) deltas[a] -= excess * (fixedB ? 1 : .5f);
-                        if (!fixedB) deltas[b] += excess * (fixedA ? 1 : .5f);
+                        if (!fixedA) { deltas[a] -= excess * (fixedB ? 1 : .5f); moved[a] = ++limits.clock; }
+                        if (!fixedB) { deltas[b] += excess * (fixedA ? 1 : .5f); moved[b] = ++limits.clock; }
                     }
                 if (!transferred)
                     for (int g = 0; g < deltas.Length; g++)
                     {
                         var d = deltas[g] - original[g];
                         float inward = Vector3.Dot(d, outward[g]);
-                        if (inward < 0) { deltas[g] -= outward[g] * inward; adjusted = true; }
+                        if (inward < 0) { deltas[g] -= outward[g] * inward; adjusted = true; moved[g] = ++limits.clock; }
                     }
                 // Once a complete pass changes nothing, the remaining identical passes cannot help.
                 if (!adjusted) break;
@@ -660,9 +696,13 @@ namespace Orbiters.ReFit
             for (int pass = 0; pass < 24; pass++)
             {
                 bool changed = false;
-                foreach (var face in limits.faces)
+                for (int f = 0; f < limits.faces.Count; f++)
                 {
+                    var face = limits.faces[f];
                     int a = face.a, b = face.b, c = face.c;
+                    int tested = limits.faceTested[f];
+                    if (moved[a] < tested && moved[b] < tested && moved[c] < tested) continue;
+                    limits.faceTested[f] = ++limits.clock;
                     var da = face.da; var db = face.db; var dc = face.dc;
                     var candidate = Vector3.Cross(basis[b] + deltas[b] - basis[a] - deltas[a], basis[c] + deltas[c] - basis[a] - deltas[a]);
                     if (Vector3.Dot(face.normal, candidate) >= face.minimum) continue;
@@ -672,10 +712,14 @@ namespace Orbiters.ReFit
                     deltas[a] = Vector3.Lerp(da + carry, deltas[a], .5f);
                     deltas[b] = Vector3.Lerp(db + carry, deltas[b], .5f);
                     deltas[c] = Vector3.Lerp(dc + carry, deltas[c], .5f);
+                    moved[a] = ++limits.clock;
+                    moved[b] = ++limits.clock;
+                    moved[c] = ++limits.clock;
                     changed = true;
                 }
                 if (!changed) break;
             }
+            Array.Copy(deltas, limits.left, deltas.Length);
         }
     }
 }

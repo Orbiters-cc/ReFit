@@ -147,6 +147,7 @@ namespace Orbiters.ReFit
             });
 
             snap.triangles = GetAllTriangles(mesh);
+            snap.CacheFaceNormals();
 
             if (buildTopology) snap.BuildTopology();
             return snap;
@@ -193,14 +194,14 @@ namespace Orbiters.ReFit
         /// <paramref name="vector"/> scaled to length 1, or zero when it has no direction. Unlike <see cref="Vector3.normalized"/>
         /// (zero below a length of 1e-5), a cross product of millimetre edges keeps its direction.
         /// </summary>
-        internal static Vector3 Unit(Vector3 vector)
+        public static Vector3 Unit(Vector3 vector)
         {
             float length = Mathf.Sqrt(vector.x * vector.x + vector.y * vector.y + vector.z * vector.z);
             return length > 1e-12f ? vector / length : Vector3.zero;
         }
 
         /// <summary>A snapshot of world-space geometry without a renderer (procedural surfaces and tests): rigid, at rest.</summary>
-        internal static MeshSnapshot FromWorld(Vector3[] worldVertices, int[] triangles, bool buildTopology)
+        public static MeshSnapshot FromWorld(Vector3[] worldVertices, int[] triangles, bool buildTopology)
         {
             var snap = new MeshSnapshot
             {
@@ -213,8 +214,30 @@ namespace Orbiters.ReFit
             };
             snap.worldNormals = ComputeVertexNormals(snap.worldVertices, snap.triangles);
             snap.baseNormals = (Vector3[])snap.worldNormals.Clone();
+            snap.CacheFaceNormals();
             if (buildTopology) snap.BuildTopology();
             return snap;
+        }
+
+        /// <summary>
+        /// Unit face normals by triangle (see <see cref="FaceNormal"/>), as of the last <see cref="CacheFaceNormals"/>, or null.
+        /// Captured and <see cref="FromWorld"/> snapshots have them; code moving a snapshot's vertices afterwards caches them again.
+        /// </summary>
+        public Vector3[] FaceNormals { get; private set; }
+
+        /// <summary>
+        /// Computes <see cref="FaceNormals"/> for the current vertices (in place when the triangle count is unchanged): queries
+        /// filtering by facing read them instead of a cross product and a square root per triangle tested. Not thread safe.
+        /// </summary>
+        public Vector3[] CacheFaceNormals()
+        {
+            int count = triangles.Length / 3;
+            var normals = FaceNormals != null && FaceNormals.Length == count ? FaceNormals : new Vector3[count];
+            FaceNormals = null;
+            if (count >= 4096) Parallel.For(0, count, t => normals[t] = ComputeFaceNormal(t));
+            else for (int t = 0; t < count; t++) normals[t] = ComputeFaceNormal(t);
+            FaceNormals = normals;
+            return normals;
         }
 
         // ------------------------------------------------------------------
@@ -424,7 +447,9 @@ namespace Orbiters.ReFit
         /// World-space unit face normal of a triangle, however small. A degenerate triangle (no area) takes the smooth normal of
         /// its corners, or no direction (zero) without vertex normals: it never claims to face a way it does not.
         /// </summary>
-        public Vector3 FaceNormal(int triangle)
+        public Vector3 FaceNormal(int triangle) => FaceNormals != null ? FaceNormals[triangle] : ComputeFaceNormal(triangle);
+
+        private Vector3 ComputeFaceNormal(int triangle)
         {
             int t = triangle * 3;
             var a = worldVertices[triangles[t]];

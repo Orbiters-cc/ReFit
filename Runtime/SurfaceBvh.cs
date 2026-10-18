@@ -5,6 +5,59 @@ using UnityEngine;
 namespace Orbiters.ReFit
 {
     /// <summary>
+    /// Which triangles a <see cref="SurfaceBvh"/> query considers. A struct implementing it is passed by value and called
+    /// directly (no delegate, nothing allocated per query): the hot queries use one, the others a <see cref="Func{T,TResult}"/>.
+    /// </summary>
+    public interface ITriangleFilter
+    {
+        bool Accept(int triangle);
+    }
+
+    /// <summary>
+    /// Triangles facing a direction (dot of the unit face normal at least <c>minimum</c>, from a snapshot's cached face
+    /// normals), optionally of a region a mask accepts: the filter most queries use.
+    /// </summary>
+    public readonly struct FacingFilter : ITriangleFilter
+    {
+        private readonly Vector3[] faceNormals;
+        private readonly Vector3 direction;
+        private readonly float minimum;
+        private readonly int mask;
+        private readonly int[] triangleMasks;
+        private readonly bool[] allowed;
+        private readonly bool strict;
+
+        /// <param name="faceNormals">Unit face normals by triangle (<see cref="MeshSnapshot.FaceNormals"/>).</param>
+        /// <param name="minimum">The least dot product of a face normal with <paramref name="direction"/> accepted.</param>
+        /// <param name="triangleMasks">Regions each triangle accepts (0: any), tested against <paramref name="mask"/> (0: any), or null.</param>
+        /// <param name="allowed">Triangles that may be found at all, or null for every triangle.</param>
+        /// <param name="strict">The dot product must be above <paramref name="minimum"/>, not only at least it.</param>
+        public FacingFilter(Vector3[] faceNormals, Vector3 direction, float minimum, int mask = 0, int[] triangleMasks = null, bool[] allowed = null,
+            bool strict = false)
+        {
+            this.faceNormals = faceNormals;
+            this.direction = direction;
+            this.minimum = minimum;
+            this.mask = mask;
+            this.triangleMasks = triangleMasks;
+            this.allowed = allowed;
+            this.strict = strict;
+        }
+
+        /// <summary>Faces turned against <paramref name="direction"/> (a negative dot product with it).</summary>
+        public static FacingFilter Against(Vector3[] faceNormals, Vector3 direction) => new FacingFilter(faceNormals, -direction, 0f, strict: true);
+
+        public bool Accept(int triangle)
+        {
+            if (allowed != null && !allowed[triangle]) return false;
+            var n = faceNormals[triangle];
+            float dot = n.x * direction.x + n.y * direction.y + n.z * direction.z;
+            if (strict ? dot <= minimum : dot < minimum) return false;
+            return mask == 0 || triangleMasks == null || triangleMasks[triangle] == 0 || (triangleMasks[triangle] & mask) != 0;
+        }
+    }
+
+    /// <summary>
     /// Bounding volume hierarchy over a triangle soup for fast closest-point-on-surface queries,
     /// optionally restricted by a per-triangle predicate (used for normal / body-region filtering).
     /// Thread-safe for queries once built.
@@ -36,34 +89,58 @@ namespace Orbiters.ReFit
         private int nodeCount;
         private int[] triOrder;
         private Vector3[] a, b, c;       // triangle corners
-        private Vector3[] centroids;
+        // Triangle centroids by axis, while building.
+        private float[] cx, cy, cz;
 
-        /// <summary>Builds a BVH over the given snapshot's world-space triangles, except its hidden ones.</summary>
-        public static SurfaceBvh Build(MeshSnapshot snapshot)
+        private readonly struct NoFilter : ITriangleFilter
+        {
+            public bool Accept(int triangle) => true;
+        }
+
+        private readonly struct FuncFilter : ITriangleFilter
+        {
+            private readonly Func<int, bool> filter;
+            public FuncFilter(Func<int, bool> filter) => this.filter = filter;
+            public bool Accept(int triangle) => filter(triangle);
+        }
+
+        /// <summary>
+        /// Builds a BVH over the given snapshot's world-space triangles, except its hidden ones and, with
+        /// <paramref name="include"/>, those it leaves out (queries then never visit them: much faster than filtering them out
+        /// when few are left). Hits give the snapshot's own triangle indices.
+        /// </summary>
+        public static SurfaceBvh Build(MeshSnapshot snapshot, bool[] include = null)
         {
             var bvh = new SurfaceBvh();
             int triCount = snapshot.triangles.Length / 3;
             bvh.a = new Vector3[triCount];
             bvh.b = new Vector3[triCount];
             bvh.c = new Vector3[triCount];
-            bvh.centroids = new Vector3[triCount];
+            bvh.cx = new float[triCount];
+            bvh.cy = new float[triCount];
+            bvh.cz = new float[triCount];
             for (int t = 0; t < triCount; t++)
             {
-                bvh.a[t] = snapshot.worldVertices[snapshot.triangles[t * 3]];
-                bvh.b[t] = snapshot.worldVertices[snapshot.triangles[t * 3 + 1]];
-                bvh.c[t] = snapshot.worldVertices[snapshot.triangles[t * 3 + 2]];
-                bvh.centroids[t] = (bvh.a[t] + bvh.b[t] + bvh.c[t]) / 3f;
+                var pa = bvh.a[t] = snapshot.worldVertices[snapshot.triangles[t * 3]];
+                var pb = bvh.b[t] = snapshot.worldVertices[snapshot.triangles[t * 3 + 1]];
+                var pc = bvh.c[t] = snapshot.worldVertices[snapshot.triangles[t * 3 + 2]];
+                bvh.cx[t] = pa.x + pb.x + pc.x;
+                bvh.cy[t] = pa.y + pb.y + pc.y;
+                bvh.cz[t] = pa.z + pb.z + pc.z;
             }
             var hidden = snapshot.hiddenTriangles;
+            bool Kept(int t) => (hidden == null || !hidden[t]) && (include == null || include[t]);
             int kept = 0;
-            for (int t = 0; t < triCount; t++) if (hidden == null || !hidden[t]) kept++;
+            for (int t = 0; t < triCount; t++) if (Kept(t)) kept++;
             bvh.triOrder = new int[kept];
-            for (int t = 0, k = 0; t < triCount; t++) if (hidden == null || !hidden[t]) bvh.triOrder[k++] = t;
+            for (int t = 0, k = 0; t < triCount; t++) if (Kept(t)) bvh.triOrder[k++] = t;
             bvh.nodes = new Node[Mathf.Max(1, kept * 2)];
             bvh.nodeCount = 0;
             if (kept > 0) bvh.BuildNode(0, kept);
+            bvh.cx = bvh.cy = bvh.cz = null;
             return bvh;
         }
+
         /// <summary>
         /// Moves the hierarchy onto <paramref name="snapshot"/>: the same triangles (the snapshot it was built from, or one with
         /// the same triangles) at new positions. The tree keeps its order and only its bounds follow, in linear time: queries
@@ -124,8 +201,9 @@ namespace Orbiters.ReFit
             {
                 var size = max - min;
                 int axis = size.x >= size.y && size.x >= size.z ? 0 : (size.y >= size.z ? 1 : 2);
-                SortRange(start, count, axis);
                 int half = count / 2;
+                // The halves split at the median centroid: only the median has to be in place (quickselect), not the whole order.
+                SelectMedian(start, count, half, axis == 0 ? cx : axis == 1 ? cy : cz);
                 node.count = 0;
                 nodes[nodeIndex] = node; // reserve before recursing
                 int left = BuildNode(start, half);
@@ -137,21 +215,41 @@ namespace Orbiters.ReFit
             return nodeIndex;
         }
 
-        private void SortRange(int start, int count, int axis)
+        // Reorders triOrder[start, start + count) so that the triangle of rank k (by key) is at start + k, those before it have
+        // keys no larger and those after no smaller (Hoare partitioning around the middle element).
+        private void SelectMedian(int start, int count, int k, float[] key)
         {
-            var cents = centroids;
-            Comparison<int> cmp;
-            if (axis == 0) cmp = (x, y) => cents[x].x.CompareTo(cents[y].x);
-            else if (axis == 1) cmp = (x, y) => cents[x].y.CompareTo(cents[y].y);
-            else cmp = (x, y) => cents[x].z.CompareTo(cents[y].z);
-            Array.Sort(triOrder, start, count, Comparer<int>.Create(cmp));
+            var order = triOrder;
+            int lo = start, hi = start + count - 1, target = start + k;
+            while (lo < hi)
+            {
+                float pivot = key[order[(lo + hi) >> 1]];
+                int i = lo, j = hi;
+                while (i <= j)
+                {
+                    while (key[order[i]] < pivot) i++;
+                    while (key[order[j]] > pivot) j--;
+                    if (i <= j)
+                    {
+                        int swap = order[i]; order[i] = order[j]; order[j] = swap;
+                        i++; j--;
+                    }
+                }
+                if (target <= j) hi = j;
+                else if (target >= i) lo = i;
+                else return;
+            }
         }
 
         /// <summary>
         /// Closest point on the surface from <paramref name="point"/>, considering only triangles within
         /// <paramref name="maxDistance"/> and (optionally) passing <paramref name="filter"/>.
         /// </summary>
-        public Hit ClosestPoint(Vector3 point, float maxDistance, Func<int, bool> filter = null)
+        public Hit ClosestPoint(Vector3 point, float maxDistance, Func<int, bool> filter = null) =>
+            filter == null ? ClosestPoint(point, maxDistance, new NoFilter()) : ClosestPoint(point, maxDistance, new FuncFilter(filter));
+
+        /// <summary>Closest point, considering only triangles <paramref name="filter"/> accepts (no allocation).</summary>
+        public Hit ClosestPoint<T>(Vector3 point, float maxDistance, T filter) where T : struct, ITriangleFilter
         {
             var hit = new Hit { found = false, distance = maxDistance, triangle = -1 };
             if (nodeCount == 0) return hit;
@@ -173,7 +271,7 @@ namespace Orbiters.ReFit
                     for (int i = node.start; i < node.start + node.count; i++)
                     {
                         int t = triOrder[i];
-                        if (filter != null && !filter(t)) continue;
+                        if (!filter.Accept(t)) continue;
                         var p = ClosestPointOnTriangle(point, a[t], b[t], c[t], out var bary);
                         float sqr = (p - point).sqrMagnitude;
                         if (sqr < bestSqr)
@@ -203,7 +301,11 @@ namespace Orbiters.ReFit
         /// First triangle (either side) crossed by the ray from <paramref name="origin"/> along the unit
         /// <paramref name="direction"/> within <paramref name="maxDistance"/>, optionally passing <paramref name="filter"/>.
         /// </summary>
-        public Hit Raycast(Vector3 origin, Vector3 direction, float maxDistance, Func<int, bool> filter = null)
+        public Hit Raycast(Vector3 origin, Vector3 direction, float maxDistance, Func<int, bool> filter = null) =>
+            filter == null ? Raycast(origin, direction, maxDistance, new NoFilter()) : Raycast(origin, direction, maxDistance, new FuncFilter(filter));
+
+        /// <summary>First triangle crossed, considering only triangles <paramref name="filter"/> accepts (no allocation).</summary>
+        public Hit Raycast<T>(Vector3 origin, Vector3 direction, float maxDistance, T filter) where T : struct, ITriangleFilter
         {
             var hit = new Hit { found = false, distance = maxDistance, triangle = -1 };
             if (nodeCount == 0) return hit;
@@ -221,7 +323,7 @@ namespace Orbiters.ReFit
                     for (int i = node.start; i < node.start + node.count; i++)
                     {
                         int t = triOrder[i];
-                        if (filter != null && !filter(t)) continue;
+                        if (!filter.Accept(t)) continue;
                         if (!RayTriangle(origin, direction, a[t], b[t], c[t], out float distance, out var bary) || distance >= best) continue;
                         best = distance;
                         hit.found = true;

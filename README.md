@@ -1,5 +1,27 @@
 # ReFit
 
+## 0.7.0 — 2026-10-18
+
+- Twice as fast. The 23 replayed outfits take 159 s instead of 303 s: bodies laid onto each other are kept between
+  refits, the cloth drape looks for the skin it covers among those triangles only, the coverage pass re-checks only what
+  moved (same result), and the spatial queries no longer allocate or recompute normals. A latex piece on the Hypernova
+  refits in 2 to 3 s (5 to 7 s before), the Classy chain in 11 s (27 s), the suit vest in 14 s (22 s).
+- A body laid onto the other is used whenever it reaches it under the clothing, even where the skin met along the
+  clothing's normal says otherwise (feathers, fluff, a body sculpted in layers). The Rexouium jacket on the Ultirex no
+  longer tears at the collar and shoulders: 12 spikes instead of 2337, in 20 s instead of 58.
+- Smoother skin weights between bodies: the change of skinning is filled in over the clothing between the skin and the
+  parts far off it, and where nothing matched, as smoothly as the clothing allows (weight inpainting). Crouching in the
+  jockstrap clips less (188 samples to 158).
+- Small rigid pieces (a chain's links, buttons, buckles) turn with the skin, up to 30 degrees, instead of only sliding.
+- In motion (beta): after a refit, a hidden copy of the avatar raises its arms, twists, steps and crouches, and the
+  window says where skin comes through the clothing. On request it plans a body shrink: the skin under the clothing moves
+  in a little, as a body blendshape that Orbiters Toolkit turns on whenever the clothing shows (its own toggle included).
+- Touch up: a push-out brush in the Scene view moves fabric out of the body where you drag, along the body's distance
+  field, with Undo. [ and ] change its size.
+- Fits: keep a fit, refit the piece again (looser, tighter...) and keep that one too. In VRChat the avatar's menu picks
+  one (Fits/piece, built with VRCFury); in the editor, Use puts a kept fit back.
+- Needs Orbiters Toolkit 0.3.24.
+
 ## 0.6.0 — 2026-10-16
 
 - Outfits stay prefabs. Refitting a part of a prefab outfit (VRCFury, Modular Avatar) no longer unpacks it, from the
@@ -172,8 +194,10 @@ under it.
 Warnings never block: if your custom base has intentionally relocated bones but a near-identical mesh, just proceed — the
 surface projection compensates. Afterwards the stage compares before and after with the same camera: drag the handle
 to move the split, anywhere else to turn. The result selects the
-refitted renderer, shows its mesh, undoes the refit, or goes back for the next piece. Every advanced option is on the
-**Settings** page (the sliders in the top banner, or **Advanced options**).
+refitted renderer, shows its mesh, undoes the refit, or goes back for the next piece. In a VRChat avatar project it
+also checks each piece **in motion** (arms up, twists, steps, a crouch) and can plan a body shrink for what comes
+through, offers a **push out** brush for the Scene view, and keeps **fits** to choose from in the avatar's menu. Every
+advanced option is on the **Settings** page (the sliders in the top banner, or **Advanced options**).
 
 Right-click a skinned accessory in the Hierarchy and choose **ReFit** to start with that accessory and its avatar. The
 renderer's Inspector context menu also exposes **ReFit**. With several meshes, the window shows them to pick instead of

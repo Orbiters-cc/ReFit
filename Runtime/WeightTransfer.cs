@@ -71,7 +71,7 @@ namespace Orbiters.ReFit
             }
 
             var change = BuildChange(asset, sourceBody, sourceBindings, sourceBoneToNew, targetBody, targetBindings,
-                targetBoneToNew, groupConfidence, boneCount, out var hasChange);
+                targetBoneToNew, groupConfidence, boneCount, settings.inpaintSkinningChange, report, out var hasChange);
 
             int kept = 0, adjusted = 0, unchanged = 0, rejected = 0, projectedCount = 0, fallback = 0;
             bool hasOriginal = !asset.rigid && asset.boneWeights != null && asset.boneWeights.Length == vertexCount;
@@ -213,7 +213,7 @@ namespace Orbiters.ReFit
         /// </summary>
         private static SparseChange[] BuildChange(MeshSnapshot asset, MeshSnapshot sourceBody, SurfaceBinding[] sourceBindings,
             int[] sourceBoneToNew, MeshSnapshot targetBody, SurfaceBinding[] targetBindings, int[] targetBoneToNew,
-            float[] groupConfidence, int boneCount, out bool[] hasChange)
+            float[] groupConfidence, int boneCount, bool inpaint, ReFitReport report, out bool[] hasChange)
         {
             int groupCount = asset.GroupCount;
             var change = new SparseChange[groupCount];
@@ -226,6 +226,8 @@ namespace Orbiters.ReFit
                 {
                     float confidence = groupConfidence != null && g < groupConfidence.Length ? groupConfidence[g] : 1f;
                     if (!sourceBindings[g].valid || !targetBindings[g].valid) return entries;
+                    // Inpainted: only clothing on the skin is known; what lies between it and the parts far off it is filled in.
+                    if (inpaint && sourceBindings[g].distance > SkinContactFull) return entries;
                     confidence *= 1f - Mathf.Clamp01((sourceBindings[g].distance - SkinContactFull) / (SkinContactNone - SkinContactFull));
                     if (confidence <= 0f) return entries;
                     entries.Clear();
@@ -235,6 +237,9 @@ namespace Orbiters.ReFit
                     has[g] = true;
                     return entries;
                 }, _ => { });
+
+            if (inpaint && boneCount > 0 && sourceSkinned && targetSkinned && sourceBindings != null && targetBindings != null)
+                Inpaint(asset, sourceBindings, targetBindings, groupConfidence, change, has, report);
 
             if (boneCount > 0)
             {
@@ -277,6 +282,65 @@ namespace Orbiters.ReFit
             }
             hasChange = has;
             return change;
+        }
+
+        // Known: the change of clothing on the skin, and no change for clothing far off it (or out of the falloff). Filled in
+        // by weight inpainting: the clothing between them and points without a match.
+        private static void Inpaint(MeshSnapshot asset, SurfaceBinding[] sourceBindings, SurfaceBinding[] targetBindings, float[] groupConfidence,
+            SparseChange[] change, bool[] has, ReFitReport report)
+        {
+            int groupCount = asset.GroupCount;
+            var known = new bool[groupCount];
+            int unknownCount = 0;
+            for (int g = 0; g < groupCount; g++)
+            {
+                bool matched = sourceBindings[g].valid && targetBindings[g].valid;
+                float confidence = groupConfidence != null && g < groupConfidence.Length ? groupConfidence[g] : 1f;
+                known[g] = has[g] || (matched && (sourceBindings[g].distance >= SkinContactNone || confidence <= 0f));
+                if (!known[g]) unknownCount++;
+            }
+            if (unknownCount == 0) return;
+            var positions = new Vector3[groupCount];
+            for (int g = 0; g < groupCount; g++) positions[g] = asset.worldVertices[asset.groupRep[g]];
+            var triangles = new List<int>(asset.triangles.Length);
+            for (int t = 0; t + 2 < asset.triangles.Length; t += 3)
+            {
+                int a = asset.groupOfVertex[asset.triangles[t]], b = asset.groupOfVertex[asset.triangles[t + 1]], c = asset.groupOfVertex[asset.triangles[t + 2]];
+                if (a == b || b == c || a == c) continue;
+                triangles.Add(a); triangles.Add(b); triangles.Add(c);
+            }
+            var inpainting = new WeightInpainting(positions, triangles.ToArray(), known);
+            var bones = new SortedSet<int>();
+            for (int g = 0; g < groupCount; g++) if (has[g]) foreach (int b in change[g].bones) bones.Add(b);
+            var boneList = new List<int>(bones);
+            var fields = new double[boneList.Count][];
+            int unconverged = 0;
+            Parallel.For(0, boneList.Count, k =>
+            {
+                var values = new double[groupCount];
+                for (int g = 0; g < groupCount; g++) if (known[g] && has[g]) values[g] = change[g][boneList[k]];
+                if (!inpainting.Solve(values)) System.Threading.Interlocked.Increment(ref unconverged);
+                fields[k] = values;
+            });
+            int filled = 0;
+            var entries = new Dictionary<int, float>();
+            for (int g = 0; g < groupCount; g++)
+            {
+                if (known[g]) continue;
+                entries.Clear();
+                for (int k = 0; k < boneList.Count; k++)
+                {
+                    float value = (float)fields[k][g];
+                    if (Mathf.Abs(value) > 1e-4f) entries[boneList[k]] = value;
+                }
+                if (entries.Count == 0) continue;
+                change[g] = SparseChange.From(entries);
+                has[g] = true;
+                filled++;
+            }
+            report?.Info("weights-inpainted", $"Skin weights: the change of skinning is filled in for {filled} clothing points between the skin and the " +
+                                              $"parts far off it, or without a match ({unknownCount} unknown, {boneList.Count} bones" +
+                                              (unconverged > 0 ? $", {unconverged} solves stopped at their limit" : "") + ").");
         }
 
         private static void AccumulateSkin(Dictionary<int, float> change, int boneCount, MeshSnapshot body, SurfaceBinding binding,

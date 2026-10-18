@@ -69,6 +69,19 @@ namespace Orbiters.ReFit
         /// around it, then is draped out of the target skin it covered on the source; its body shapes are draped the same way.
         /// </summary>
         public bool clothFit = true;
+        /// <summary>
+        /// With <see cref="registerBodies"/>: above this share of the clothing near the skin whose laid counterpart lies 3 cm or
+        /// more from the skin met along the source's normal, the bodies are taken as too different to lay onto each other and
+        /// the different-base passes fit the clothing instead.
+        /// </summary>
+        public float registrationDisagreementLimit = .15f;
+        /// <summary>
+        /// Skin weights, when the armature is replaced: the change of skinning between the bodies, known where the clothing lies
+        /// on the skin (and known to be none where it stands far off it), is filled in smoothly for the clothing between them
+        /// and for points without a match (weight inpainting), instead of fading with the distance and stopping where a
+        /// match is missing.
+        /// </summary>
+        public bool inpaintSkinningChange = true;
         /// <summary>Opt-in residual body coverage for clothing detected on a different avatar base.</summary>
         public bool coverDifferentBaseBody;
         /// <summary>

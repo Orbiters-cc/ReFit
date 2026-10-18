@@ -58,14 +58,18 @@ namespace Orbiters.ReFit
             try
             {
                 cancellationToken.ThrowIfCancellationRequested();
+                var watch = System.Diagnostics.Stopwatch.StartNew();
                 state = Prepare(request, progress);
+                ReportPhase(state, "Staging", watch);
                 state.cancellationToken = cancellationToken;
                 if (state.failed) return state.comp;
                 ComputeGeometry(state);
                 cancellationToken.ThrowIfCancellationRequested();
                 progress?.Invoke(0.85f, "Baking the mesh");
                 cancellationToken.ThrowIfCancellationRequested();
+                watch.Restart();
                 Bake(state);
+                ReportPhase(state, "Baking", watch);
             }
             catch (OperationCanceledException)
             {
@@ -83,6 +87,10 @@ namespace Orbiters.ReFit
             NotifyCompletion(progress, state.comp.report);
             return state.comp;
         }
+
+        // A main-thread phase's time, reported as the background phases are (phase-timing).
+        private static void ReportPhase(State state, string phase, System.Diagnostics.Stopwatch watch) =>
+            state?.Report.Info("phase-timing", $"{phase}: {watch.Elapsed.TotalMilliseconds:F1} ms");
 
         private static void NotifyCompletion(ReFitProgress progress, ReFitReport report)
         {
@@ -106,10 +114,12 @@ namespace Orbiters.ReFit
             CancellationToken cancellationToken)
         {
             State state;
+            var watch = System.Diagnostics.Stopwatch.StartNew();
             try
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 state = Prepare(request, progress);
+                ReportPhase(state, "Staging", watch);
             }
             catch (OperationCanceledException)
             {
@@ -167,7 +177,9 @@ namespace Orbiters.ReFit
                     try
                     {
                         state.cancellationToken.ThrowIfCancellationRequested();
+                        watch.Restart();
                         Bake(state);
+                        ReportPhase(state, "Baking", watch);
                     }
                     catch (OperationCanceledException)
                     {
@@ -1087,6 +1099,7 @@ namespace Orbiters.ReFit
                         state.targetTriCrossMasks, state.cancellationToken, t => state.backgroundProgress = 0.2f + 0.1f * t, start);
                     state.Report.Info("body-registration", $"The source body lies on the target within {state.registration.medianGap * 1000f:0.0} mm " +
                         $"(95 % within {state.registration.p95Gap * 1000f:0.0} mm).");
+                    state.Report.Info("registration-timing", state.registration.timing);
                 }
                 SetBackgroundProgress(state, 0.3f, "Projecting onto the target body");
                 targetBindings = new SurfaceBinding[groupCount];
@@ -1097,8 +1110,11 @@ namespace Orbiters.ReFit
                 var registration = state.registration;
                 var chained = new SurfaceBinding[groupCount];
                 var disagrees = new bool[groupCount];
+                // How far the laid source is from the target skin under each clothing point near the skin (-1: not measured).
+                var reach = new float[groupCount];
                 Parallel.For(0, groupCount, g =>
                 {
+                    reach[g] = -1f;
                     if (!localBindings[g].valid) { localTarget[g].valid = false; return; }
                     var nA = firstSnap.BaryNormal(localBindings[g].triangle, localBindings[g].bary);
                     var region = state.assetGroupRegions != null ? state.assetGroupRegions[g] : BodyRegion.Unknown;
@@ -1113,32 +1129,45 @@ namespace Orbiters.ReFit
                         localTarget[g] = registered;
                         disagrees[g] = chained[g].valid && localBindings[g].distance <= ClothingNearSkin &&
                                        (chained[g].point - registered.point).magnitude > RegistrationDisagreement;
+                        if (localBindings[g].distance <= ClothingNearSkin)
+                        {
+                            var laid = registration.Point(localBindings[g].triangle, localBindings[g].bary);
+                            var onTarget = bvhTarget.ClosestPoint(laid, RegistrationReachLimit);
+                            reach[g] = onTarget.found ? onTarget.distance : RegistrationReachLimit;
+                        }
                     }
                 });
                 if (registration != null)
                 {
-                    // Where the clothing lies, the laid source must agree with the skin met along the source's normal; bodies
-                    // too different there (hips twice the base's, a large sculpted edit) are fitted by the passes made for them.
+                    // Where the clothing lies, the laid source must reach the target skin, or agree with the skin met along the
+                    // source's normal: bodies too different there (hips twice the base's, a large sculpted edit), where the
+                    // registration cannot reach, are fitted by the passes made for them. Laid within RegistrationReach, it is
+                    // trusted over the normal, which meets fluff, feathers or another layer of a body sculpted in sheets.
                     int near = 0, apart = 0;
+                    var reaches = new List<float>();
                     for (int g = 0; g < groupCount; g++)
                     {
                         if (!localBindings[g].valid || localBindings[g].distance > ClothingNearSkin) continue;
                         near++;
                         if (disagrees[g]) apart++;
+                        if (reach[g] >= 0f) reaches.Add(reach[g]);
                     }
                     float share = near > 0 ? (float)apart / near : 0f;
-                    if (share > RegistrationMissLimit)
+                    reaches.Sort();
+                    float reached = reaches.Count > 0 ? reaches[Mathf.Min(reaches.Count - 1, (int)(reaches.Count * .9f))] : float.MaxValue;
+                    if (share > settings.registrationDisagreementLimit && reached > RegistrationReach)
                     {
                         state.Report.Info("body-registration-unused", $"The bodies differ too much under the clothing to lay one onto the other " +
-                            $"({share * 100f:0} % of it lies {RegistrationDisagreement * 100f:0} cm or more from where the skin along the normal is): " +
-                            "fitted by the different-base passes.");
+                            $"({share * 100f:0} % of it lies {RegistrationDisagreement * 100f:0} cm or more from where the skin along the normal is, " +
+                            $"and the laid source is {reached * 1000f:0} mm from the target there for 10 % of it): fitted by the different-base passes.");
                         state.registration = null;
                         Array.Copy(chained, targetBindings, groupCount);
                     }
                     else
                     {
                         state.Report.Info("body-registration-used", $"{share * 100f:0.0} % of the clothing lies {RegistrationDisagreement * 100f:0} cm or more " +
-                                                                  "from where the skin along the normal is.");
+                                                                  $"from where the skin along the normal is; the laid source is within {reached * 1000f:0.0} mm " +
+                                                                  "of the target under 90 % of it.");
                         state.chainedAlongNormal = chained;
                     }
                 }
@@ -1237,6 +1266,7 @@ namespace Orbiters.ReFit
                 ApplyUpperBodyHemDamping(primaryGroupDeltas, state.upperBodyHemWeights, settings);
                 state.primaryRawLocalDeltas = ToLocalDeltas(state, primaryGroupDeltas, true);
 
+                var steps = new StepTimer();
                 var clearanceStats = ReFitClearanceCorrection.Apply(
                     asset,
                     targetBasis,
@@ -1248,24 +1278,31 @@ namespace Orbiters.ReFit
                     falloff,
                     settings,
                     BuildClearanceContext(state, targetBasis, targetBindings, false));
+                steps.Lap("clearance");
                 AddClearanceStats(state, clearanceStats, "primary refit");
                 state.tubes.Apply(asset, targetBasis, bvhTarget, null, null, primaryGroupDeltas, settings, state.Report, "primary refit");
+                steps.Lap("tubes");
 
                 if (settings.coverDifferentBaseBody && settings.coverageKeepsLayerOrder)
                 {
                     state.hiddenCovers = new ReFitSurfaceCoverage.Cover?[groupCount];
                     state.hiddenGroups = ReFitSurfaceCoverage.HiddenGroups(asset, targetBasis, bvhTarget, AuthoredLayers(state), null, state.hiddenCovers);
+                    steps.Lap("hidden layers");
                 }
                 ReFitSurfaceCoverage.RepairPrimary(asset, targetBasis, primaryGroupDeltas,
                     state.assetGroupRegions, state.tubes.groups, settings, state.Report, state.targetTriRegions, hidden: state.hiddenGroups);
+                steps.Lap("coverage");
                 // The drape knows only the body: the inner layers' repair comes after it and has the last word on the layers.
                 if (settings.coverDifferentBaseBody && settings.enableClearanceCorrection)
                 {
                     SetBackgroundProgress(state, 0.42f, "Draping the clothing over the body");
                     state.drape = new ReFitDrape(asset, null, firstSnap, firstBvh, targetBasis, state.targetTriRegions, state.assetGroupRegions, state.tubes.groups, state.hiddenGroups);
+                    steps.Lap("drape setup");
                     state.drape.Apply(targetBasis, null, null, primaryGroupDeltas, state.Report, "different-base coverage", state.cancellationToken,
                         t => state.backgroundProgress = 0.42f + 0.06f * t);
+                    steps.Lap("drape");
                 }
+                state.Report.Info("deformation-timing", "The fit: " + steps);
                 for (int layer = 0; layer < state.coverageLayers.Count; layer++)
                     ReFitSurfaceCoverage.RepairPrimary(asset, state.coverageLayers[layer], primaryGroupDeltas,
                         state.assetGroupRegions, state.tubes.groups, settings, state.Report, null, state.coverageLayersAuthored[layer],
@@ -1389,6 +1426,7 @@ namespace Orbiters.ReFit
                             return;
                         }
 
+                        var steps = new StepTimer();
                         var coverageRawDeltas = coverage != null ? (Vector3[])groupDeltas.Clone() : null;
                         var clearanceStats = ReFitClearanceCorrection.Apply(
                             asset,
@@ -1401,17 +1439,23 @@ namespace Orbiters.ReFit
                             falloff,
                             settings,
                             BuildClearanceContext(worker, targetBasis, transferBindings, true));
+                        steps.Lap("clearance");
                         AddClearanceStats(worker, clearanceStats, $"transferred '{shape.sourceName}'");
                         worker.tubes.Apply(asset, targetBasis, bvhTarget, worldShapeDelta, primaryGroupDeltas, groupDeltas,
                             settings, worker.Report, $"transferred '{shape.sourceName}'");
+                        steps.Lap("tubes");
                         coverage?.Apply(targetBasis, worldShapeDelta, groupDeltas, coverageRawDeltas, settings, worker.Report, shape.sourceName);
+                        steps.Lap("coverage");
                         // The drape knows only the body: the layers' coverage and the covers come after it and keep the layer order.
                         worker.drape?.Apply(targetBasis, worldShapeDelta, primaryGroupDeltas, groupDeltas, worker.Report, shape.sourceName,
                             worker.cancellationToken);
+                        steps.Lap("drape");
                         for (int layer = 0; layer < layerCoverage.Count; layer++)
                             layerCoverage[layer]?.Apply(worker.coverageLayers[layer], frame.layerDeltas[layer], groupDeltas,
                                 coverageRawDeltas ?? (Vector3[])groupDeltas.Clone(), settings, worker.Report, shape.sourceName);
                         ReFitSurfaceCoverage.KeepUnderCovers(asset, primaryGroupDeltas, groupDeltas, worker.hiddenCovers, worker.coverageLayers, frame.layerDeltas);
+                        steps.Lap("layers");
+                        worker.Report.Info("deformation-timing", $"'{shape.sourceName}': " + steps);
 
                         frame.localDeltas = ToLocalDeltas(worker, groupDeltas, false);
                         if (settings.recalculateNormalDeltas)
@@ -1454,9 +1498,26 @@ namespace Orbiters.ReFit
         }
 
         // Clothing points close to the source skin (within ClothingNearSkin) whose laid counterpart lies farther than
-        // RegistrationDisagreement from the skin met along the source's normal; above RegistrationMissLimit of them the
+        // RegistrationDisagreement from the skin met along the source's normal; above registrationDisagreementLimit of them the
         // registration is not used.
-        private const float ClothingNearSkin = 0.1f, RegistrationDisagreement = 0.03f, RegistrationMissLimit = 0.15f;
+        // Where the time of a deformation goes, step by step (diagnostics).
+        private sealed class StepTimer
+        {
+            private readonly System.Diagnostics.Stopwatch watch = System.Diagnostics.Stopwatch.StartNew();
+            private readonly List<string> laps = new List<string>();
+
+            public void Lap(string step)
+            {
+                laps.Add($"{step} {watch.ElapsedMilliseconds} ms");
+                watch.Restart();
+            }
+
+            public override string ToString() => string.Join(", ", laps);
+        }
+
+        private const float ClothingNearSkin = 0.1f, RegistrationDisagreement = 0.03f;
+        // The laid source within this of the target skin under 90 % of the clothing reaches it there (measured up to the limit).
+        private const float RegistrationReach = 0.01f, RegistrationReachLimit = 0.2f;
 
         // The skeletons' carry is used when it brings the source this much closer to the target on average.
         private const float RetargetGain = 0.002f;

@@ -239,6 +239,7 @@ namespace Orbiters.ReFit.Editor
             EditorSceneManager.sceneOpened -= OnSceneOpened;
             EditorSceneManager.sceneClosed -= OnSceneClosed;
             CustomBases.Changed -= OnCustomBaseChanged;
+            ReFitClipFixTool.Changed -= OnBrushChanged;
             if (!on) return;
             Selection.selectionChanged += OnSelectionChanged;
             EditorApplication.hierarchyChanged += OnSceneChanged;
@@ -246,6 +247,12 @@ namespace Orbiters.ReFit.Editor
             EditorSceneManager.sceneOpened += OnSceneOpened;
             EditorSceneManager.sceneClosed += OnSceneClosed;
             CustomBases.Changed += OnCustomBaseChanged;
+            ReFitClipFixTool.Changed += OnBrushChanged;
+        }
+
+        private void OnBrushChanged()
+        {
+            if (page == Page.Result) Render();
         }
 
         // Two columns, the stage on the left; narrower than NarrowWidth, the stage tops the page and scrolls with it.
@@ -304,6 +311,7 @@ namespace Orbiters.ReFit.Editor
             lastResult = null;
             lastRequest = null;
             outfitResults.Clear();
+            ClearMotion();
             ClearPictures(true);
             page = Page.Studio;
             InvalidateChecks();
@@ -322,6 +330,7 @@ namespace Orbiters.ReFit.Editor
             mode = ReFitMode.Blendshape;
             ResetTightnessChoice();
             madeForAvatar = true; refitOutfit = true; outfitResults.Clear();
+            ClearMotion();
             validateReport = null; validateKey = null; lastResult = null;
             lastRequest = null; gravityPreview = null;
             commissionCreators = null;
@@ -345,6 +354,7 @@ namespace Orbiters.ReFit.Editor
             StopExecutionPump();
             isExecuting = false;
             ReFitGravityPreviewService.ClearPreview(gravityPreview);
+            ReFitClipFixTool.End();
             ClearPictures(true);
         }
 
@@ -790,6 +800,7 @@ namespace Orbiters.ReFit.Editor
                 // Taken at once, while the avatar is still held at rest like the before picture (a posing preview resumes after).
                 if (lastResult != null && lastResult.success && lastResult.sceneRenderer != null && afterScene == null)
                     afterScene = MakeScene(lastResult.sceneRenderer, lastRequest?.targetAvatar ?? targetAvatar);
+                PrepareMotion();
                 stage?.SetBusy(null);
                 Render();
             }

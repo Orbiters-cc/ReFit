@@ -856,6 +856,9 @@ namespace Orbiters.ReFit.Editor
             }
 
             if (gravityPreview != null && gravityPreview.frames != null && gravityPreview.frames.Length > 0) BuildGravity();
+            BuildMotion();
+            BuildTouchUp();
+            BuildFits();
             BuildCommissionSuggestions();
         }
 

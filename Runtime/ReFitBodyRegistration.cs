@@ -39,6 +39,8 @@ namespace Orbiters.ReFit
         public readonly float[] confidence;
         /// <summary>Distance from the registered visible source skin to the target: median and 95th percentile (metres).</summary>
         public readonly float medianGap, p95Gap;
+        /// <summary>Where the time went: the target queries and the smoothing solves, with their iterations (diagnostics).</summary>
+        public string timing;
 
         /// <summary>Debug: each registration built, with the target it was laid onto (tests only).</summary>
         internal static Action<ReFitBodyRegistration, MeshSnapshot> Captured;
@@ -116,13 +118,80 @@ namespace Orbiters.ReFit
         public static ReFitBodyRegistration Build(MeshSnapshot source, int[] sourceTriangleMasks, MeshSnapshot target, SurfaceBvh targetIndex,
             int[] targetTriangleMasks, CancellationToken cancellation, Action<float> progress = null, Vector3[] start = null)
         {
+            // The same bodies laid onto each other again (the next piece of an outfit, a refit run again): the last results are
+            // kept by the content of everything the registration reads.
+            ulong key = Key(source, sourceTriangleMasks, target, targetTriangleMasks, start);
+            lock (Cache)
+                foreach (var entry in Cache)
+                    if (entry.key == key && entry.registered.Length == source.worldVertices.Length)
+                    {
+                        Cache.Remove(entry);
+                        Cache.Insert(0, entry);
+                        progress?.Invoke(1f);
+                        var reused = new ReFitBodyRegistration(source, entry.registered, entry.confidence, entry.medianGap, entry.p95Gap)
+                        {
+                            timing = "reused the bodies laid onto each other by an earlier refit (" + entry.timing + ")",
+                        };
+                        Captured?.Invoke(reused, target);
+                        return reused;
+                    }
+            var built = Compute(source, sourceTriangleMasks, target, targetIndex, targetTriangleMasks, cancellation, progress, start);
+            lock (Cache)
+            {
+                Cache.Insert(0, new CacheEntry { key = key, registered = built.registered, confidence = built.confidence, medianGap = built.medianGap,
+                    p95Gap = built.p95Gap, timing = built.timing });
+                if (Cache.Count > CacheSize) Cache.RemoveAt(Cache.Count - 1);
+            }
+            return built;
+        }
+
+        // A few registrations: the pieces of one outfit, a source on a couple of targets.
+        private const int CacheSize = 3;
+        private sealed class CacheEntry
+        {
+            public ulong key;
+            public Vector3[] registered;
+            public float[] confidence;
+            public float medianGap, p95Gap;
+            public string timing;
+        }
+        private static readonly List<CacheEntry> Cache = new List<CacheEntry>();
+
+        /// <summary>Forgets the registrations kept for reuse (tests timing a full run).</summary>
+        internal static void ClearCache() { lock (Cache) Cache.Clear(); }
+
+        // FNV-1a over the bits of every input the registration reads.
+        private static ulong Key(MeshSnapshot source, int[] sourceMasks, MeshSnapshot target, int[] targetMasks, Vector3[] start)
+        {
+            ulong hash = 14695981039346656037UL;
+            void Add(int value) { unchecked { hash = (hash ^ (uint)value) * 1099511628211UL; } }
+            void Vectors(Vector3[] values)
+            {
+                Add(values?.Length ?? -1);
+                if (values == null) return;
+                foreach (var v in values)
+                {
+                    Add(BitConverter.SingleToInt32Bits(v.x)); Add(BitConverter.SingleToInt32Bits(v.y)); Add(BitConverter.SingleToInt32Bits(v.z));
+                }
+            }
+            void Ints(int[] values) { Add(values?.Length ?? -1); if (values != null) foreach (int v in values) Add(v); }
+            void Flags(bool[] values) { Add(values?.Length ?? -1); if (values != null) for (int i = 0; i < values.Length; i++) if (values[i]) Add(i); }
+            Vectors(source.worldVertices); Ints(source.triangles); Flags(source.hiddenTriangles); Ints(sourceMasks);
+            Vectors(target.worldVertices); Ints(target.triangles); Flags(target.hiddenTriangles); Ints(targetMasks);
+            Vectors(start);
+            return hash;
+        }
+
+        private static ReFitBodyRegistration Compute(MeshSnapshot source, int[] sourceTriangleMasks, MeshSnapshot target, SurfaceBvh targetIndex,
+            int[] targetTriangleMasks, CancellationToken cancellation, Action<float> progress, Vector3[] start)
+        {
             int vertexCount = source.worldVertices.Length;
             var weld = Weld(source.worldVertices, out int nodeCount, out var nodeVertex);
             var nodes = new Vector3[nodeCount];
             for (int n = 0; n < nodeCount; n++) nodes[n] = source.worldVertices[nodeVertex[n]];
             var triangles = new int[source.triangles.Length];
             for (int i = 0; i < triangles.Length; i++) triangles[i] = weld[source.triangles[i]];
-            var neighbours = Neighbours(triangles, nodeCount);
+            var graph = Graph.Build(triangles, nodeCount);
 
             // A node's regions: every region of the triangles around it. Hidden skin (enclosed in another part) matches nothing.
             var masks = new int[nodeCount];
@@ -146,9 +215,14 @@ namespace Orbiters.ReFit
             var weights = new float[nodeCount];
             var targets = new Vector3[nodeCount];
             var position = new Vector3[nodeCount];
+            var faceNormals = target.FaceNormals ?? target.CacheFaceNormals();
+            var watch = System.Diagnostics.Stopwatch.StartNew();
+            double queryMs = 0, solveMs = 0;
+            int iterations = 0;
             for (int pass = 0; pass < Stiffness.Length; pass++)
             {
                 cancellation.ThrowIfCancellationRequested();
+                watch.Restart();
                 for (int n = 0; n < nodeCount; n++) position[n] = nodes[n] + move[n];
                 var normals = Normals(position, triangles);
                 float reach = Reach, falloff = Falloff[pass];
@@ -158,9 +232,7 @@ namespace Orbiters.ReFit
                     if (!visible[n] || normals[n] == Vector3.zero) return;
                     var p = position[n];
                     var normal = normals[n];
-                    int mask = masks[n];
-                    Func<int, bool> facing = t => Vector3.Dot(target.FaceNormal(t), normal) >= Facing &&
-                        (mask == 0 || targetTriangleMasks == null || targetTriangleMasks[t] == 0 || (targetTriangleMasks[t] & mask) != 0);
+                    var facing = new FacingFilter(faceNormals, normal, Facing, masks[n], targetTriangleMasks);
                     var nearest = targetIndex.ClosestPoint(p, reach, facing);
                     float limit = nearest.found ? Mathf.Min(reach, nearest.distance * AlongFactor + AlongSlack) : reach;
                     var outward = targetIndex.Raycast(p, normal, limit, facing);
@@ -168,12 +240,15 @@ namespace Orbiters.ReFit
                     var along = inward.found ? inward : outward;
                     SurfaceBvh.Hit hit = along.found ? along : nearest;
                     if (!hit.found) return;
-                    float agreement = Vector3.Dot(target.FaceNormal(hit.triangle), normal);
+                    float agreement = Vector3.Dot(faceNormals[hit.triangle], normal);
                     float d = hit.distance / falloff;
                     weights[n] = agreement * agreement * Mathf.Exp(-d * d);
                     targets[n] = hit.position - nodes[n];
                 });
-                Solve(move, weights, targets, neighbours, Stiffness[pass], cancellation);
+                queryMs += watch.Elapsed.TotalMilliseconds;
+                watch.Restart();
+                iterations += Solve(move, weights, targets, graph, Stiffness[pass], cancellation);
+                solveMs += watch.Elapsed.TotalMilliseconds;
                 progress?.Invoke((pass + 1f) / Stiffness.Length);
             }
 
@@ -195,79 +270,196 @@ namespace Orbiters.ReFit
             gaps.Sort();
             float median = gaps.Count > 0 ? gaps[gaps.Count / 2] : 0f;
             float p95 = gaps.Count > 0 ? gaps[Mathf.Min(gaps.Count - 1, (int)(gaps.Count * .95f))] : 0f;
-            var result = new ReFitBodyRegistration(source, registered, confidence, median, p95);
+            var result = new ReFitBodyRegistration(source, registered, confidence, median, p95)
+            {
+                timing = $"{nodeCount} skin points, {Stiffness.Length} passes: queries {queryMs:F0} ms, solves {solveMs:F0} ms ({iterations} iterations)",
+            };
             Captured?.Invoke(result, target);
             return result;
         }
 
-        // (W + stiffness L + Anchor I) x = W targets + Anchor x0, per axis, by conjugate gradients from the current move.
-        private static void Solve(Vector3[] move, float[] weights, Vector3[] targets, int[][] neighbours, float stiffness,
-            CancellationToken cancellation)
+        /// <summary>The welded skin's edges as compressed rows: the neighbours of node i are next[start[i] .. start[i + 1]).</summary>
+        private sealed class Graph
         {
-            int n = move.Length;
-            var diagonal = new float[n];
-            for (int i = 0; i < n; i++) diagonal[i] = weights[i] + stiffness * neighbours[i].Length + Anchor;
-            var anchor = (Vector3[])move.Clone();
-            var solved = new double[3][];
-            Parallel.For(0, 3, axis =>
+            public int[] start, next;
+
+            public static Graph Build(int[] triangles, int count)
             {
-                var x = solved[axis] = new double[n];
-                var b = new double[n];
-                for (int i = 0; i < n; i++)
-                {
-                    x[i] = move[i][axis];
-                    b[i] = weights[i] * targets[i][axis] + Anchor * anchor[i][axis];
-                }
-                var r = new double[n];
-                var z = new double[n];
-                var p = new double[n];
-                var q = new double[n];
-                Multiply(x, q, weights, neighbours, stiffness);
-                double rz = 0, norm = 0;
-                for (int i = 0; i < n; i++)
-                {
-                    r[i] = b[i] - q[i];
-                    z[i] = r[i] / diagonal[i];
-                    p[i] = z[i];
-                    rz += r[i] * z[i];
-                    norm += b[i] * b[i];
-                }
-                double tolerance = Math.Max(norm, 1e-20) * 1e-12;
-                for (int iteration = 0; iteration < SolverIterations && rz > 1e-30; iteration++)
-                {
-                    if ((iteration & 31) == 0 && cancellation.IsCancellationRequested) return;
-                    Multiply(p, q, weights, neighbours, stiffness);
-                    double pq = 0;
-                    for (int i = 0; i < n; i++) pq += p[i] * q[i];
-                    if (pq <= 0) break;
-                    double alpha = rz / pq, residual = 0, next = 0;
-                    for (int i = 0; i < n; i++)
+                var sets = new HashSet<int>[count];
+                for (int n = 0; n < count; n++) sets[n] = new HashSet<int>();
+                for (int t = 0; t + 2 < triangles.Length; t += 3)
+                    for (int k = 0; k < 3; k++)
                     {
-                        x[i] += alpha * p[i];
-                        r[i] -= alpha * q[i];
-                        residual += r[i] * r[i];
-                        z[i] = r[i] / diagonal[i];
-                        next += r[i] * z[i];
+                        int a = triangles[t + k], b = triangles[t + (k + 1) % 3];
+                        if (a == b) continue;
+                        sets[a].Add(b);
+                        sets[b].Add(a);
                     }
-                    if (residual < tolerance) break;
-                    double beta = next / rz;
-                    rz = next;
-                    for (int i = 0; i < n; i++) p[i] = z[i] + beta * p[i];
-                }
-            });
-            cancellation.ThrowIfCancellationRequested();
-            for (int i = 0; i < n; i++) move[i] = new Vector3((float)solved[0][i], (float)solved[1][i], (float)solved[2][i]);
+                var graph = new Graph { start = new int[count + 1] };
+                for (int n = 0; n < count; n++) graph.start[n + 1] = graph.start[n] + sets[n].Count;
+                graph.next = new int[graph.start[count]];
+                for (int n = 0; n < count; n++) sets[n].CopyTo(graph.next, graph.start[n]);
+                return graph;
+            }
+
+            public int Degree(int n) => start[n + 1] - start[n];
         }
 
-        private static void Multiply(double[] x, double[] result, float[] weights, int[][] neighbours, float stiffness)
+        // Nodes are worked in this many ranges per core: enough to balance, few enough to keep the hand-offs cheap.
+        private const int RangesPerCore = 4;
+
+        /// <summary>
+        /// (W + stiffness L + Anchor I) x = W targets + Anchor x0, the three axes at once (each its own conjugate gradients, from the
+        /// current move), node ranges in parallel. Returns the iterations taken by the slowest axis.
+        /// </summary>
+        private static int Solve(Vector3[] move, float[] weights, Vector3[] targets, Graph graph, float stiffness, CancellationToken cancellation)
         {
-            for (int i = 0; i < x.Length; i++)
+            int n = move.Length;
+            int ranges = Math.Max(1, Math.Min(n / 512 + 1, Environment.ProcessorCount * RangesPerCore));
+            int span = (n + ranges - 1) / ranges;
+            // Interleaved by axis: [3i + axis].
+            var x = new double[3 * n];
+            var b = new double[3 * n];
+            var r = new double[3 * n];
+            var z = new double[3 * n];
+            var p = new double[3 * n];
+            var q = new double[3 * n];
+            var diagonal = new double[n];
+            var partial = new double[ranges * 3 * 3];
+            for (int i = 0; i < n; i++)
             {
-                var around = neighbours[i];
-                double sum = 0;
-                for (int k = 0; k < around.Length; k++) sum += x[i] - x[around[k]];
-                result[i] = (weights[i] + Anchor) * x[i] + stiffness * sum;
+                diagonal[i] = weights[i] + stiffness * graph.Degree(i) + Anchor;
+                for (int axis = 0; axis < 3; axis++)
+                {
+                    x[3 * i + axis] = move[i][axis];
+                    b[3 * i + axis] = weights[i] * targets[i][axis] + Anchor * move[i][axis];
+                }
             }
+
+            void Multiply(double[] input, double[] output, bool dot)
+            {
+                Parallel.For(0, ranges, range =>
+                {
+                    double d0 = 0, d1 = 0, d2 = 0;
+                    int end = Math.Min(n, (range + 1) * span);
+                    for (int i = range * span; i < end; i++)
+                    {
+                        double s0 = 0, s1 = 0, s2 = 0;
+                        for (int e = graph.start[i]; e < graph.start[i + 1]; e++)
+                        {
+                            int j = 3 * graph.next[e];
+                            s0 += input[j]; s1 += input[j + 1]; s2 += input[j + 2];
+                        }
+                        double self = weights[i] + Anchor + stiffness * (graph.start[i + 1] - graph.start[i]);
+                        int k = 3 * i;
+                        double o0 = output[k] = self * input[k] - stiffness * s0;
+                        double o1 = output[k + 1] = self * input[k + 1] - stiffness * s1;
+                        double o2 = output[k + 2] = self * input[k + 2] - stiffness * s2;
+                        if (dot) { d0 += input[k] * o0; d1 += input[k + 1] * o1; d2 += input[k + 2] * o2; }
+                    }
+                    int at = range * 9;
+                    partial[at] = d0; partial[at + 1] = d1; partial[at + 2] = d2;
+                });
+            }
+
+            double[] Sum(int slot)
+            {
+                var total = new double[3];
+                for (int range = 0; range < ranges; range++)
+                    for (int axis = 0; axis < 3; axis++) total[axis] += partial[range * 9 + slot * 3 + axis];
+                return total;
+            }
+
+            // r = b - A x, z = r / diag, p = z; rz and |b|² per axis.
+            Multiply(x, q, false);
+            Parallel.For(0, ranges, range =>
+            {
+                double rz0 = 0, rz1 = 0, rz2 = 0, b0 = 0, b1 = 0, b2 = 0;
+                int end = Math.Min(n, (range + 1) * span);
+                for (int i = range * span; i < end; i++)
+                {
+                    double inverse = 1.0 / diagonal[i];
+                    for (int axis = 0; axis < 3; axis++)
+                    {
+                        int k = 3 * i + axis;
+                        r[k] = b[k] - q[k];
+                        z[k] = r[k] * inverse;
+                        p[k] = z[k];
+                    }
+                    rz0 += r[3 * i] * z[3 * i]; rz1 += r[3 * i + 1] * z[3 * i + 1]; rz2 += r[3 * i + 2] * z[3 * i + 2];
+                    b0 += b[3 * i] * b[3 * i]; b1 += b[3 * i + 1] * b[3 * i + 1]; b2 += b[3 * i + 2] * b[3 * i + 2];
+                }
+                int at = range * 9;
+                partial[at] = rz0; partial[at + 1] = rz1; partial[at + 2] = rz2;
+                partial[at + 3] = b0; partial[at + 4] = b1; partial[at + 5] = b2;
+            });
+            var rz = Sum(0);
+            var norm = Sum(1);
+            var tolerance = new double[3];
+            var active = new bool[3];
+            for (int axis = 0; axis < 3; axis++)
+            {
+                tolerance[axis] = Math.Max(norm[axis], 1e-20) * 1e-12;
+                active[axis] = rz[axis] > 1e-30;
+            }
+            var alpha = new double[3];
+            var beta = new double[3];
+            int iteration = 0;
+            for (; iteration < SolverIterations && (active[0] || active[1] || active[2]); iteration++)
+            {
+                if ((iteration & 31) == 0 && cancellation.IsCancellationRequested) break;
+                Multiply(p, q, true);
+                var pq = Sum(0);
+                for (int axis = 0; axis < 3; axis++)
+                {
+                    if (active[axis] && pq[axis] <= 0) active[axis] = false;
+                    alpha[axis] = active[axis] ? rz[axis] / pq[axis] : 0;
+                }
+                Parallel.For(0, ranges, range =>
+                {
+                    double res0 = 0, res1 = 0, res2 = 0, next0 = 0, next1 = 0, next2 = 0;
+                    int end = Math.Min(n, (range + 1) * span);
+                    for (int i = range * span; i < end; i++)
+                    {
+                        double inverse = 1.0 / diagonal[i];
+                        int k = 3 * i;
+                        x[k] += alpha[0] * p[k]; r[k] -= alpha[0] * q[k]; z[k] = r[k] * inverse;
+                        x[k + 1] += alpha[1] * p[k + 1]; r[k + 1] -= alpha[1] * q[k + 1]; z[k + 1] = r[k + 1] * inverse;
+                        x[k + 2] += alpha[2] * p[k + 2]; r[k + 2] -= alpha[2] * q[k + 2]; z[k + 2] = r[k + 2] * inverse;
+                        res0 += r[k] * r[k]; res1 += r[k + 1] * r[k + 1]; res2 += r[k + 2] * r[k + 2];
+                        next0 += r[k] * z[k]; next1 += r[k + 1] * z[k + 1]; next2 += r[k + 2] * z[k + 2];
+                    }
+                    int at = range * 9;
+                    partial[at] = res0; partial[at + 1] = res1; partial[at + 2] = res2;
+                    partial[at + 3] = next0; partial[at + 4] = next1; partial[at + 5] = next2;
+                });
+                var residual = Sum(0);
+                var next = Sum(1);
+                for (int axis = 0; axis < 3; axis++)
+                {
+                    beta[axis] = 0;
+                    if (!active[axis]) continue;
+                    if (residual[axis] < tolerance[axis]) { active[axis] = false; continue; }
+                    beta[axis] = next[axis] / rz[axis];
+                    rz[axis] = next[axis];
+                    if (rz[axis] <= 1e-30) active[axis] = false;
+                }
+                if (!(active[0] || active[1] || active[2])) { iteration++; break; }
+                Parallel.For(0, ranges, range =>
+                {
+                    int end = Math.Min(n, (range + 1) * span);
+                    for (int i = range * span; i < end; i++)
+                    {
+                        int k = 3 * i;
+                        if (active[0]) p[k] = z[k] + beta[0] * p[k];
+                        if (active[1]) p[k + 1] = z[k + 1] + beta[1] * p[k + 1];
+                        if (active[2]) p[k + 2] = z[k + 2] + beta[2] * p[k + 2];
+                    }
+                });
+            }
+            cancellation.ThrowIfCancellationRequested();
+            for (int i = 0; i < n; i++) move[i] = new Vector3((float)x[3 * i], (float)x[3 * i + 1], (float)x[3 * i + 2]);
+            return iteration;
         }
 
         // Vertices at the same place (UV and normal seams) are one node.
@@ -289,27 +481,6 @@ namespace Orbiters.ReFit
             count = firsts.Count;
             first = firsts.ToArray();
             return map;
-        }
-
-        private static int[][] Neighbours(int[] triangles, int count)
-        {
-            var sets = new HashSet<int>[count];
-            for (int n = 0; n < count; n++) sets[n] = new HashSet<int>();
-            for (int t = 0; t + 2 < triangles.Length; t += 3)
-                for (int k = 0; k < 3; k++)
-                {
-                    int a = triangles[t + k], b = triangles[t + (k + 1) % 3];
-                    if (a == b) continue;
-                    sets[a].Add(b);
-                    sets[b].Add(a);
-                }
-            var result = new int[count][];
-            for (int n = 0; n < count; n++)
-            {
-                result[n] = new int[sets[n].Count];
-                sets[n].CopyTo(result[n]);
-            }
-            return result;
         }
 
         private static Vector3[] Normals(Vector3[] positions, int[] triangles)

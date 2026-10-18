@@ -1,5 +1,68 @@
 # Validation Records
 
+## 2026-10-18: Speed, Motion Check, Inpainted Weights and Kept Fits (0.7.0)
+
+`ReFitRegressionSuite` replays the 23 cases whose assets are in the project (Novabeast latex on the Hypernova, LunaVRC
+Classy and Comfy on the Ultinova, the Rexouium jacket on the Ultirex, the hoodie, the FashionSuit pieces on the Marvii
+edit, the jockstrap, the onesie and the authored FBX fixture), one per editor update, and lines two runs up
+(`Compare`). "Before" is 0.6.0 on the same project (`Library/ReFitTests/regression/base_all.tsv`), "after" this release
+(`opt5.tsv`).
+
+Engine time over all cases: 303.4 s before, 159.0 s after (48 % less). Per case (s): catsuit 10.7 to 7.1, corset 14.6
+to 5.7, panties 5.2 to 1.8, legs 6.7 to 3.0, arms 5.3 to 2.0, sleeve top 6.2 to 2.5, collar 5.2 to 1.8, turtleneck 11.3
+to 5.7, Classy pants 14.4 to 10.3, chain 26.7 to 11.1, sweater 11.4 to 7.5, sweats 13.0 to 7.5, tank top 7.9 to 3.4,
+Rexouium jacket 58.3 to 20.4, hoodie 12.9 to 9.0, suit jacket 14.8 to 8.8, suit pants 7.5 to 4.8, vest 21.6 to 14.3,
+tie and bow tie 3.1 to 2.2, jockstrap 8.0 to 3.0, onesie 35.1 to 24.8. Where it came from, measured step by step:
+the bodies laid onto each other kept between refits (2.3 s per Novabeast piece after the first); the cloth drape looking
+for covered skin among the covered triangles only (chain 20.8 to 11.0 s: 162 covered skin points behind 6 cm searches
+through the whole body); the coverage regularization re-testing only the limits whose groups moved (vest 20.2 to 14.2 s,
+onesie 33.0 to 24.7 s, identical output); struct query filters over cached face normals; a quickselect median in the
+hierarchy build; the registration's three axes solved together in parallel.
+
+Geometry at rest and with shapes is unchanged or better on 20 cases (sleeve top 55 to 44 samples over 3 mm, collar 60 to
+50, catsuit shape lag 300 to 284). The Classy chain went from 6775 samples over 3 mm to 4584: its links now turn with the
+skin (capped at 30 degrees; uncapped, 1043 triangles flipped). A few counts moved by a handful of samples in either
+direction (collar with shapes 68 to 78, Classy pants with shapes 205 to 210, sweats with both shapes 28 to 50, the
+worst points unchanged): the samples are signed by the nearest body face, and the new hierarchy layout breaks distance
+ties differently; the fits themselves were checked identical where the path did not change (the sweats' fit vertex by
+vertex). The onesie, fitted by the different-base passes, moved the same way (1164 to 1249 over 3 mm, both badly
+clipped: it is a body far from its base).
+
+The Rexouium jacket on the Ultirex is the change worth seeing. 0.6.0 refused the registration (68 % of the jacket
+disagreed with the skin met along the source normal: the Ultirex's feathers) although it laid the source within 0.7 mm
+(95 % within 8.8 mm), and fell back to the different-base passes: 2337 spikes over 5 mm (72 mm), 9554 stretched
+triangles, edges stretched 3.5 times at the 95th percentile, a torn collar and spiky shoulders in the renders. The
+registration is now trusted where it reaches the target under the clothing: 12 spikes (10.8 mm), 961 stretched
+triangles, edges 1.25 times at the 95th percentile, a whole collar and smooth sleeves front and back, in 20 s instead
+of 58. Its samples over 3 mm read 121 to 227, but none of the 24 deepest is inside the body by winding number (10 of 24
+before): they lie under the Ultirex's back feathers.
+
+Skin weights inpainted (`inpaintSkinningChange`, on): with it off, the jockstrap's crouch clipping is 202 samples over
+3 mm, on 158 (0.6.0: 188); the tank top's crouch with shapes 73 off, 65 on. Weight tears (a bone's weight jumping by
+more than 0.35 along an edge) are back to 0.6.0's on the sweater (86) and tank top (23) once the Laplacian was made
+the cotangent one (an earlier draft weighed each edge by an angle beside it); the jockstrap has 67 (51) and the jacket
+20 (13). On a 150 by 60 tube with known ends the fill stays within 0 to 1, monotone, the same around each ring, in 163 ms
+for 7800 unknowns.
+
+In motion: on the jockstrap (Ultinova paw, skeleton-bound) nothing comes through with the arms posed; the steps and
+the crouch bring 82 to 153 skin points through, up to 30 mm, and the crouch render shows the raised thighs swallowing
+the pouch. The latex sleeve top has up to 9.5 mm at the chest and shoulders with the arms down or forward. A planned
+shrink takes the points through over all poses from 199 to 126 (sleeve top) and 381 to 253 (jockstrap); it is
+conservative by design (a move that takes skin through in another pose is shortened, never kept). The motion columns
+of the replay are meaningful only where the clothing follows the avatar as built: the hoodie, the onesie and the suit
+pieces are model files without their outfit's Armature Links, posed apart from the body (up to 915 mm).
+
+Push out: on the turtleneck 264 fabric points inside the body went to 120 after 157 automatic brush steps (3 ms each);
+the field over the piece (306 x 145 x 93 cells of 4.6 mm) took 13 s to build until the border cells' search for the
+skin went parallel and bounded (4 s), and is now built on a worker thread (the brush starts in 35 ms).
+
+Tests: ReFit's ReFitQueryAndRigidTests, ReFitWeightInpaintingTests, ReFitSyntheticTests, ReFitPlacementTests and Orbiters
+Toolkit's RefitKeptFitsAndShrinkTests (kept fits, the build's pick-one menu with VRCFury's toggles, the body shrink
+following the clothing's toggle on a build copy), RefitRecordsTests and RefitBuildTests: 49 passed. Deterministic suite
+(stepped runner): 86 passed, 2 opt-in scene/VRCFury checks skipped, the window run test passing in its own log scope.
+The result page's new cards were captured in a hidden window on a refit staged in a preview scene
+(`ReFitWizardPreview`).
+
 ## 2026-10-16: Prefab Outfits, Body Registration and Cloth Fit (0.6.0)
 
 Three reports: VRCFury outfits had to be unpacked and then "freaked out" once refitted; the Novabeast latex clothing

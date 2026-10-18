@@ -33,6 +33,9 @@ namespace Orbiters.ReFit
         private const int RebuildEvery = 16;
 
         private readonly MeshSnapshot asset;
+        // Of clothing made for another body: its sleeve and leg points away from the hems, and the skin found through them.
+        private readonly int limbGroups;
+        private int limbCovered;
         private readonly bool[] authoredUnder, fixedGroups, details, rings;
         // Where each group was made, on the body it was made for (as authored, or as fitted for shapes added to a fit).
         private readonly Vector3[] made;
@@ -69,8 +72,15 @@ namespace Orbiters.ReFit
         /// <param name="hidden">Clipped groups covered by the clothing's own fabric: left where they are.</param>
         /// <param name="targetRegions">The target body's triangle regions, or null.</param>
         /// <param name="tubes">Closed rings (<see cref="ReFitTubeField"/>), or null.</param>
+        /// <param name="madeForAnother">
+        /// The source's triangle regions when the clothing was made for another body than <paramref name="source"/> and resized
+        /// onto it, else null. An arm or a leg larger than its sleeve or leg came through it there, never meant to, and is
+        /// covered by it (away from its hem): fabric lying over a limb of the source, whatever bone moves it (a pair of shorts is
+        /// often skinned to the hips down to the knees). The torso keeps the authored rule: skin through a panel there is as
+        /// often a hip below a hem or a neck in a collar.
+        /// </param>
         public ReFitDrape(MeshSnapshot asset, Vector3[] rest, MeshSnapshot source, SurfaceBvh sourceIndex, MeshSnapshot target, BodyRegion[] targetRegions,
-            BodyRegion[] regions, bool[] tubes, bool[] hidden)
+            BodyRegion[] regions, bool[] tubes, bool[] hidden, BodyRegion[] madeForAnother = null)
         {
             this.asset = asset;
             groupRegions = regions;
@@ -103,8 +113,18 @@ namespace Orbiters.ReFit
             }
             var under = authoredUnder;
             var targetIndex = SurfaceBvh.Build(target);
+            // Of clothing made for another body, a sleeve or a leg away from its hem never stays under the skin.
+            var fabricPart = madeForAnother != null ? LimbFabric(asset, made, source, sourceIndex, madeForAnother) : null;
+            bool[] limbFabric = null;
+            if (fabricPart != null)
+            {
+                limbFabric = new bool[fabricPart.Length];
+                for (int g = 0; g < fabricPart.Length; g++) limbFabric[g] = IsLimb(fabricPart[g]);
+            }
+            if (limbFabric != null) foreach (bool limb in limbFabric) if (limb) limbGroups++;
             Parallel.For(0, asset.GroupCount, g =>
             {
+                if (limbFabric != null && limbFabric[g]) return;
                 int rep = asset.groupRep[g];
                 var normal = madeNormals[rep];
                 if (normal.sqrMagnitude < 1e-12f) return;
@@ -118,38 +138,62 @@ namespace Orbiters.ReFit
             var authoredNormals = authored.CacheFaceNormals();
             var sourceNormals = source.FaceNormals ?? source.CacheFaceNormals();
             var authoredIndex = SurfaceBvh.Build(authored);
-            // Source skin at a point, turned up: under the fabric as authored, and not through it (fluff, a tail).
-            bool Covered(Vector3 position, Vector3 up)
+            // Source skin at a point, turned up: under the fabric as authored, and not through it (fluff, a tail). Of clothing
+            // made for another body, skin of a limb through the fabric of that limb is covered too.
+            bool Covered(Vector3 position, Vector3 up, BodyRegion region)
             {
                 var facing = new FacingFilter(authoredNormals, up, Facing);
                 bool under = authoredIndex.Raycast(position + up * .0005f, up, AuthoredCover, facing).found;
                 // In a fold of the body (the gluteal crease) the skin faces other skin, and the fabric bridges the fold.
                 if (!under && sourceIndex.Raycast(position + up * .001f, up, AuthoredCover, FacingFilter.Against(sourceNormals, up)).found)
                     under = authoredIndex.ClosestPoint(position, FoldCover).found;
+                if (!under && limbFabric != null && IsLimb(region) && Through(position, up, facing, region))
+                {
+                    Interlocked.Increment(ref limbCovered);
+                    return true;
+                }
                 if (!under || !authoredIndex.Raycast(position - up * .0005f, -up, Reach, facing).found) return under;
                 // Through the fabric where another part of the source hides it, one the target lacks (the base's tail
                 // over the gluteal crease): the target shows that skin, so it is covered.
                 var over = sourceIndex.Raycast(position + up * .001f, up, AuthoredCover, FacingFilter.Against(sourceNormals, up));
                 return over.found && !targetIndex.ClosestPoint(over.position, Unmatched).found;
             }
+            // Through the fabric: fabric over the same limb, away from its hem, lies beneath the skin turned its way, inside the limb.
+            bool Through(Vector3 position, Vector3 up, FacingFilter facing, BodyRegion region)
+            {
+                var origin = position - up * .0005f;
+                var fabric = authoredIndex.Raycast(origin, -up, LimbReach, facing);
+                if (!fabric.found || sourceIndex.Raycast(origin, -up, fabric.distance, FacingFilter.Against(sourceNormals, up)).found) return false;
+                int t3 = fabric.triangle * 3;
+                for (int k = 0; k < 3; k++)
+                    if (fabricPart[asset.groupOfVertex[asset.triangles[t3 + k]]] != region) return false;
+                return true;
+            }
             var cover = covered;
             var enclosed = target.HiddenVertices();
             var macro = MacroNormals(target.worldNormals, neighbours);
             var decided = new bool[cover.Length];
             var head = new bool[cover.Length];
+            // Each target vertex's part of the body (one of its triangles'), for the limbs' fabric.
+            var part = new BodyRegion[cover.Length];
+            for (int v = 0; v < part.Length; v++) part[v] = BodyRegion.Unknown;
             if (targetRegions != null)
                 for (int t = 0; t < targetRegions.Length; t++)
-                    if (targetRegions[t] == BodyRegion.Head)
-                        for (int k = 0; k < 3; k++) head[target.triangles[t * 3 + k]] = true;
+                    for (int k = 0; k < 3; k++)
+                    {
+                        int v = target.triangles[t * 3 + k];
+                        if (targetRegions[t] == BodyRegion.Head) head[v] = true;
+                        if (part[v] == BodyRegion.Unknown) part[v] = targetRegions[t];
+                    }
             Parallel.For(0, cover.Length, i =>
             {
                 if (enclosed != null && enclosed[i]) return;
                 var point = target.worldVertices[i];
                 var normal = target.worldNormals[i];
-                var own = CounterpartCovered(point, normal);
+                var own = CounterpartCovered(point, normal, part[i]);
                 // A wall of a fold (the gluteal crease) is seen along the fold's opening: the normal of the skin around it.
                 var opening = own != true && Vector3.Dot(macro[i], normal) < MacroDifference && FoldWall(target, targetIndex, i)
-                    ? CounterpartCovered(point, macro[i]) : null;
+                    ? CounterpartCovered(point, macro[i], part[i]) : null;
                 cover[i] = own == true || opening == true;
                 // Without a counterpart, skin of the head (a mane larger than the base's) is out of the clothing; other skin
                 // (buttocks reaching far behind the base's) takes the decision of the skin around it.
@@ -158,25 +202,25 @@ namespace Orbiters.ReFit
             Inherit(cover, decided, enclosed, neighbours);
 
             // Whether the source's counterpart of target skin (at point, turned normal) was covered, null without one.
-            bool? CounterpartCovered(Vector3 point, Vector3 normal)
+            bool? CounterpartCovered(Vector3 point, Vector3 normal, BodyRegion region)
             {
                 Func<int, bool> same = t => Vector3.Dot(source.FaceNormal(t), normal) >= .5f;
                 var counterpart = sourceIndex.ClosestPoint(point, Overlap, same);
-                if (counterpart.found) return Covered(counterpart.position, source.FaceNormal(counterpart.triangle));
+                if (counterpart.found) return Covered(counterpart.position, source.FaceNormal(counterpart.triangle), region);
                 // The target is smaller here: the source skin just outside it.
                 var outward = sourceIndex.Raycast(point, normal, Shrink, same);
                 var inward = sourceIndex.Raycast(point, -normal, CounterpartReach, same);
                 if (outward.found && (!inward.found || outward.distance < inward.distance))
-                    return Covered(outward.position, source.FaceNormal(outward.triangle));
+                    return Covered(outward.position, source.FaceNormal(outward.triangle), region);
                 if (!inward.found)
                 {
                     // Skin turned unlike any source skin around it: the nearest, where the bodies nearly meet.
                     var nearest = sourceIndex.ClosestPoint(point, 2 * Overlap);
-                    return nearest.found ? Covered(nearest.position, source.FaceNormal(nearest.triangle)) : (bool?)null;
+                    return nearest.found ? Covered(nearest.position, source.FaceNormal(nearest.triangle), region) : (bool?)null;
                 }
                 for (int hop = 0; hop < CounterpartHops && inward.found; hop++)
                 {
-                    bool covers = Covered(inward.position, source.FaceNormal(inward.triangle));
+                    bool covers = Covered(inward.position, source.FaceNormal(inward.triangle), region);
                     // A part of the source out of the clothing deep inside the target (the base's tail inside larger
                     // buttocks) has no counterpart on the target: look past it.
                     if (covers || targetIndex.ClosestPoint(inward.position, Unmatched).found) return covers;
@@ -186,6 +230,57 @@ namespace Orbiters.ReFit
                 return null;
             }
             FillHoles(cover, enclosed, neighbours);
+        }
+
+        // How far along the fabric from a hem (an open edge) a sleeve or a leg keeps what lay under the skin as made: a cuff sunk
+        // into a larger arm looks like a tight cuff, and pushed out the hem flares. How deep under a limb's skin its fabric is
+        // looked for.
+        private const float HemBand = .03f, LimbReach = .06f;
+
+        private static bool IsLimb(BodyRegion region) =>
+            region == BodyRegion.LeftArm || region == BodyRegion.RightArm || region == BodyRegion.LeftLeg || region == BodyRegion.RightLeg;
+
+        // The limb of the source each group lay over as made (its nearest skin's region), for groups farther than HemBand along
+        // the fabric from an open edge (an edge of a single triangle); Unknown for the others.
+        private static BodyRegion[] LimbFabric(MeshSnapshot asset, Vector3[] made, MeshSnapshot source, SurfaceBvh sourceIndex, BodyRegion[] sourceRegions)
+        {
+            var counts = new Dictionary<(int, int), int>();
+            for (int t = 0; t + 2 < asset.triangles.Length; t += 3)
+                for (int k = 0; k < 3; k++)
+                {
+                    int a = asset.groupOfVertex[asset.triangles[t + k]], b = asset.groupOfVertex[asset.triangles[t + (k + 1) % 3]];
+                    if (a == b) continue;
+                    var key = (Math.Min(a, b), Math.Max(a, b));
+                    counts.TryGetValue(key, out int n);
+                    counts[key] = n + 1;
+                }
+            var distance = new float[asset.GroupCount];
+            for (int g = 0; g < distance.Length; g++) distance[g] = float.MaxValue;
+            var queue = new Queue<int>();
+            foreach (var pair in counts)
+            {
+                if (pair.Value != 1) continue;
+                foreach (int g in new[] { pair.Key.Item1, pair.Key.Item2 })
+                    if (distance[g] > 0f) { distance[g] = 0f; queue.Enqueue(g); }
+            }
+            while (queue.Count > 0)
+            {
+                int g = queue.Dequeue();
+                foreach (int n in asset.groupAdjacency[g])
+                {
+                    float d = distance[g] + (made[g] - made[n]).magnitude;
+                    if (d < distance[n] && d <= HemBand) { distance[n] = d; queue.Enqueue(n); }
+                }
+            }
+            var part = new BodyRegion[distance.Length];
+            Parallel.For(0, part.Length, g =>
+            {
+                part[g] = BodyRegion.Unknown;
+                if (distance[g] <= HemBand) return;
+                var nearest = sourceIndex.ClosestPoint(made[g], LimbReach);
+                if (nearest.found && nearest.triangle < sourceRegions.Length && IsLimb(sourceRegions[nearest.triangle])) part[g] = sourceRegions[nearest.triangle];
+            });
+            return part;
         }
 
         // Counterparts are noisy where the bodies differ most (around a grown breast, over a source fold): skin mostly
@@ -427,7 +522,8 @@ namespace Orbiters.ReFit
             for (int g = 0; g < groups; g++) { deltas[g] += push[g]; largest = Mathf.Max(largest, push[g].magnitude); }
             if (first > 0 || largest > 0)
                 report?.Info("drape", $"{label}: {first} skin vertices showed through the clothing (deepest {firstDeepest * 1000:F1}mm); " +
-                                      $"draped the fabric out up to {largest * 1000:F1}mm; {exposed} left (deepest {deepest * 1000:F1}mm).");
+                                      $"draped the fabric out up to {largest * 1000:F1}mm; {exposed} left (deepest {deepest * 1000:F1}mm)" +
+                                      (limbGroups > 0 ? $"; {limbCovered} skin points covered through {limbGroups} sleeve and leg points." : "."));
             if (exposed > 0 && deepest > .003f)
                 report?.Warn("drape-limited", $"{label}: {exposed} skin vertices still show through the clothing, up to {deepest * 1000:F1}mm. " +
                                               "Inspect the garment at individual and combined shape weights.");

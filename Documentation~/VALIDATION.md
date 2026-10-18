@@ -1,5 +1,61 @@
 # Validation Records
 
+## 2026-10-18: Clothing Made for Another Body on the Custom Bases (0.7.0)
+
+Reported: the Rexouium FishingOutfit put on an Ultipaw by My Avatar (resized to 91 %) and refitted from the original base
+with the muscles on came out half fitted, skin through the sleeves, the shorts and around the vest. Nine cases replay it
+(`ReFitCaseValidation.CustomBaseCases`): its shirt, shorts and vest (over the shirt, fitted first) on the Ultipaw, the
+Ultinova and the Ultirex, each with its custom base's default shapes (the muscles at 100) and following its muscle
+shapes, placed as My Avatar places it (`AttachmentFit` onto the avatar, then the line-up with the original base) and
+refitted as Orbiters Toolkit asks (armature kept, default tightness, coverage when `ClothingCoverage` asks for it). The
+regression table gains the clothing vertices more than 3 mm under the body however they were authored (`restUnder3mm`,
+`bareUnder3mm` without the followed shapes, `shapeUnder3mm`): the older count leaves out what already lay under the body
+as made, which for clothing made for another body is the whole problem.
+
+Vertices under the body with the default shapes on, 0.7.0 as first committed then now: Ultipaw shirt 760 to 30, shorts
+1159 to 22, vest 1216 to 14 (59 under the shirt); Ultinova shirt 545 to 153, shorts 3177 to 337, vest 789 to 677;
+Ultirex shirt 426 to 125, shorts 859 to 177, vest 466 to 82. In pictures the Ultipaw outfit sits where it should, collar
+at the neck, back and thighs covered, the vest over the shirt; the Ultinova and Ultirex outfits likewise, the Ultinova's
+mane and the Ultirex's dorsal spikes through them (the avatars' own parts).
+
+What did it, in order of weight:
+- Placement (My Avatar 0.9.10, Orbiters Toolkit 0.3.24). The Ultipaw's armature stands 8 cm above the Masculine Canine's
+  on the same body (hips, spine and legs; neck 3 cm, shoulders 1 cm). My Avatar aligned the outfit to it, and its line-up
+  with the original base did nothing: the original imports without a humanoid avatar, so the preview had no hips. Fitted
+  onto the original's armature bone by bone, the Ultipaw shirt went from 203 vertices under the body to 46.
+- Coverage after the cloth fit. The cloth fit keeps what came through the fabric as authored, and since 0.6.0 took the
+  place of the different-base passes: clothing made for another body kept all its clipping. Clothing over 10 % of which,
+  near the skin, lay more than 5 mm under the source as authored (Ultipaw 30 to 43 %, Ultinova 14 to 66 %) is now covered
+  by those passes after the cloth fit: Ultipaw shorts 1159 to 42, vest 1216 to 0 before the placement fix. A limb through
+  its own sleeve or leg is covered too, away from the hems: Ultipaw shirt 46 to 3.
+- The star pose. The coverage spread the thighs by 20 degrees on the staged copies; the FishingOutfit's shorts are skinned
+  to the hips down the thighs (2062 of their 6018 thigh-weighted vertices under half), so their inner legs stayed where
+  the spread thighs were and the thighs came back through them: 251 vertices, 22 without the spread. Thighs are spread
+  now only when they meet (the ThiccWiker's: 31 points within 1 cm facing each other; the Ultipaw's: none, once the
+  hundreds of vertices its crotch gathers into one point on the middle are left out).
+- The head left out of the cloth fit's unreached-skin guard: on the Ultirex 2 to 3 % of the skin "under" the shirt was the
+  muzzle by its collar, and the cloth fit gave way to the projection passes.
+- The target fitted as it shows (shapes it does not follow at their weight): on the replayed Ultinova outfits the
+  turtleneck clips less (218 to 183 samples at rest, 210 to 155 with the shapes), the sweater and the tank top slightly
+  less at rest, the Classy pants' motion check counts more skin through (441 to 708 points), the chain 4584 to 4642.
+
+Tried and rejected: covering skin through the fabric on the torso as well (any panel over the skin it came through): the
+Ultinova shirt's hem was pulled over the crotch like a leotard and the Ultipaw collar pushed out into a turtleneck. Limbs
+only, farther than 3 cm from a hem.
+
+The other replayed cases are unchanged (geometry identical; engine times 10 to 15 % higher in that run for every case,
+the untouched latex ones included: a cold cache of bodies laid onto each other and machine load). Tests: 102 of the
+listed ReFit, Orbiters Toolkit and My Avatar classes through the stepped runner, the window run in its own log scope.
+
+Found on the way: Orbiters Toolkit's `HiddenAvatarCopy` of an object never saved (the replays' own hidden copies, for the
+motion check) landed in the open scene and stayed there: 142 copies in the open scene after the day's runs, removed
+(never saved). It stays in its preview scene now.
+
+Still open: the Ultinova vest keeps 677 vertices under the body (around the mane and the collar) and 120 under the shirt,
+the Ultirex vest 327 under the shirt;
+garments are kept in layer order only with the coverage; the cloth fit's shape drapes stop after 48 passes with 50 to 300
+fabric points still pushed.
+
 ## 2026-10-18: Speed, Motion Check, Inpainted Weights and Kept Fits (0.7.0)
 
 `ReFitRegressionSuite` replays the 23 cases whose assets are in the project (Novabeast latex on the Hypernova, LunaVRC

@@ -41,8 +41,18 @@ namespace Orbiters.ReFit
         // Rays out of the skin looking for fabric: straight out, and tilted this much (radians) around it.
         private const float RayTilt = .45f;
 
+        /// <summary>Debug (tests only): what the fit found of the target's coverage.</summary>
+        internal sealed class CoverageDebug
+        {
+            /// <summary>Per target vertex: covered, without a source counterpart, and that counterpart on the source.</summary>
+            public bool[] covered, unmatched;
+            public Vector3[] counterpartPoint, counterpartNormal;
+            /// <summary>The clothing as authored (its welded groups) and the target as fitted on.</summary>
+            public MeshSnapshot authored, target;
+        }
+
         /// <summary>Debug: the target vertices the fit found covered and without a source counterpart (tests only).</summary>
-        internal static Action<bool[], bool[]> CoverageCaptured;
+        internal static Action<CoverageDebug> CoverageCaptured;
         // Pieces this small (a button, a stud) move as one.
         private const float DetailExtent = .03f;
 
@@ -117,8 +127,9 @@ namespace Orbiters.ReFit
         /// skin under the clothing has no counterpart on the source (the caller fits it another way). <paramref name="falloff"/>
         /// scales the motion along the body (accessories far from the skin), never the drape.
         /// </summary>
+        /// <param name="targetRegions">The target's triangle regions, or null: skin of the head near a collar is not under it.</param>
         public Vector3[] Fit(MeshSnapshot source, int[] sourceTriangleMasks, ReFitBodyRegistration registration, MeshSnapshot target,
-            SurfaceBvh targetIndex, float[] falloff, ReFitReport report, Action<float> progress)
+            SurfaceBvh targetIndex, BodyRegion[] targetRegions, float[] falloff, ReFitReport report, Action<float> progress)
         {
             var authored = new Vector3[groupCount];
             for (int g = 0; g < groupCount; g++) authored[g] = asset.worldVertices[asset.groupRep[g]];
@@ -182,7 +193,8 @@ namespace Orbiters.ReFit
                 counterpartNormal[t] = sn;
             });
             progress?.Invoke(.4f);
-            CoverageCaptured?.Invoke(covered, unmatched);
+            CoverageCaptured?.Invoke(new CoverageDebug { covered = covered, unmatched = unmatched, counterpartPoint = counterpartPoint,
+                counterpartNormal = counterpartNormal, authored = authoredSurface, target = target });
 
             // 3. The drape over the target.
             // What came through the fabric as authored stays allowed: coarse fabric sags into a curved body between its
@@ -192,13 +204,20 @@ namespace Orbiters.ReFit
             var under = new bool[targetCount];
             Parallel.For(0, targetCount, t => under[t] = (hidden == null || !hidden[t]) && startIndex.ClosestPoint(target.worldVertices[t], CoverReach).found);
             // Skin the source lacks on the target's main surface (not fluff, horns or hair: parts of their own) under the clothing.
+            // The head is not under it: a muzzle or a mane of another shape lies within reach of a collar, and the clothing never
+            // covers it.
+            var head = new bool[targetCount];
+            if (targetRegions != null)
+                for (int tri = 0; tri < targetRegions.Length; tri++)
+                    if (targetRegions[tri] == BodyRegion.Head)
+                        for (int k = 0; k < 3; k++) head[target.triangles[tri * 3 + k]] = true;
             var lacks = new bool[targetCount];
             Parallel.For(0, targetCount, t =>
-                lacks[t] = under[t] && main[t] && (unmatched[t] || !registeredIndex.ClosestPoint(target.worldVertices[t], UnreachedGap).found));
+                lacks[t] = under[t] && main[t] && !head[t] && (unmatched[t] || !registeredIndex.ClosestPoint(target.worldVertices[t], UnreachedGap).found));
             int underCount = 0, lacking = 0;
             for (int t = 0; t < targetCount; t++)
             {
-                if (!under[t] || !main[t]) continue;
+                if (!under[t] || !main[t] || head[t]) continue;
                 underCount++;
                 if (lacks[t]) lacking++;
             }

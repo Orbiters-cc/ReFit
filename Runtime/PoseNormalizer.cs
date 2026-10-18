@@ -144,12 +144,75 @@ namespace Orbiters.ReFit
                 foreach (var pair in assetMatching) if (used.Contains(pair.Key) && pair.Value == source) { matched = true; break; }
                 if (!matched) return;
             }
+            // Thighs apart have room for fabric between them as they are. Spread, clothing skinned to the hips there (shorts often
+            // are, down to the knees) stays where the thighs were and they come back through it.
+            if (!ThighsMeet(stage))
+            {
+                report.Info("coverage-star-pose-skipped", "The target's thighs do not meet: fitted as they stand, without spreading them.");
+                return;
+            }
             if (SpreadThighs(stage, 20f) == null) return;
             stage.sourceSurface = null; stage.sourceSurfaceIndex = null;
             report.Info("coverage-star-pose", "Separated both thighs by 20 degrees on temporary copies for cross-base coverage. The clothing keeps its authored pose and skin weights.");
         }
 
         private static readonly HumanBodyBones[] Thighs = { HumanBodyBones.LeftUpperLeg, HumanBodyBones.RightUpperLeg };
+
+        // Skin of either thigh this close to the other's (at the shapes the clothing is worn with) makes them meet; closer
+        // than ThighSeam it is one point of the mesh (a pole on the middle), not two thighs.
+        private const float ThighContact = .01f, ThighSeam = .0005f;
+        private const int ContactPoints = 16;
+
+        /// <summary>
+        /// Whether the target's thighs touch: skin moved mostly by one thigh (or a bone under it) lies within ThighContact of
+        /// skin moved mostly by the other, facing it, at ContactPoints points or more. Skin of one surface across the crotch,
+        /// weighted to either thigh on its side of the middle, faces the same way and does not count; nor do vertices of one
+        /// point (the Ultipaw's crotch gathers hundreds on the middle, each thigh's half facing the other's).
+        /// </summary>
+        private static bool ThighsMeet(NormalizedStage stage)
+        {
+            var body = stage.targetBody;
+            if (body == null || body.sharedMesh == null || stage.targetHumanMap == null ||
+                !stage.targetHumanMap.TryGetValue(HumanBodyBones.LeftUpperLeg, out var left) || left == null ||
+                !stage.targetHumanMap.TryGetValue(HumanBodyBones.RightUpperLeg, out var right) || right == null) return true;
+            var snapshot = MeshSnapshot.Capture(body, false, ReFitWornShapes.Overrides(body, stage.wornBodyShapes), null);
+            var bones = body.bones;
+            var side = new sbyte[bones.Length];
+            for (int b = 0; b < bones.Length; b++)
+                if (bones[b] != null) side[b] = bones[b].IsChildOf(left) ? (sbyte)1 : bones[b].IsChildOf(right) ? (sbyte)2 : (sbyte)0;
+            var weights = body.sharedMesh.boneWeights;
+            var vertexSide = new sbyte[snapshot.worldVertices.Length];
+            for (int v = 0; v < vertexSide.Length && v < weights.Length; v++)
+            {
+                var w = weights[v];
+                float l = 0, r = 0;
+                void Add(int index, float weight)
+                {
+                    if (index < 0 || index >= side.Length) return;
+                    if (side[index] == 1) l += weight; else if (side[index] == 2) r += weight;
+                }
+                Add(w.boneIndex0, w.weight0); Add(w.boneIndex1, w.weight1); Add(w.boneIndex2, w.weight2); Add(w.boneIndex3, w.weight3);
+                vertexSide[v] = l > .5f ? (sbyte)1 : r > .5f ? (sbyte)2 : (sbyte)0;
+            }
+            var include = new bool[snapshot.triangles.Length / 3];
+            int included = 0;
+            for (int t = 0; t < include.Length; t++)
+                if (include[t] = vertexSide[snapshot.triangles[t * 3]] == 2 && vertexSide[snapshot.triangles[t * 3 + 1]] == 2 && vertexSide[snapshot.triangles[t * 3 + 2]] == 2)
+                    included++;
+            // Thigh skin is not told apart by its skinning: spread them as before.
+            if (included == 0) return true;
+            var rightIndex = SurfaceBvh.Build(snapshot, include);
+            var faces = snapshot.CacheFaceNormals();
+            int touching = 0;
+            for (int v = 0; v < vertexSide.Length; v++)
+            {
+                if (vertexSide[v] != 1) continue;
+                var hit = rightIndex.ClosestPoint(snapshot.worldVertices[v], ThighContact);
+                if (hit.found && hit.distance > ThighSeam && Vector3.Dot(snapshot.worldNormals[v], faces[hit.triangle]) < -.5f &&
+                    ++touching >= ContactPoints) return true;
+            }
+            return false;
+        }
 
         /// <summary>
         /// Turns both thighs of every staged rig away from the midline by <paramref name="degrees"/> (around the target's

@@ -19,7 +19,9 @@ in `MCBIntegrationService`, not repeated in commission UI code.
    than driving every humanoid into zero muscles. Exclude nested garment copies from target body/bone
    discovery. Resolve externally referenced clothing bones onto the stage.
 2. Compare bodies with body blendshapes disabled, except those the clothing sets while it is worn
-   (`ReFitRequest.wornBodyShapes`: an outfit toggle hiding fluff or shrinking the skin under it). The editor service
+   (`ReFitRequest.wornBodyShapes`: an outfit toggle hiding fluff or shrinking the skin under it), and on the target the
+   shapes the clothing does not follow, at their weight (`ReFitWornShapes.AsShown`: a custom base's hidden collar fluff,
+   its face; followed shapes are fitted at zero and transferred). The target identity includes those. The editor service
    reads them from the clothing's own VRCFury toggles (the toggle turning the part on, its blendshape actions on the body
    or on every renderer) and Modular Avatar Shape Changers, without referencing either package; both bodies are
    captured with them, and the target identity includes them. Scale the source side by body surface height; hips/head
@@ -82,8 +84,9 @@ clearance, coverage and drape passes below:
   outward) was under the authored fabric: fabric turned the same way met straight out of the skin, or along two of four
   rays tilted 26 degrees (folds the fabric bridges). Skin past a hem is never covered, however close, and target skin
   without a counterpart (fluff the source lacks) never moves the fabric; how much of it shows is reported. When more
-  than 2 % of the target's main skin under the clothing has no counterpart or lies over 2 cm from the registered source
-  (a sculpted edit far beyond the base), the cloth fit gives way to the passes below.
+  than 2 % of the target's main skin under the clothing (the head left out: a muzzle near a collar is not under it) has
+  no counterpart or lies over 2 cm from the registered source (a sculpted edit far beyond the base), the cloth fit gives
+  way to the passes below.
 - **Drape.** 48 passes push fabric points out of covered skin under them to their authored room (0.6 to 3 mm) and push
   fabric triangles out over covered skin coming through them. What already came through the fabric as authored stays
   allowed (coarse fabric sagging into a curved body, straps pressing into it): the drape corrects only what the move
@@ -100,6 +103,14 @@ clearance, coverage and drape passes below:
 On the replayed outfits it runs in 5 to 15 s with their shapes, with up to nine times fewer spikes and no torn panels
 with all shapes on (see VALIDATION.md).
 
+With the different-base coverage asked for, clothing made for another body than the source (resized onto it by My Avatar
+or by hand) is told apart from clothing made for it: more than 10 % of the clothing within 10 cm of the source skin lay
+over 5 mm under it as authored (next to none for clothing made for that body, from 14 % to 66 % for the Rexouium
+FishingOutfit on the Masculine Canine or the Novabeast). The cloth fit keeps what came through the fabric as authored,
+and nothing there was meant to, so the different-base passes below (the coverage repair and `ReFitDrape`) cover the
+target after it and the inner layers have the last word, as for clothing placed on the target itself. Shapes draped by
+the cloth fit stay over the garments worn under it too. Clothing made for the source keeps the cloth fit alone.
+
 Mesh refit without the registration starts from the bound target-minus-source surface displacement. Blendshape transfer evaluates the
 target body's frame displacement at the target binding. Primary and transferred fields have independent
 smoothing controls. Clearance correction, surface guards, bounded hem response and detached-island coherence
@@ -109,12 +120,21 @@ each sample's depth on the body the clothing was made for is measured once, and 
 edges sag into curved bodies as authored). It lifts a sample only through corners holding at least half of it, since
 lifting it through a lone movable corner pulls that corner into a spike.
 `garmentKind` permits an explicit override instead of depending on ancestor names.
+Keeping the clothing's armature, the different-base coverage spreads both thighs by 20 degrees on the staged copies
+(the clothing's own thigh bones with them) so fabric can be pushed between thighs that touch, and returns the fit through
+the clothing's skinning. It does so only when the target's thighs meet (16 points of one thigh's skin within 1 cm of the
+other's, facing it; one mesh point gathering both halves of the crotch does not count): clothing skinned to the hips
+down the thighs stays where the spread thighs were, and they come back through it.
 With the different-base coverage, skin enclosed in another part of the target (`MeshSnapshot.HideEnclosedSkin`: out of
 it, the first surface met faces the same way, and from halfway out every way along the skin leaves through a surface too,
 so a single-sided fluff card encloses nothing) is left out of every target query, and `ReFitDrape` follows the body's
 coverage repair of the primary and each transferred field; the inner layers' repair and the covers come after it. It
 keeps covered only target skin whose counterpart on the source lay under the authored clothing (fold walls and skin
-without a counterpart take the decision of the skin around them), relaxes fabric crossing itself where it did not as
+without a counterpart take the decision of the skin around them); of clothing made for another body, also skin of an arm
+or a leg through fabric lying over that limb of the source, farther than 3 cm along the fabric from a hem (a cuff sunk
+into a larger arm reads as a tight cuff, pushed out it flares; on the torso, skin through a panel is as often a hip below
+a hem or a neck in a collar, and covering it pulled a shirt's hem over the crotch), and that fabric is not kept under the
+skin as made. It relaxes fabric crossing itself where it did not as
 authored (a shape frame only the crossings it adds, never into the skin), lets fabric span the folds of the body (a
 shape frame only over folds of its skin), then pushes the fabric out over covered skin still showing through, spreading
 the push over the fabric and capping it at what the skin around needed. Closed rings follow the fabric under each part

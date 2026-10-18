@@ -26,8 +26,12 @@ namespace Orbiters.ReFit.Editor.Tests
         {
             "case", "engineMs", "restSpikes", "restSpikeMm", "rest3mm", "restWorstMm", "restReversed", "restStretched",
             "spread3mm", "spreadWorstMm", "crouch3mm", "crouchWorstMm", "shape3mm", "shapeWorstMm", "crouchShape3mm",
-            "weightTears", "oppositeLeg", "motionAdded", "motionWorstMm", "phases",
+            "weightTears", "oppositeLeg", "motionAdded", "motionWorstMm", "restUnder3mm", "restUnderWorstMm", "bareUnder3mm",
+            "shapeUnder3mm", "phases",
         };
+        // Counts where more is worse: a case whose count grows by more than a tenth (and 2) got worse.
+        private static readonly string[] WorseWhenMore =
+            { "restSpikes", "rest3mm", "spread3mm", "crouch3mm", "shape3mm", "weightTears", "motionAdded", "restUnder3mm", "bareUnder3mm", "shapeUnder3mm" };
 
         /// <param name="only">Comma-separated case names, or null for every available case.</param>
         /// <param name="settings">"field=value;..." overrides of <see cref="ReFitSettings"/>, as <see cref="ReFitCaseValidation.Queue"/>.</param>
@@ -95,13 +99,16 @@ namespace Orbiters.ReFit.Editor.Tests
             var crouch = M("crouch");
             var shape = M("rest-shape");
             var crouchShape = M("crouch-shape");
+            var bare = M("rest-bare");
             string phases = string.Join(";", result.phases.Select(p => p.phase.Replace(';', ',') + "=" + p.ms.ToString("F0", CultureInfo.InvariantCulture)));
             return string.Join("\t", name, result.engineMs, rest.spikes, F(rest.spikeMm), rest.inside3mm, F(rest.worstMm), rest.reversed, rest.stretched,
                 spread.inside3mm, F(spread.worstMm), crouch.inside3mm, F(crouch.worstMm), shape.samples < 0 ? "-" : shape.inside3mm.ToString(),
                 shape.samples < 0 ? "-" : F(shape.worstMm), crouchShape.samples < 0 ? "-" : crouchShape.inside3mm.ToString(),
                 result.weightTears, result.oppositeLegShare.ToString("F3", CultureInfo.InvariantCulture),
                 result.motion == null || result.motion.error != null ? "-" : result.motion.Added.ToString(),
-                result.motion == null || result.motion.error != null ? "-" : F(result.motion.WorstMm), phases);
+                result.motion == null || result.motion.error != null ? "-" : F(result.motion.WorstMm),
+                rest.under3mm, F(rest.underWorstMm), bare.samples < 0 ? "-" : bare.under3mm.ToString(),
+                shape.samples < 0 ? "-" : shape.under3mm.ToString(), phases);
         }
 
         /// <summary>
@@ -115,26 +122,36 @@ namespace Orbiters.ReFit.Editor.Tests
             var lines = new List<string>();
             var worse = new List<string>();
             long totalA = 0, totalB = 0;
-            foreach (var name in a.Keys.Concat(b.Keys).Distinct())
+            // Columns by name: runs written before a column was added line up with the ones after.
+            foreach (var name in a.Keys.Concat(b.Keys).Distinct().Where(n => n != Header))
             {
                 if (!a.TryGetValue(name, out var x) || !b.TryGetValue(name, out var y))
                 {
                     lines.Add($"{name}: only in {(a.ContainsKey(name) ? before : after)}");
                     continue;
                 }
-                if (x.Length < Columns.Length || y.Length < Columns.Length)
+                string Cell(Dictionary<string, string[]> run, string[] row, string column)
                 {
-                    lines.Add($"{name}: {(x.Length < Columns.Length ? before + " " + string.Join(" ", x.Skip(1)) : "")} {(y.Length < Columns.Length ? after + " " + string.Join(" ", y.Skip(1)) : "")}");
+                    int c = Array.IndexOf(run[Header], column);
+                    return c >= 0 && c < row.Length ? row[c] : null;
+                }
+                if (Cell(a, x, "phases") == null || Cell(b, y, "phases") == null)
+                {
+                    lines.Add($"{name}: {before} {string.Join(" ", x.Skip(1))} | {after} {string.Join(" ", y.Skip(1))}");
                     continue;
                 }
                 var parts = new List<string>();
-                for (int c = 1; c < Columns.Length - 1; c++)
-                    if (x[c] != y[c]) parts.Add($"{Columns[c]} {x[c]}→{y[c]}");
+                foreach (var column in Columns.Skip(1).Where(c => c != "phases"))
+                {
+                    string va = Cell(a, x, column), vb = Cell(b, y, column);
+                    if (va != null && vb != null && va != vb) parts.Add($"{column} {va}→{vb}");
+                }
                 lines.Add($"{name}: " + (parts.Count == 0 ? "same" : string.Join(", ", parts)));
                 long msA = long.Parse(x[1]), msB = long.Parse(y[1]);
                 totalA += msA; totalB += msB;
-                foreach (int c in new[] { 2, 4, 8, 10, 12, 15, 17 })
-                    if (int.TryParse(x[c], out int va) && int.TryParse(y[c], out int vb) && vb > va + Math.Max(2, va / 10)) worse.Add($"{name} {Columns[c]} {va}→{vb}");
+                foreach (var column in WorseWhenMore)
+                    if (int.TryParse(Cell(a, x, column), out int va) && int.TryParse(Cell(b, y, column), out int vb) && vb > va + Math.Max(2, va / 10))
+                        worse.Add($"{name} {column} {va}→{vb}");
                 if (msB > msA * 1.1 + 200) worse.Add($"{name} engineMs {msA}→{msB}");
             }
             lines.Add($"total engine time {totalA} → {totalB} ms");
@@ -142,8 +159,11 @@ namespace Orbiters.ReFit.Editor.Tests
             return string.Join("\n", lines);
         }
 
+        private const string Header = "case";
+
+        // Rows by case name, and the header row under "case".
         private static Dictionary<string, string[]> Read(string label) =>
-            File.ReadAllLines(Output + label + ".tsv").Skip(1).Where(l => l.Length > 0).Select(l => l.Split('\t'))
+            File.ReadAllLines(Output + label + ".tsv").Where(l => l.Length > 0).Select(l => l.Split('\t'))
                 .GroupBy(r => r[0]).ToDictionary(g => g.Key, g => g.Last());
     }
 }

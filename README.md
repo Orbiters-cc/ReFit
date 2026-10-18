@@ -20,6 +20,18 @@
   field, with Undo. [ and ] change its size.
 - Fits: keep a fit, refit the piece again (looser, tighter...) and keep that one too. In VRChat the avatar's menu picks
   one (Fits/piece, built with VRCFury); in the editor, Use puts a kept fit back.
+- Clothing made for another body and resized onto this one (an outfit for the Rexouium put on an Ultipaw by My Avatar) is
+  covered again. Since 0.6.0 the cloth fit kept every clipping it started with, as if made that way: much of such
+  clothing lies under the skin of the body it is fitted from, so after the cloth fit the different-base passes now push
+  it out of the target and over the clothing worn under it, and a sleeve or a leg covers the arm or thigh that came
+  through it (away from its hem). The FishingOutfit on the Ultipaw, muscles on: 760 shirt, 1159 shorts and 1216 vest
+  vertices under the body before, 30, 22 and 14 now (with My Avatar 0.9.10's line-up on the original base).
+- The target is fitted as it shows: shapes the clothing does not follow keep their weight (the Ultinova's collar fluff,
+  hidden by default, stays hidden: no fabric standing over it), the ones it follows are fitted at zero and transferred.
+- The thighs are spread for the coverage only when they meet. Clothing skinned to the hips down the thighs (shorts often
+  are) stayed where the spread thighs were, and they came back through it.
+- Head skin near a collar (a muzzle the source lacks) no longer counts as body the source cannot reach: the FishingOutfit
+  on the Ultirex is fitted like cloth again.
 - Needs Orbiters Toolkit 0.3.24.
 
 ## 0.6.0 — 2026-10-16

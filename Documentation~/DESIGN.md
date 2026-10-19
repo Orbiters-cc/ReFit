@@ -171,13 +171,18 @@ a hem or a neck in a collar, and covering it pulled a shirt's hem over the crotc
 skin as made. It relaxes fabric crossing itself where it did not as
 authored (a shape frame only the crossings it adds, never into the skin), lets fabric span the folds of the body (a
 shape frame only over folds of its skin), then pushes the fabric out over covered skin still showing through, spreading
-the push over the fabric and capping it at what the skin around needed. Closed rings follow the fabric under each part
+the push over the fabric and capping it at what the skin around needed. Only skin the fabric is nearer than the other
+side of that part of the body pushes it: going on into the body twice as far as the fabric lies, the way must not leave
+it through skin turned the other way, the skin enclosed in another part included (under a custom base's muscles and
+mane). Past the middle of a part, fabric goes out the short way, from the skin across: a vest's strap sunk into a
+muscled shoulder goes out over its top, where the armpit's skin pushed it down the arm. Closed rings follow the fabric under each part
 of them; small closed details ride with it whole. The fabric's BVH is refitted between rebuilds, and the drape reports
 progress and stops on cancellation. A fit made with the coverage records it, and shapes added to it later are covered
 and draped the same way, the fit standing for where the clothing was made. Of clothing made for another body, fabric of
 one leg or arm (the limb of the source it lay over as made, away from its hems) is never pushed out over the other limb's
 skin: the muscled Ultinova's thighs meet and squeeze the inner panel of one leg of the FishingOutfit shorts into the other
-thigh, and pushed out over that thigh it wrapped around it.
+thigh, and pushed out over that thigh it wrapped around it. There the shoulders (clavicles) belong to the torso and the
+arms start at the upper arms, where a sleeve does: fabric over a shoulder is a strap or a sleeve's cap.
 
 World-space deformation becomes mesh-local pre-skin deltas. Keeping the original rig requires inverse skin
 conversion; replacing it uses planned bindposes and a target-space basis. This is not an exact surface-fitting

@@ -139,7 +139,10 @@ namespace Orbiters.ReFit
         /// Classifies every transform under <paramref name="avatarRoot"/> into a <see cref="BodyRegion"/>:
         /// a bone inherits the region of its nearest humanoid ancestor.
         /// </summary>
-        public static Dictionary<Transform, BodyRegion> ClassifyBones(GameObject avatarRoot, Dictionary<HumanBodyBones, Transform> humanMap)
+        /// <param name="shouldersInTorso">The shoulders (clavicles) and what hangs from them belong to the torso, the arms start at
+        /// the upper arms: where a sleeve begins.</param>
+        public static Dictionary<Transform, BodyRegion> ClassifyBones(GameObject avatarRoot, Dictionary<HumanBodyBones, Transform> humanMap,
+            bool shouldersInTorso = false)
         {
             var regions = new Dictionary<Transform, BodyRegion>();
             if (avatarRoot == null) return regions;
@@ -149,7 +152,9 @@ namespace Orbiters.ReFit
             {
                 if (kv.Value == null) continue;
                 // First (most specific) human bone wins if several map to one transform.
-                if (!humanRegionOf.ContainsKey(kv.Value)) humanRegionOf[kv.Value] = RegionOf(kv.Key);
+                if (!humanRegionOf.ContainsKey(kv.Value))
+                    humanRegionOf[kv.Value] = shouldersInTorso && (kv.Key == HumanBodyBones.LeftShoulder || kv.Key == HumanBodyBones.RightShoulder)
+                        ? BodyRegion.Torso : RegionOf(kv.Key);
             }
 
             foreach (var t in avatarRoot.GetComponentsInChildren<Transform>(true))

@@ -1,5 +1,63 @@
 # Validation Records
 
+## 2026-10-19: Motion Checks over the Shown Muscles (0.7.0)
+
+Asked: with the followed shapes fitted as shown (below), four motion checks rose: the Ultinova vest 151 to 551 skin
+points coming through in motion, the Ultirex vest 430 to 587, the Comfy sweats 125 to 245, the Ultinova shorts 4372 to
+4953. Measured with `ReFitRegressionSuite` on all 32 cases (`exit2all.tsv`) against the fit committed before
+(`final3.tsv`) and the code before the shown fit (`head.tsv`).
+
+The Ultinova vest's was real. The straps, sunk into the muscled shoulders as the vest was placed, were pushed down over
+the upper arms by the coverage drape and stretched across them when the arms rose: they moved 116 mm on average from
+where they were put (73 before the shown fit, 14 by the cloth fit alone). Two things pushed them:
+- The rule keeping one limb's fabric off the other limb (clothing made for another body) counted the shoulders as arms:
+  skin of the arm pushed the strap as its own sleeve. The limbs are now the source's from the upper arms down
+  (`HumanoidBoneMapper.ClassifyBones(..., shouldersInTorso: true)`): motion 551 to 320.
+- The armpit's skin, its way into the body reaching the strap past the middle of the shoulder, pushed it out its own
+  way. The check that the way does not leave the body first now also sees the skin hidden as enclosed (under the mane
+  and the muscles), and goes on twice as far as the fabric lies: past the middle of a part, the skin across takes the
+  fabric out, the short way. Straps move 60 mm, motion 156.
+
+| Case | Motion added | Under the body, default | In the body at rest (3 mm) | Without the shapes |
+|---|---|---|---|---|
+| FishingOutfit Ultinova vest | 151 / 551 / 156 | 677 / 502 / 547 | 986 / 734 / 767 | 395 / 377 / 416 |
+| Onesie (ThiccWiker) | 3241 / 3241 / 3186 | 617 / 617 / 473 | 1261 / 1261 / 946 | 755 / 755 / 627 |
+| FishingOutfit Ultinova shirt | 1930 / 1938 / 1949 | 153 / 154 / 147 | 238 / 235 / 261 | 147 / 107 / 132 |
+| FishingOutfit Ultipaw shirt | 4131 / 4475 / 4221 | 30 / 21 / 30 | 10 / 11 / 11 | 40 / 18 / 16 |
+| FishingOutfit Ultipaw vest | 736 / 424 / 456 | 14 / 3 / 4 | 0 / 0 / 0 | 19 / 0 / 1 |
+| FishingOutfit Ultirex shorts | 5768 / 4581 / 4734 | 177 / 181 / 183 | 261 / 1 / 1 | 207 / 146 / 148 |
+
+(before the shown fit / committed shown fit / now; the other 26 cases are unchanged.) The onesie's deterministic case
+passes again (946 samples, 1250 allowed). In pictures the Ultinova vest's armholes are clean, without the torn flaps
+hanging over both upper arms.
+
+The other three rose mostly through the motion check's way of counting. It follows only skin under the fabric at rest,
+each point against the fabric nearest it then, turned either way, within 5 cm. Where the muscled Ultinova's thighs meet,
+it matches the inner thighs at the crotch of the sweats with fabric 2.5 to 4.5 cm away that faces them; a step takes the
+thigh 10 cm forward of it, counted 75 mm through (before the shown fit the same skin lay 2 cm under its fabric and went
+deeper under it in a step). Counted instead along a ray straight out of each skin point (the first fabric met turned
+away from the skin covers it), the skin covered at rest that shows in a pose, before the shown fit / now:
+
+| Case | At rest, outside a fabric | Steps (left, right) | Crouch | Arms (up, forward, down) | Twists |
+|---|---|---|---|---|---|
+| Comfy sweats | 193 / 1 | 985, 930 / 933, 976 | 1593 / 1679 | 0 / 0 | 0, 0 / 0, 1 |
+| FishingOutfit Ultirex vest | 13055 / 14917 | 0 / 0 | 488 / 70 | 407, 267, 340 / 110, 42, 64 | 3146, 3130 / 639, 637 |
+| FishingOutfit Ultinova vest | 1067 / 1270 | 0, 1 / 3, 0 | 10 / 30 | 52, 47, 76 / 29, 52, 67 | 66, 58 / 43, 39 |
+| FishingOutfit Ultinova shorts | 1014 / 1996 | 1215, 1191 / 1342, 1280 | 2249 / 2211 | 0 / 0 | 5, 4 / 9, 4 |
+
+The sweats move about as before (the crouch 5 % more); the Ultirex vest comes off the body far less in motion (at rest
+more skin lies outside it, as under the body: below). The Ultinova shorts are worse at rest: over their last 2 cm their
+hems sit up to 1 cm into the front of the muscled knees, as tight cuffs (half of the skin through the shorts at rest;
+the coverage leaves a hem's last 3 cm as made: pushed out, it flares); in steps 7 to 10 % more shows. Renders of the
+shorts are alike.
+
+Tests: the deterministic suite through the stepped runner, 86 passed, 2 skipped, 2 failing on the code before the shown
+fit as well (the dense-peaks coverage stance; the window run, which passes in its own log scope). The 32 cases take 4 %
+longer (326 s to 340 s: one more surface index per drape where skin is enclosed). `ReFitCacheIdentity.Revision` 9.
+
+Still open: the Ultinova shorts' hems over the muscled knees; the Ultinova vest has 45 more vertices under the body than
+the committed shown fit (547; 677 before it).
+
 ## 2026-10-19: Followed Shapes Fitted as the Target Shows Them (0.7.0)
 
 Asked: an MCB custom base shows its muscle shapes at 100 by default, and ReFit fitted the clothing with them at zero, then
@@ -68,13 +126,11 @@ the cases failing on the committed code as well (the dense-peaks coverage stance
 target is fitted as it shows, now checks that such a shape moves the refit with the body. `ReFitRegressionSuite`
 resumes after a domain reload (another package compiling in the same editor dropped a run).
 
-Still open: the vests' motion checks (Ultinova 151 to 551: the armholes, fitted over the muscled shoulders, cover the
-upper arm at rest and it comes out of them in motion) and the Sweats' (125 to 245, thighs in steps); the Ultirex vest's
-257 vertices under the body (its dorsal spikes, the avatar's own, through it; it rose over them before); the Ultipaw
-shorts' hems at the back of the knees, kept as tight cuffs over the muscled calves (22 to 32); the Comfy sweater's
-shoulder blades, under the body as authored (142 to 150); the Ultipaw shirt's neckline 1 cm more open at the front.
-With the muscles off, clothing stands a little looser than a fit made there. Shapes-only transfers still add followed
-shapes from zero (no refit shape to give them back).
+Still open (the motion checks: see the record above): the Ultirex vest's 257 vertices under the body (its dorsal spikes,
+the avatar's own, through it; it rose over them before); the Ultipaw shorts' hems at the back of the knees, kept as
+tight cuffs over the muscled calves (22 to 32); the Comfy sweater's shoulder blades, under the body as authored (142 to
+150); the Ultipaw shirt's neckline 1 cm more open at the front. With the muscles off, clothing stands a little looser
+than a fit made there. Shapes-only transfers still add followed shapes from zero (no refit shape to give them back).
 
 ## 2026-10-18: Clothing Made for Another Body on the Custom Bases (0.7.0)
 

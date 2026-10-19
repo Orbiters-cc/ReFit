@@ -8,9 +8,10 @@ namespace Orbiters.ReFit
         /// <summary>
         /// The algorithm's revision: saved transfer data and results cached by the Orbiters tools from an earlier one are
         /// rebuilt (8: the target fitted with the followed shapes it shows, their clothing shapes taking them away; clothing
-        /// lined up with the source keeps the source unscaled).
+        /// lined up with the source keeps the source unscaled; 9: fabric sunk into the body draped out the nearer way, a
+        /// shoulder's fabric not a sleeve's).
         /// </summary>
-        public const int Revision = 8;
+        public const int Revision = 9;
 
         public static string Renderer(SkinnedMeshRenderer renderer, bool includeShapes)
         {

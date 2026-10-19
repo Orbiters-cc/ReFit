@@ -332,6 +332,8 @@ namespace Orbiters.ReFit
 
             public BodyRegion[] assetGroupRegions;
             public BodyRegion[] sourceTriRegions;
+            /// <summary>The source's triangle regions with the shoulders in the torso: the limbs a sleeve or a leg lies over.</summary>
+            public BodyRegion[] sourceLimbRegions;
             public BodyRegion[] targetTriRegions;
             // Every region of each triangle (SurfaceBindingSolver.RegionMask bits), for binding across transition bands.
             public int[] sourceTriRegionMasks;
@@ -582,6 +584,8 @@ namespace Orbiters.ReFit
                 state.sourceTriRegions = state.wantMesh && state.sourceBody != state.targetBasis
                     ? TriangleRegions(state.sourceBody, sourceRegions)
                     : state.targetTriRegions;
+                if (state.wantMesh && state.sourceBody != state.targetBasis)
+                    state.sourceLimbRegions = TriangleRegions(state.sourceBody, HumanoidBoneMapper.ClassifyBones(stage.sourceRoot, stage.sourceHumanMap, true));
                 state.assetGroupRegions = AssetGroupRegions(state.asset, stage, sourceRegions);
                 if (state.wantMesh && state.sourceBody != state.targetBasis && state.settings.registerBodies)
                     state.sourceBoneRetarget = SkeletonRetarget(stage, stage.sourceBody);
@@ -1632,7 +1636,7 @@ namespace Orbiters.ReFit
             if (!settings.coverDifferentBaseBody || !settings.enableClearanceCorrection) return;
             SetBackgroundProgress(state, 0.42f, "Draping the clothing over the body");
             state.drape = new ReFitDrape(asset, null, firstSnap, firstBvh, targetBasis, state.targetTriRegions, state.assetGroupRegions, state.tubes.groups,
-                state.hiddenGroups, state.madeForAnother ? state.sourceTriRegions : null);
+                state.hiddenGroups, state.madeForAnother ? state.sourceLimbRegions : null);
             steps.Lap("drape setup");
             state.drape.Apply(targetBasis, null, null, primaryGroupDeltas, state.Report, "different-base coverage", state.cancellationToken,
                 t => state.backgroundProgress = 0.42f + 0.06f * t);

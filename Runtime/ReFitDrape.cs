@@ -82,7 +82,8 @@ namespace Orbiters.ReFit
         /// onto it, else null. An arm or a leg larger than its sleeve or leg came through it there, never meant to, and is
         /// covered by it (away from its hem): fabric lying over a limb of the source, whatever bone moves it (a pair of shorts is
         /// often skinned to the hips down to the knees). The torso keeps the authored rule: skin through a panel there is as
-        /// often a hip below a hem or a neck in a collar. Nor is fabric of one limb pushed out over the other's skin.
+        /// often a hip below a hem or a neck in a collar. Nor is fabric of one limb pushed out over the other's skin. The regions
+        /// put the shoulders in the torso: fabric over them is a vest's strap or a sleeve's cap, not a sleeve.
         /// </param>
         public ReFitDrape(MeshSnapshot asset, Vector3[] rest, MeshSnapshot source, SurfaceBvh sourceIndex, MeshSnapshot target, BodyRegion[] targetRegions,
             BodyRegion[] regions, bool[] tubes, bool[] hidden, BodyRegion[] madeForAnother = null)
@@ -386,6 +387,12 @@ namespace Orbiters.ReFit
                 skin.worldNormals = VertexNormals(moved, body.triangles);
             }
             var skinIndex = SurfaceBvh.Build(skin);
+            // The way out of a part of the body crosses its skin, the skin enclosed in another part too (under the muscles and
+            // the mane of a custom base, the top of the shoulder): left out, the skin under the arm found the fabric over the
+            // shoulder past it, and pushed it down the arm.
+            var wholeSkin = skin.hiddenTriangles != null
+                ? SurfaceBvh.Build(new MeshSnapshot { worldVertices = skin.worldVertices, triangles = skin.triangles })
+                : skinIndex;
             var (tangled, untangled) = Untangle(primary, deltas, skin, skinIndex, cancellation);
             if (tangled > 0)
                 report?.Info("drape-untangle", $"{label}: {tangled} fabric edges crossed the fabric where they did not as authored; {untangled} left after relaxing the fit around them.");
@@ -444,8 +451,10 @@ namespace Orbiters.ReFit
                     // fabric facing the skin (a lining, the inside of the same tube).
                     var hit = index.Raycast(origin, -normal, Reach, new FacingFilter(clothNormals, normal, -Facing, strict: true));
                     if (!hit.found) return false;
-                    // The fabric must be inside the same part of the body: not past the other side of a limb.
-                    var exit = skinIndex.Raycast(origin, -normal, hit.distance, FacingFilter.Against(skinNormals, normal));
+                    // The fabric must be inside the same part of the body, and nearer this side of it than the other: not past the
+                    // other side of a limb, nor past its middle (the skin over there pushes it out the short way: the top of the
+                    // shoulder, not the armpit, for a vest's strap inside a muscled shoulder).
+                    var exit = wholeSkin.Raycast(origin, -normal, 2f * hit.distance, FacingFilter.Against(skinNormals, normal));
                     if (exit.found) return false;
                     int t3 = hit.triangle * 3;
                     int a = asset.groupOfVertex[asset.triangles[t3]], b = asset.groupOfVertex[asset.triangles[t3 + 1]], c = asset.groupOfVertex[asset.triangles[t3 + 2]];

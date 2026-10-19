@@ -31,7 +31,7 @@
   fabric was over them. Now the fabric is draped over the muscles as part of the fit, the muscle shape is the drape taking
   them away, and the refit gives back what that shape shows: at the avatar's own weights the clothing is the fit itself.
   The Classy pants on the Ultinova keep their waistband and belt loops (137 samples in the body at rest, 32 now), the
-  FishingOutfit vest on the Ultinova has 502 vertices under the body instead of 677. With the muscles turned off the
+  FishingOutfit vest on the Ultinova has 547 vertices under the body instead of 677. With the muscles turned off the
   clothing stands a little looser than a fit made there: a drape taking a shape away only pushes fabric out. Bodies the
   source cannot be laid onto (a sculpt, the ThiccWiker) are still fitted at zero by the passes made for them. Shapes the
   clothing does not follow keep their weight too (the Ultinova's collar fluff, hidden by default, stays hidden: no fabric
@@ -44,7 +44,12 @@
   over it 3 under the shirt instead of 327.
 - The coverage of clothing made for another body never pushes one leg's (or arm's) fabric out over the other limb: on the
   muscled Ultinova, whose thighs meet, it pushed the inner panel of one leg of the FishingOutfit shorts out around the
-  other thigh.
+  other thigh. A shoulder counts as the torso there, not as an arm: fabric over it is a strap or a sleeve's cap.
+- Fabric sunk into the body is draped out the short way: skin on the far side of a shoulder or a thigh no longer pushes
+  it out through the body. Fitted over the muscles, the FishingOutfit vest's straps sink into the Ultinova's shoulders;
+  the skin under the arms pushed them down over the upper arms, stretched across them when the arms rose. They stay on
+  the shoulders (in motion 156 skin points come through the vest, 151 before). The ThiccWiker onesie clips less: 946
+  samples in the body at rest instead of 1261, 473 vertices under it instead of 617.
 - The thighs are spread for the coverage only when they meet. Clothing skinned to the hips down the thighs (shorts often
   are) stayed where the spread thighs were, and they came back through it.
 - Head skin near a collar (a muzzle the source lacks) no longer counts as body the source cannot reach: the FishingOutfit

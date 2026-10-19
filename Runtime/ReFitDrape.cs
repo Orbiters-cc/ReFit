@@ -43,6 +43,11 @@ namespace Orbiters.ReFit
         private readonly List<int>[] neighbours;
         // The clothing groups' body regions, or null.
         private readonly BodyRegion[] groupRegions;
+        // Of clothing made for another body: the limb of the source each group lay over as made (see LimbFabric), and each target
+        // vertex's part of the body, or null. The fabric of one leg or arm is never pushed out over the other's skin: thighs
+        // that meet squeeze the inner panel of one leg of a pair of shorts into the other thigh, and pushed out over that thigh
+        // it would wrap around it.
+        private readonly BodyRegion[] fabricLimbs, skinParts;
         // The fabric's edges between welded groups, each once.
         private readonly List<(int a, int b)> edges;
         // Per target vertex: its counterpart on the source was under the clothing as authored. Other skin (fluff through a
@@ -77,7 +82,7 @@ namespace Orbiters.ReFit
         /// onto it, else null. An arm or a leg larger than its sleeve or leg came through it there, never meant to, and is
         /// covered by it (away from its hem): fabric lying over a limb of the source, whatever bone moves it (a pair of shorts is
         /// often skinned to the hips down to the knees). The torso keeps the authored rule: skin through a panel there is as
-        /// often a hip below a hem or a neck in a collar.
+        /// often a hip below a hem or a neck in a collar. Nor is fabric of one limb pushed out over the other's skin.
         /// </param>
         public ReFitDrape(MeshSnapshot asset, Vector3[] rest, MeshSnapshot source, SurfaceBvh sourceIndex, MeshSnapshot target, BodyRegion[] targetRegions,
             BodyRegion[] regions, bool[] tubes, bool[] hidden, BodyRegion[] madeForAnother = null)
@@ -122,6 +127,7 @@ namespace Orbiters.ReFit
                 for (int g = 0; g < fabricPart.Length; g++) limbFabric[g] = IsLimb(fabricPart[g]);
             }
             if (limbFabric != null) foreach (bool limb in limbFabric) if (limb) limbGroups++;
+            fabricLimbs = fabricPart;
             Parallel.For(0, asset.GroupCount, g =>
             {
                 if (limbFabric != null && limbFabric[g]) return;
@@ -175,7 +181,7 @@ namespace Orbiters.ReFit
             var decided = new bool[cover.Length];
             var head = new bool[cover.Length];
             // Each target vertex's part of the body (one of its triangles'), for the limbs' fabric.
-            var part = new BodyRegion[cover.Length];
+            var part = skinParts = new BodyRegion[cover.Length];
             for (int v = 0; v < part.Length; v++) part[v] = BodyRegion.Unknown;
             if (targetRegions != null)
                 for (int t = 0; t < targetRegions.Length; t++)
@@ -444,6 +450,12 @@ namespace Orbiters.ReFit
                     int t3 = hit.triangle * 3;
                     int a = asset.groupOfVertex[asset.triangles[t3]], b = asset.groupOfVertex[asset.triangles[t3 + 1]], c = asset.groupOfVertex[asset.triangles[t3 + 2]];
                     if (fixedGroups[a] && fixedGroups[b] && fixedGroups[c]) return false;
+                    if (fabricLimbs != null && IsLimb(skinParts[i]))
+                    {
+                        // The other leg's (or arm's) fabric is not this limb's to push out.
+                        int most = hit.bary.x >= hit.bary.y && hit.bary.x >= hit.bary.z ? a : hit.bary.y >= hit.bary.z ? b : c;
+                        if (IsLimb(fabricLimbs[most]) && fabricLimbs[most] != skinParts[i]) return false;
+                    }
                     float madeUnder = (authoredUnder[a] ? hit.bary.x : 0) + (authoredUnder[b] ? hit.bary.y : 0) + (authoredUnder[c] ? hit.bary.z : 0);
                     if (madeUnder >= .5f) return false;
                     var facing = cloth.FaceNormal(hit.triangle);

@@ -261,6 +261,12 @@ namespace Orbiters.ReFit
             public string sourceName;
             public int shapeIndex;
             public float mirrorWeight;
+            /// <summary>
+            /// How much of its frame the target shows (0..1, as Unity applies the shape at <see cref="mirrorWeight"/>): the target
+            /// is fitted with it, and the clothing shape is the drape taking it away, per frame. 0: fitted at zero, the clothing
+            /// shape is the drape adding it.
+            /// </summary>
+            public float shown;
             /// <summary>The body shape's frames, each transferred on its own so in-between frames keep their geometry.</summary>
             public List<ShapeFrame> frames = new List<ShapeFrame>();
         }
@@ -293,6 +299,8 @@ namespace Orbiters.ReFit
             public ReFitTubeField tubes;
             public MeshSnapshot sourceBody;   // null when not wantMesh; == targetBasis when source == target
             public MeshSnapshot targetBasis;
+            /// <summary>The target without the followed shapes it shows (see <see cref="ShapeTask.shown"/>), or null when it shows none.</summary>
+            public MeshSnapshot targetBare;
             public readonly List<MeshSnapshot> coverageLayers = new List<MeshSnapshot>();
             // Each layer's vertices as authored (before its own refit), when the layer order is kept, and whether it was refitted.
             public readonly List<Vector3[]> coverageLayersAuthored = new List<Vector3[]>();
@@ -450,6 +458,39 @@ namespace Orbiters.ReFit
                     return state;
                 }
 
+                // Per-shape mesh-local frame deltas (main thread: Mesh API)
+                var bodyMesh = stage.targetBody.sharedMesh;
+                int vertexCount = bodyMesh.vertexCount;
+                foreach (var shape in state.shapes)
+                {
+                    int frameCount = bodyMesh.GetBlendShapeFrameCount(shape.shapeIndex);
+                    for (int f = 0; f < frameCount; f++)
+                    {
+                        var deltas = new Vector3[vertexCount];
+                        bodyMesh.GetBlendShapeFrameVertices(shape.shapeIndex, f, deltas, null, null);
+                        shape.frames.Add(new ShapeFrame
+                        {
+                            weight = bodyMesh.GetBlendShapeFrameWeight(shape.shapeIndex, f),
+                            deltas = deltas,
+                            identity = ReFitCacheIdentity.Shape(deltas)
+                        });
+                    }
+                }
+                // Clothing fitted from another body is fitted on the target as it shows, the followed shapes it shows included:
+                // their clothing shapes take them away from that fit. The others are fitted at zero.
+                var zeroed = ReFitWornShapes.FittedAtZero(stage.targetBody, request.wornBodyShapes, requestedNames,
+                    state.wantMesh && stage.sourceBody != stage.targetBody);
+                var followedShown = new List<string>();
+                foreach (var shape in state.shapes)
+                {
+                    if (zeroed.Contains(shape.sourceName)) continue;
+                    shape.shown = ReFitWornShapes.Shown(stage.targetBody, shape.sourceName, request.wornBodyShapes);
+                    followedShown.Add(shape.sourceName + " " + shape.mirrorWeight.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture));
+                }
+                if (followedShown.Count > 0)
+                    report.Info("followed-shapes-shown", "Fitted with the shapes it follows as the target shows them (" + string.Join(", ", followedShown) +
+                                                         "): their clothing shapes take them away from the fit.");
+
                 // Snapshots
                 progress?.Invoke(0.08f, "Capturing meshes");
                 var originalTarget = request.targetBodyRenderer;
@@ -475,11 +516,11 @@ namespace Orbiters.ReFit
                     state.targetIdentity += "|worn:" + worn;
                     report.Info("worn-body-shapes", "Fitted on the bodies as the clothing is worn: " + worn + ".");
                 }
-                string shown = ReFitWornShapes.DescribeShown(stage.targetBody, request.wornBodyShapes, requestedNames);
+                string shown = ReFitWornShapes.DescribeShown(stage.targetBody, request.wornBodyShapes, zeroed);
                 if (shown.Length > 0)
                 {
                     state.targetIdentity += "|shown:" + shown;
-                    report.Info("shown-body-shapes", "Fitted on the target as it shows, with the shapes the clothing does not follow: " + shown + ".");
+                    report.Info("shown-body-shapes", "Fitted on the target as it shows: " + shown + ".");
                 }
                 state.settingsIdentity = ReFitCacheIdentity.Settings(state.settings);
                 state.bindingSettingsIdentity = ReFitCacheIdentity.BindingSettings(state.settings);
@@ -517,32 +558,16 @@ namespace Orbiters.ReFit
                         state.targetSpaceBaseLocalDeltas,
                         state.targetSpaceMetadata);
                 state.targetBasis = MeshSnapshot.Capture(stage.targetBody, false,
-                    ReFitWornShapes.AsShown(stage.targetBody, request.wornBodyShapes, requestedNames), report);
+                    ReFitWornShapes.AsShown(stage.targetBody, request.wornBodyShapes, zeroed), report);
+                if (followedShown.Count > 0)
+                    state.targetBare = MeshSnapshot.Capture(stage.targetBody, false,
+                        ReFitWornShapes.AsShown(stage.targetBody, request.wornBodyShapes, requestedNames), report);
                 if (state.wantMesh)
                     state.sourceBody = stage.sourceBody == stage.targetBody
                         ? state.targetBasis
                         : stage.sourceSurface ?? MeshSnapshot.Capture(stage.sourceBody, false,
                             ReFitWornShapes.Overrides(stage.sourceBody, request.wornBodyShapes), report);
                 state.stagedSourceBvh = stage.sourceSurfaceIndex;
-
-                // Per-shape mesh-local frame deltas (main thread: Mesh API)
-                int vertexCount = state.targetBasis.localVertices.Length;
-                var bodyMesh = stage.targetBody.sharedMesh;
-                foreach (var shape in state.shapes)
-                {
-                    int frameCount = bodyMesh.GetBlendShapeFrameCount(shape.shapeIndex);
-                    for (int f = 0; f < frameCount; f++)
-                    {
-                        var deltas = new Vector3[vertexCount];
-                        bodyMesh.GetBlendShapeFrameVertices(shape.shapeIndex, f, deltas, null, null);
-                        shape.frames.Add(new ShapeFrame
-                        {
-                            weight = bodyMesh.GetBlendShapeFrameWeight(shape.shapeIndex, f),
-                            deltas = deltas,
-                            identity = ReFitCacheIdentity.Shape(deltas)
-                        });
-                    }
-                }
 
                 // Regions
                 progress?.Invoke(0.16f, "Classifying body regions");
@@ -993,6 +1018,32 @@ namespace Orbiters.ReFit
             return data;
         }
 
+        // Per target vertex, how the followed shapes the target shows move it (world): the target less the target without them.
+        private static Vector3[] ShownMotion(MeshSnapshot target, MeshSnapshot bare)
+        {
+            var motion = new Vector3[target.worldVertices.Length];
+            for (int i = 0; i < motion.Length; i++) motion[i] = target.worldVertices[i] - bare.worldVertices[i];
+            return motion;
+        }
+
+        // Each group's counterpart on a target, met along the source's normal (see SurfaceBindingSolver.ChainPoint).
+        private static SurfaceBinding[] Chained(State state, SurfaceBinding[] bindings, MeshSnapshot firstSnap, MeshSnapshot target, SurfaceBvh index)
+        {
+            var settings = state.settings;
+            float cosMax = Mathf.Cos(settings.maxNormalAngle * Mathf.Deg2Rad);
+            float chainRange = Mathf.Max(settings.maxProjectionDistance * 2f, 0.05f);
+            var chained = new SurfaceBinding[bindings.Length];
+            Parallel.For(0, bindings.Length, g =>
+            {
+                if (!bindings[g].valid) return;
+                var region = state.assetGroupRegions != null ? state.assetGroupRegions[g] : BodyRegion.Unknown;
+                chained[g] = SurfaceBindingSolver.ChainPoint(bindings[g].point, firstSnap.BaryNormal(bindings[g].triangle, bindings[g].bary),
+                    target, index, chainRange, region, settings.filterByBoneRegion ? state.targetTriRegions : null, cosMax,
+                    settings.filterByNormal, state.targetTriCrossMasks);
+            });
+            return chained;
+        }
+
         private static List<string> RequestedShapeNames(ReFitRequest request)
         {
             var names = new List<string>();
@@ -1059,7 +1110,10 @@ namespace Orbiters.ReFit
             SetBackgroundProgress(state, 0.05f, "Building spatial indices");
             // Clothing fitted across bases covers the outside of the target: skin enclosed in another part of it (a chest
             // under added breasts) must not be matched, covered or skinned to.
-            int enclosed = settings.coverDifferentBaseBody && settings.enableClearanceCorrection ? targetBasis.HideEnclosedSkin() : 0;
+            bool hidesEnclosed = settings.coverDifferentBaseBody && settings.enableClearanceCorrection;
+            int enclosed = hidesEnclosed ? targetBasis.HideEnclosedSkin() : 0;
+            // Skin enclosed under large muscles is not enclosed without them.
+            if (hidesEnclosed && state.targetBare != null) state.targetBare.HideEnclosedSkin();
             if (enclosed > 0)
                 state.Report.Info("enclosed-skin", $"Target body: {enclosed} triangles of skin enclosed in another part of the body are ignored.");
             var bvhTarget = SurfaceBvh.Build(targetBasis);
@@ -1079,6 +1133,11 @@ namespace Orbiters.ReFit
 
             // Chain onto the target surface
             var targetBindings = bindings;
+            // The target without the followed shapes it shows (muscles at 100), or the target: the bodies alike.
+            var shownMotion = state.wantMesh && state.targetBare != null ? ShownMotion(targetBasis, state.targetBare) : null;
+            var laidOnto = shownMotion != null ? state.targetBare : targetBasis;
+            var laidIndex = shownMotion != null ? SurfaceBvh.Build(laidOnto) : bvhTarget;
+            ReFitBodyRegistration laid = null;
             if (state.wantMesh)
             {
                 // Two bodies: the source laid onto the target gives each source point its counterpart. Two copies of one body
@@ -1086,11 +1145,13 @@ namespace Orbiters.ReFit
                 if (settings.registerBodies && state.sourceBody != targetBasis && !SameSurface(state.sourceBody, targetBasis))
                 {
                     SetBackgroundProgress(state, 0.2f, "Laying the bodies onto each other");
+                    // Onto the bodies alike, then carried by the shown shapes with the skin it lies on: laid onto large muscles,
+                    // the source reached too little of them.
                     var start = state.sourceBoneRetarget != null ? ReFitBodyRegistration.Retarget(state.sourceBody, state.sourceBoneRetarget) : null;
                     if (start != null)
                     {
                         // Only where it brings the source closer: bodies alike over different joints stay where they lie.
-                        float before = MeanDistance(state.sourceBody.worldVertices, bvhTarget), after = MeanDistance(start, bvhTarget);
+                        float before = MeanDistance(state.sourceBody.worldVertices, laidIndex), after = MeanDistance(start, laidIndex);
                         float most = 0f;
                         for (int v = 0; v < start.Length; v++) most = Mathf.Max(most, (start[v] - state.sourceBody.worldVertices[v]).magnitude);
                         if (after < before - RetargetGain)
@@ -1103,20 +1164,19 @@ namespace Orbiters.ReFit
                             start = null;
                         }
                     }
-                    state.registration = ReFitBodyRegistration.Build(state.sourceBody, state.sourceTriRegionMasks, targetBasis, bvhTarget,
+                    state.registration = laid = ReFitBodyRegistration.Build(state.sourceBody, state.sourceTriRegionMasks, laidOnto, laidIndex,
                         state.targetTriCrossMasks, state.cancellationToken, t => state.backgroundProgress = 0.2f + 0.1f * t, start);
                     state.Report.Info("body-registration", $"The source body lies on the target within {state.registration.medianGap * 1000f:0.0} mm " +
-                        $"(95 % within {state.registration.p95Gap * 1000f:0.0} mm).");
+                        $"(95 % within {state.registration.p95Gap * 1000f:0.0} mm)" + (shownMotion != null ? ", the followed shapes it shows left out, then carried by them." : "."));
+                    if (shownMotion != null) state.registration = state.registration.Carried(laidOnto, laidIndex, shownMotion, targetBasis);
                     state.Report.Info("registration-timing", state.registration.timing);
                 }
                 SetBackgroundProgress(state, 0.3f, "Projecting onto the target body");
                 targetBindings = new SurfaceBinding[groupCount];
-                float cosMax = Mathf.Cos(settings.maxNormalAngle * Mathf.Deg2Rad);
-                float chainRange = Mathf.Max(settings.maxProjectionDistance * 2f, 0.05f);
                 var localBindings = bindings;
                 var localTarget = targetBindings;
                 var registration = state.registration;
-                var chained = new SurfaceBinding[groupCount];
+                var chained = Chained(state, bindings, firstSnap, targetBasis, bvhTarget);
                 var disagrees = new bool[groupCount];
                 // How far the laid source is from the target skin under each clothing point near the skin (-1: not measured).
                 var reach = new float[groupCount];
@@ -1124,12 +1184,7 @@ namespace Orbiters.ReFit
                 {
                     reach[g] = -1f;
                     if (!localBindings[g].valid) { localTarget[g].valid = false; return; }
-                    var nA = firstSnap.BaryNormal(localBindings[g].triangle, localBindings[g].bary);
                     var region = state.assetGroupRegions != null ? state.assetGroupRegions[g] : BodyRegion.Unknown;
-                    chained[g] = SurfaceBindingSolver.ChainPoint(
-                        localBindings[g].point, nA, targetBasis, bvhTarget, chainRange,
-                        region, settings.filterByBoneRegion ? state.targetTriRegions : null,
-                        cosMax, settings.filterByNormal, state.targetTriCrossMasks);
                     localTarget[g] = chained[g];
                     if (registration != null && RegisteredPoint(registration, localBindings[g], targetBasis, bvhTarget, state.targetTriRegions,
                             region, out var registered))
@@ -1270,6 +1325,18 @@ namespace Orbiters.ReFit
             }
             else if (state.wantMesh)
             {
+                if (shownMotion != null)
+                {
+                    // The passes made for bodies that cannot be laid onto each other fit at zero, as before: their clearance and
+                    // coverage only push the fabric out, so a shape taken away left the clothing as far out as it had pushed it
+                    // (the FBX fixture's sculpt: 28 mm from its authored result). The shapes are transferred adding them.
+                    targetBasis = state.targetBasis = laidOnto;
+                    bvhTarget = state.targetBvh = laidIndex;
+                    targetBindings = state.chainedTargetBindings = Chained(state, bindings, firstSnap, targetBasis, bvhTarget);
+                    ShownAtZero(state);
+                    shownMotion = null;
+                    state.Report.Info("followed-shapes-zero", "Fitted by the different-base passes: the shapes it follows are fitted at zero and added by its own shapes.");
+                }
                 SetBackgroundProgress(state, 0.4f, "Computing the deformation");
                 primaryGroupDeltas = new Vector3[groupCount];
                 Parallel.For(0, groupCount, g =>
@@ -1384,9 +1451,12 @@ namespace Orbiters.ReFit
                     }
                     void TransferFrame()
                     {
+                        // A shape the target shows is taken away from the fit (the body moved by -shown of the frame): the clothing
+                        // frame is what that moves the clothing, reversed and per frame (see PerFrame).
+                        float motion = shape.shown > 0f ? -shape.shown : 1f;
                         var worldShapeDelta = new Vector3[bodyVerts];
                         Parallel.For(0, bodyVerts, i =>
-                            worldShapeDelta[i] = TargetShapeDeltaToWorld(worker, targetBasis, i, frame.deltas[i]));
+                            worldShapeDelta[i] = TargetShapeDeltaToWorld(worker, targetBasis, i, frame.deltas[i]) * motion);
                         if (worker.clothFit != null)
                         {
                             // Draped over the shaped body from the fitted clothing, like the fit.
@@ -1401,10 +1471,10 @@ namespace Orbiters.ReFit
                                         worker.Report, shape.sourceName);
                                 ReFitSurfaceCoverage.KeepUnderCovers(asset, primaryGroupDeltas, draped, worker.hiddenCovers, worker.coverageLayers, frame.layerDeltas);
                             }
-                            frame.rawLocalDeltas = ToLocalDeltas(worker, draped, false);
+                            frame.rawLocalDeltas = PerFrame(ToLocalDeltas(worker, draped, false), motion);
                             frame.localDeltas = frame.rawLocalDeltas;
                             if (settings.recalculateNormalDeltas)
-                                frame.normalDeltas = NormalDeltas(asset, frame.localDeltas, worker.primaryLocalDeltas);
+                                frame.normalDeltas = NormalDeltas(asset, frame.localDeltas, FrameBase(worker.primaryLocalDeltas, frame.localDeltas, shape.shown));
                             frame.deltas = null;
                             return;
                         }
@@ -1428,7 +1498,7 @@ namespace Orbiters.ReFit
                         if (!worker.sourceIsTarget)
                             ApplyUpperBodyHemDamping(groupDeltas, worker.upperBodyHemWeights, settings);
                         ApplyDetachedTransferredComponentCoherence(worker, primaryGroupDeltas, groupDeltas, shape.sourceName);
-                        frame.rawLocalDeltas = ToLocalDeltas(worker, groupDeltas, false);
+                        frame.rawLocalDeltas = PerFrame(ToLocalDeltas(worker, groupDeltas, false), motion);
 
                         var cachedLocalDeltas = FindCachedTransferredLocalDeltas(
                             worker.targetSpaceMetadata,
@@ -1476,9 +1546,9 @@ namespace Orbiters.ReFit
                         steps.Lap("layers");
                         worker.Report.Info("deformation-timing", $"'{shape.sourceName}': " + steps);
 
-                        frame.localDeltas = ToLocalDeltas(worker, groupDeltas, false);
+                        frame.localDeltas = PerFrame(ToLocalDeltas(worker, groupDeltas, false), motion);
                         if (settings.recalculateNormalDeltas)
-                            frame.normalDeltas = NormalDeltas(asset, frame.localDeltas, worker.primaryLocalDeltas);
+                            frame.normalDeltas = NormalDeltas(asset, frame.localDeltas, FrameBase(worker.primaryLocalDeltas, frame.localDeltas, shape.shown));
                         frame.deltas = null; // free
                     }
                 });
@@ -1495,16 +1565,38 @@ namespace Orbiters.ReFit
                     if (output.transferredIslandPropagationDebug != null)
                         state.comp.transferredIslandPropagationDebug = output.transferredIslandPropagationDebug;
                 }
+                GiveBackShown(state);
             }
 
             // ---- Skin weights --------------------------------------------------------------
             if (state.replace)
             {
                 SetBackgroundProgress(state, 0.9f, "Transferring skin weights");
+                // Skin weights are matched between the bodies alike: on the target without the shapes it shows (the same skin,
+                // moved by them), as the target bindings were found on it.
+                var weightBindings = targetBindings;
+                if (shownMotion != null && state.transferWeights)
+                {
+                    weightBindings = new SurfaceBinding[groupCount];
+                    var into = weightBindings;
+                    var used = state.registration != null ? laid : null;
+                    var chainedBare = Chained(state, bindings, firstSnap, laidOnto, laidIndex);
+                    Parallel.For(0, groupCount, g =>
+                    {
+                        if (!bindings[g].valid || !targetBindings[g].valid) { into[g] = targetBindings[g]; return; }
+                        var region = state.assetGroupRegions != null ? state.assetGroupRegions[g] : BodyRegion.Unknown;
+                        if (used != null && RegisteredPoint(used, bindings[g], laidOnto, laidIndex, state.targetTriRegions, region, out var registered))
+                        {
+                            into[g] = registered;
+                            return;
+                        }
+                        into[g] = chainedBare[g].valid ? chainedBare[g] : targetBindings[g];
+                    });
+                }
                 // The source match and its chained target match are the same anatomical point on both bodies.
                 state.newWeights = state.transferWeights
                     ? WeightTransfer.Transfer(asset, state.sourceBody, bindings, state.sourceBoneToNew,
-                        targetBasis, targetBindings, state.bodyBoneToNew, falloff,
+                        targetBasis, weightBindings, state.bodyBoneToNew, falloff,
                         state.assetBoneToNew, state.assetBoneIsExtra, state.newBoneRegions, state.assetGroupRegions,
                         settings, state.Report, out state.weightDebug)
                     : RemapAllOriginal(asset, state.assetBoneToNew);
@@ -2913,6 +3005,48 @@ namespace Orbiters.ReFit
                 ? bones[index].name
                 : ("bone" + index);
             sb.Append(name).Append('=').Append((weight * 100f).ToString("0.#")).Append('%');
+        }
+
+        // The deltas of a transfer that moved the body by motion times a frame, per frame (a shape taken away: reversed).
+        private static Vector3[] PerFrame(Vector3[] deltas, float motion)
+        {
+            if (motion == 1f) return deltas;
+            for (int i = 0; i < deltas.Length; i++) deltas[i] /= motion;
+            return deltas;
+        }
+
+        // The clothing a frame's normals turn from: the fit, without what a shape the target shows adds to it.
+        private static Vector3[] FrameBase(Vector3[] primary, Vector3[] frame, float shown)
+        {
+            if (primary == null || shown <= 0f) return primary;
+            var result = new Vector3[primary.Length];
+            for (int i = 0; i < result.Length; i++) result[i] = primary[i] - frame[i] * shown;
+            return result;
+        }
+
+        /// <summary>
+        /// The fit holds the followed shapes the target shows: the refit shape gives back what their clothing shapes show of
+        /// them, so the refit and the shapes at the body's weights are the fit again (and the refit alone, the clothing without them).
+        /// </summary>
+        private static void GiveBackShown(State state)
+        {
+            if (state.primaryLocalDeltas == null || !state.shapes.Any(shape => shape.shown > 0f)) return;
+            var primary = (Vector3[])state.primaryLocalDeltas.Clone();
+            var raw = (Vector3[])state.primaryRawLocalDeltas.Clone();
+            foreach (var shape in state.shapes)
+            {
+                if (shape.shown <= 0f) continue;
+                var frame = shape.frames[0];
+                for (int i = 0; i < primary.Length; i++)
+                {
+                    primary[i] -= frame.localDeltas[i] * shape.shown;
+                    raw[i] -= frame.rawLocalDeltas[i] * shape.shown;
+                }
+            }
+            state.primaryLocalDeltas = primary;
+            state.primaryRawLocalDeltas = raw;
+            if (state.settings.recalculateNormalDeltas)
+                state.primaryNormalDeltas = NormalDeltas(state.asset, primary, null);
         }
 
         /// <summary>Converts per-group world deltas into per-vertex mesh-space blendshape deltas.</summary>

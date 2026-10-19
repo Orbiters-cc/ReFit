@@ -52,6 +52,15 @@ namespace Orbiters.ReFit.Editor.Tests
             Schedule();
         }
 
+        // A domain reload (another package compiled in the same editor) drops the scheduled update; the queue is kept in
+        // SessionState, and the case running then had finished: a reload only comes between editor updates.
+        [InitializeOnLoadMethod]
+        private static void Resume()
+        {
+            string status = Status;
+            if (status.StartsWith("running") || status.StartsWith("queued")) Schedule();
+        }
+
         private static void Schedule()
         {
             EditorApplication.CallbackFunction tick = null;

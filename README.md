@@ -25,9 +25,26 @@
   clothing lies under the skin of the body it is fitted from, so after the cloth fit the different-base passes now push
   it out of the target and over the clothing worn under it, and a sleeve or a leg covers the arm or thigh that came
   through it (away from its hem). The FishingOutfit on the Ultipaw, muscles on: 760 shirt, 1159 shorts and 1216 vest
-  vertices under the body before, 30, 22 and 14 now (with My Avatar 0.9.10's line-up on the original base).
-- The target is fitted as it shows: shapes the clothing does not follow keep their weight (the Ultinova's collar fluff,
-  hidden by default, stays hidden: no fabric standing over it), the ones it follows are fitted at zero and transferred.
+  vertices under the body before, 21, 32 and 3 now (with My Avatar 0.9.10's line-up on the original base).
+- The target is fitted as it shows, the shapes the clothing follows included. An MCB custom base shows its muscles at
+  100: the clothing was fitted at zero and the muscles added by its muscle shape, a drape that often stopped before the
+  fabric was over them. Now the fabric is draped over the muscles as part of the fit, the muscle shape is the drape taking
+  them away, and the refit gives back what that shape shows: at the avatar's own weights the clothing is the fit itself.
+  The Classy pants on the Ultinova keep their waistband and belt loops (137 samples in the body at rest, 32 now), the
+  FishingOutfit vest on the Ultinova has 502 vertices under the body instead of 677. With the muscles turned off the
+  clothing stands a little looser than a fit made there: a drape taking a shape away only pushes fabric out. Bodies the
+  source cannot be laid onto (a sculpt, the ThiccWiker) are still fitted at zero by the passes made for them. Shapes the
+  clothing does not follow keep their weight too (the Ultinova's collar fluff, hidden by default, stays hidden: no fabric
+  standing over it).
+- Clothing lined up with the original base's skeleton as it stands (My Avatar puts an outfit on the original's armature
+  over the avatar) keeps the original as it stands. It was scaled to the avatar's size, measured by its bounds, which a
+  custom base's ears and feathers enlarge, and the fit carried the difference onto the clothing: the FishingOutfit rose 7
+  cm on the Ultirex, its collar onto the muzzle, its sleeves torn by the coverage over the arms. It now sits where it was
+  put: the shirt has 62 vertices under the body instead of 125, 17 samples in it at rest instead of 220, and the vest
+  over it 3 under the shirt instead of 327.
+- The coverage of clothing made for another body never pushes one leg's (or arm's) fabric out over the other limb: on the
+  muscled Ultinova, whose thighs meet, it pushed the inner panel of one leg of the FishingOutfit shorts out around the
+  other thigh.
 - The thighs are spread for the coverage only when they meet. Clothing skinned to the hips down the thighs (shorts often
   are) stayed where the spread thighs were, and they came back through it.
 - Head skin near a collar (a muzzle the source lacks) no longer counts as body the source cannot reach: the FishingOutfit

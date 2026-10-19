@@ -13,8 +13,9 @@ namespace Orbiters.ReFit
     /// jumps between body parts. Then the fabric is draped: where it covered the source body and the target skin comes
     /// through, the fabric is pushed out, and each push spreads over the fabric around it as cloth does, so it spans a larger
     /// muscle or fluff instead of tenting at single points. Skin that showed through the clothing on the source (fluff through
-    /// a neckline, skin past a cuff) and target skin the source has no counterpart for never moves it. A body shape added to
-    /// the fit is draped the same way over the shaped target, from the fitted clothing. Runs on captured arrays.
+    /// a neckline, skin past a cuff) and target skin the source has no counterpart for never moves it. A body shape is draped
+    /// the same way from the fitted clothing, over the target with the shape added (or taken away, when the target is fitted
+    /// with it). Runs on captured arrays.
     /// </summary>
     internal sealed class ReFitClothFit
     {

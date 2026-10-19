@@ -21,11 +21,16 @@ in `MCBIntegrationService`, not repeated in commission UI code.
 2. Compare bodies with body blendshapes disabled, except those the clothing sets while it is worn
    (`ReFitRequest.wornBodyShapes`: an outfit toggle hiding fluff or shrinking the skin under it), and on the target the
    shapes the clothing does not follow, at their weight (`ReFitWornShapes.AsShown`: a custom base's hidden collar fluff,
-   its face; followed shapes are fitted at zero and transferred). The target identity includes those. The editor service
+   its face), and, fitting clothing from another body, the followed shapes it shows (see "Shapes the target shows"); other
+   followed shapes are fitted at zero and transferred. The target identity includes those. The editor service
    reads them from the clothing's own VRCFury toggles (the toggle turning the part on, its blendshape actions on the body
    or on every renderer) and Modular Avatar Shape Changers, without referencing either package; both bodies are
    captured with them, and the target identity includes them. Scale the source side by body surface height; hips/head
-   and hand-span landmarks are fallbacks when body bounds are unavailable. Align avatar roots, not hips
+   and hand-span landmarks are fallbacks when body bounds are unavailable. Clothing in the target's space whose weighted
+   bones stand on the source's bones of their name (within 1 cm on average) was lined up with the source as it stands, as
+   My Avatar puts an outfit on the original base's armature over the avatar: the source keeps its size and place. Scaled
+   to the target's bounds (a custom base's ears and feathers enlarge them), the source left the clothing above it, and the
+   fit carried that onto the target: the FishingOutfit rose 7 cm on the Ultirex. Align avatar roots, not hips
    or surface centers: their relative offsets can be intentional edits.
 3. For a standalone source-space garment, evaluate source-joint snapping. An inserted/displaced accessory
    joint can make this worse despite correct name matching. Sample up to 512 vertices before/after snapping;
@@ -100,6 +105,35 @@ clearance, coverage and drape passes below:
   corrects only what it adds: clipping the fit left is measured once and allowed, since shapes are summed when several
   are on and each would otherwise apply the same correction again.
 
+**Shapes the target shows.** Clothing fitted from another body is fitted on the target with the followed shapes it
+shows (an MCB custom base's muscles, at 100 by default), so what shows by default is the fit itself, not a fit at zero
+plus each shape's drape (one drape of 48 passes, often stopped with fabric still under the muscles). A shape counts as
+shown from 10 % of its frame (`ReFitWornShapes.Shown`, as Unity applies it at the body's weight); below that, for shapes
+of several frames (each frame is draped on its own), shapes the clothing sets while worn, clothing on its own body (its
+source is the target, without the shapes) and shapes-only transfers (there is no refit shape to give them back), the
+shape is fitted at zero as before. The target is captured both ways (as shown, and without the shown shapes, its own
+enclosed skin left out).
+- The source is laid onto the target without the shown shapes, the bodies alike, then carried by them: each registered
+  point moves as the skin nearest to it (`ReFitBodyRegistration.Carried`). Laid straight onto the Ultinova's muscles, it
+  reached too little of them, and the Classy pants gave way to the projection passes (44 s instead of 12).
+- Each shown shape's clothing frame is the drape taking it away: the body moved by minus the share of the frame it shows,
+  the fabric draped from the fit over that body, and the clothing's motion divided by minus the share. Shapes the target
+  does not show are draped adding them, from that fit.
+- The passes without the cloth fit (bodies that cannot be laid onto each other) fit at zero, as before, and add the shapes:
+  their clearance and coverage only push fabric out, so a shape taken away left the clothing as far out as it had pushed it
+  (the FBX fixture's sculpt: 28 mm from its authored result, 10 allowed; the ThiccWiker onesie: 1607 samples in the body
+  instead of 1261).
+- The refit shape gives back what those frames show (`GiveBackShown`): the refit with the shapes at the body's weights is
+  the fit, and the refit alone is the clothing draped back without them. The drape taking a shape away only pushes, so
+  fabric the shape pushed out stays out where the skin allows: without its muscles the clothing stands a little looser
+  than a fit made there (where nothing was pushed, the refit alone is the fit at zero).
+- Garments worn under it are captured with their own versions of the shown shapes at the body's weight and take them away
+  with it. Skin weights are matched on the target without the shown shapes, where the bodies are alike: matched on the
+  muscles, the Comfy tank top's hips followed a change of skinning they should not have, and came through in steps.
+- The thighs are spread for the coverage by how they meet without the shapes: spread for the muscled Ultipaw and Ultinova,
+  the FishingOutfit shorts (skinned to the hips down the thighs) stayed where the spread thighs were and they came back
+  through them (Ultipaw: 197 vertices under the body instead of 22).
+
 On the replayed outfits it runs in 5 to 15 s with their shapes, with up to nine times fewer spikes and no torn panels
 with all shapes on (see VALIDATION.md).
 
@@ -140,7 +174,10 @@ shape frame only over folds of its skin), then pushes the fabric out over covere
 the push over the fabric and capping it at what the skin around needed. Closed rings follow the fabric under each part
 of them; small closed details ride with it whole. The fabric's BVH is refitted between rebuilds, and the drape reports
 progress and stops on cancellation. A fit made with the coverage records it, and shapes added to it later are covered
-and draped the same way, the fit standing for where the clothing was made.
+and draped the same way, the fit standing for where the clothing was made. Of clothing made for another body, fabric of
+one leg or arm (the limb of the source it lay over as made, away from its hems) is never pushed out over the other limb's
+skin: the muscled Ultinova's thighs meet and squeeze the inner panel of one leg of the FishingOutfit shorts into the other
+thigh, and pushed out over that thigh it wrapped around it.
 
 World-space deformation becomes mesh-local pre-skin deltas. Keeping the original rig requires inverse skin
 conversion; replacing it uses planned bindposes and a target-space basis. This is not an exact surface-fitting

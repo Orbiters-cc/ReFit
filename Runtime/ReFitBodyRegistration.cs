@@ -82,6 +82,28 @@ namespace Orbiters.ReFit
             return result;
         }
 
+        /// <summary>
+        /// The source laid onto a body, carried with it by its shapes: each registered point moves as the skin nearest to it on
+        /// <paramref name="laidOnto"/> (<paramref name="motion"/> per vertex). Laid onto the target without the shapes it shows
+        /// (the bodies alike), the source follows them onto <paramref name="target"/>. The gaps are those of the laying.
+        /// </summary>
+        public ReFitBodyRegistration Carried(MeshSnapshot laidOnto, SurfaceBvh laidIndex, Vector3[] motion, MeshSnapshot target)
+        {
+            var moved = new Vector3[registered.Length];
+            Parallel.For(0, moved.Length, v =>
+            {
+                moved[v] = registered[v];
+                var hit = laidIndex.ClosestPoint(registered[v], Reach);
+                if (!hit.found) return;
+                int t = hit.triangle * 3;
+                moved[v] += motion[laidOnto.triangles[t]] * hit.bary.x + motion[laidOnto.triangles[t + 1]] * hit.bary.y +
+                            motion[laidOnto.triangles[t + 2]] * hit.bary.z;
+            });
+            var carried = new ReFitBodyRegistration(source, moved, confidence, medianGap, p95Gap) { timing = timing };
+            Captured?.Invoke(carried, target);
+            return carried;
+        }
+
         /// <summary>The target point of a source surface point.</summary>
         public Vector3 Point(int triangle, Vector3 bary)
         {

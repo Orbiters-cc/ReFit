@@ -692,6 +692,11 @@ namespace Orbiters.ReFit
 
         private static void ScaleAndAlign(NormalizedStage stage, ReFitReport report)
         {
+            if (LinedUpWithSource(stage))
+            {
+                report.Info("scale-lined-up", "The clothing is lined up with the source's skeleton as it stands: the source keeps its size and place.");
+                return;
+            }
             var sourceBounds = BakedWorldBounds(stage.sourceBody);
             var targetBounds = BakedWorldBounds(stage.targetBody);
             var measure = SelectScaleMeasure(stage, sourceBounds, targetBounds, report);
@@ -724,6 +729,44 @@ namespace Orbiters.ReFit
                 if (stage.assetStageRoot != null && !stage.assetInTargetSpace)
                     stage.assetStageRoot.position += rootOffset;
             }
+        }
+
+        // The bones the clothing's mesh is weighted to stand on the source's bones of their name within this distance on average,
+        // over at least this many bones: it was lined up with the source as the source stands. (Its other bones, a face rig
+        // the outfit carries along, may follow the avatar's head.)
+        private const float LinedUpDistance = .01f;
+        private const int LinedUpBones = 4;
+
+        /// <summary>
+        /// Clothing in the target's space lined up with the source's skeleton as it stands (My Avatar puts clothing on the
+        /// original base's armature over the avatar). Scaled to the target's size, measured by bounds that a custom base's ears
+        /// and feathers enlarge, the source would no longer be where the clothing was lined up with it, and the fit would carry
+        /// the difference onto the target: the FishingOutfit on the Ultirex rose 6 cm (the source scaled by 0.965).
+        /// </summary>
+        private static bool LinedUpWithSource(NormalizedStage stage)
+        {
+            var renderer = stage.assetRenderer;
+            if (!stage.assetInTargetSpace || renderer == null || renderer.bones == null || renderer.sharedMesh == null) return false;
+            var all = renderer.bones;
+            var weighted = new bool[all.Length];
+            foreach (var w in renderer.sharedMesh.boneWeights)
+            {
+                if (w.weight0 > 0f && w.boneIndex0 < weighted.Length) weighted[w.boneIndex0] = true;
+                if (w.weight1 > 0f && w.boneIndex1 < weighted.Length) weighted[w.boneIndex1] = true;
+                if (w.weight2 > 0f && w.boneIndex2 < weighted.Length) weighted[w.boneIndex2] = true;
+                if (w.weight3 > 0f && w.boneIndex3 < weighted.Length) weighted[w.boneIndex3] = true;
+            }
+            var bones = new List<Transform>();
+            for (int b = 0; b < all.Length; b++) if (all[b] != null && weighted[b]) bones.Add(all[b]);
+            int count = 0;
+            float total = 0f;
+            foreach (var pair in HumanoidBoneMapper.MatchBonesByName(bones, stage.sourceRoot.transform))
+            {
+                if (pair.Value == null) continue;
+                total += (pair.Key.position - pair.Value.position).magnitude;
+                count++;
+            }
+            return count >= LinedUpBones && total / count <= LinedUpDistance;
         }
 
         private static ScaleMeasure SelectScaleMeasure(

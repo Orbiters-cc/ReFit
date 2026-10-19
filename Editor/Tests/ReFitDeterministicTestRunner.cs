@@ -152,8 +152,11 @@ namespace Orbiters.ReFit.Editor.Tests
                 "Scale matching ignores skeleton pose outliers when body surfaces match",
                 ScaleMatching_EqualBodySurfacesIgnoreSkeletonPoseOutliers);
             RunCase(failures,
-                "Active non-target body blendshapes do not affect primary refit",
-                MeshAndBlendshape_ActiveNonTargetBodyShapes_DoNotAffectPrimaryRefit);
+                "Active body blendshapes the clothing does not follow are fitted as the target shows them",
+                MeshAndBlendshape_ActiveNonTargetBodyShapes_AreFittedAsShown);
+            RunCase(failures,
+                "A followed shape the target shows is fitted with it",
+                MeshAndBlendshape_ShownFollowedShape_FittedWithTheTarget);
             RunCase(failures,
                 "Primary smoothing does not smooth transferred blendshapes",
                 TransferredBlendshapeSmoothing_IsIndependentFromPrimarySmoothing);
@@ -695,10 +698,14 @@ namespace Orbiters.ReFit.Editor.Tests
             }
         }
 
-        private static void MeshAndBlendshape_ActiveNonTargetBodyShapes_DoNotAffectPrimaryRefit()
+        // A shape the clothing does not follow keeps its weight on the target (ReFitWornShapes.AsShown): the refit fits the body
+        // as it shows, moved forward by it, and the followed shape is still transferred.
+        private static void MeshAndBlendshape_ActiveNonTargetBodyShapes_AreFittedAsShown()
         {
             using (var fixture = ReFitTestFixture.Create())
             {
+                var request = BuildMeshAndBlendshapeRequest(fixture, fixture.sourceSpaceAccessory.renderer, false);
+                var without = new ReFitEngine().Run(request);
                 var mesh = fixture.target.renderer.sharedMesh;
                 var deltas = new Vector3[mesh.vertexCount];
                 for (int i = 0; i < deltas.Length; i++)
@@ -706,23 +713,128 @@ namespace Orbiters.ReFit.Editor.Tests
                 mesh.AddBlendShapeFrame("ActiveButNotRequested", 100f, deltas, null, null);
                 fixture.target.renderer.SetBlendShapeWeight(mesh.GetBlendShapeIndex("ActiveButNotRequested"), 100f);
 
-                var request = BuildMeshAndBlendshapeRequest(fixture, fixture.sourceSpaceAccessory.renderer, false);
-                var comp = new ReFitEngine().Run(request);
+                request = BuildMeshAndBlendshapeRequest(fixture, fixture.sourceSpaceAccessory.renderer, false);
+                var with = new ReFitEngine().Run(request);
                 try
                 {
-                    AssertComputationSucceeded(comp);
-                    float maxPrimaryDrift = MaxBlendShapeMagnitude(comp.mesh, comp.primaryShapeName);
-                    Debug.Log($"[ReFit Tests] Primary refit drift with active unrelated target shape: {maxPrimaryDrift * 1000f:0.###} mm");
-                    AssertLessOrEqual(maxPrimaryDrift, PrimaryRefitDriftTolerance,
-                        $"Current target body blendshape weights must not leak into the default mesh-to-mesh comparison. " +
-                        $"Max drift was {maxPrimaryDrift * 1000f:0.###} mm.");
-                    AssertTransferredMuscleShape(comp.mesh, SingleSecondaryShape(comp));
+                    AssertComputationSucceeded(without);
+                    AssertComputationSucceeded(with);
+                    var asset = MeshSnapshot.Capture(fixture.sourceSpaceAccessory.renderer, false, null, null);
+                    var target = MeshSnapshot.Capture(fixture.target.renderer, false, null, null);
+                    var a = GetBlendShapeDeltas(without.mesh, without.primaryShapeName);
+                    var b = GetBlendShapeDeltas(with.mesh, with.primaryShapeName);
+                    var moved = Vector3.zero;
+                    for (int i = 0; i < a.Length; i++) moved += asset.skinMatrices[i].MultiplyVector(b[i] - a[i]);
+                    moved /= Mathf.Max(1, a.Length);
+                    var shape = Vector3.zero;
+                    for (int i = 0; i < deltas.Length; i++) shape += target.skinMatrices[i].MultiplyVector(deltas[i]);
+                    shape /= Mathf.Max(1, deltas.Length);
+                    Debug.Log($"[ReFit Tests] Refit with an active shape the clothing does not follow: moved {moved * 1000f} mm on average, the shape {shape * 1000f} mm.");
+                    AssertLessOrEqual((moved - shape).magnitude, shape.magnitude * .25f,
+                        $"The refit did not fit the target as it shows: it moved {moved * 1000f} mm on average with the shape, which moves the body {shape * 1000f} mm.");
+                    AssertTransferredMuscleShape(with.mesh, SingleSecondaryShape(with));
                 }
                 finally
                 {
-                    DestroyComputationMesh(comp);
+                    DestroyComputationMesh(without);
+                    DestroyComputationMesh(with);
                 }
             }
+        }
+
+        // A followed shape the target shows is fitted with it by the cloth fit: the refit with the transferred shape at the body's
+        // weight covers the shaped body, the refit alone covers the body without the shape. The passes without the cloth fit fit
+        // at zero, as before. (Shown at 25 %: further out, the fixture's coarse source grid carried by the muscle's sharp bump
+        // misses too much of it, and the cloth fit gives way.)
+        private static void MeshAndBlendshape_ShownFollowedShape_FittedWithTheTarget()
+        {
+            foreach (var (clothFit, weight) in new[] { (true, 25f), (false, 100f) })
+                using (var fixture = ReFitTestFixture.Create())
+                {
+                    string path = clothFit ? "cloth fit" : "without the cloth fit";
+                    var request = BuildMeshAndBlendshapeRequest(fixture, fixture.sourceSpaceAccessory.renderer, false);
+                    request.settings.clothFit = clothFit;
+                    var zero = new ReFitEngine().Run(request);
+                    fixture.target.renderer.SetBlendShapeWeight(fixture.target.mesh.GetBlendShapeIndex(BodyShapeName), weight);
+                    request = BuildMeshAndBlendshapeRequest(fixture, fixture.sourceSpaceAccessory.renderer, false);
+                    request.settings.clothFit = clothFit;
+                    var shown = new ReFitEngine().Run(request);
+                    try
+                    {
+                        AssertComputationSucceeded(zero);
+                        AssertComputationSucceeded(shown);
+                        AssertTrue(!zero.report.messages.Exists(m => m.code == "followed-shapes-shown"),
+                            $"{path}: a followed shape at zero was reported shown.");
+                        AssertTrue(shown.report.messages.Exists(m => m.code == "followed-shapes-shown"),
+                            $"{path}: the followed shape the target shows was fitted at zero.");
+                        bool atZero = shown.report.messages.Exists(m => m.code == "followed-shapes-zero");
+                        AssertTrue(atZero != clothFit, clothFit ? "The cloth fit did not fit the shape the target shows."
+                            : "The passes without the cloth fit did not fit the shape at zero.");
+                        AssertTransferredMuscleShape(shown.mesh, SingleSecondaryShape(shown));
+                        int zeroOn = ClothingUnderBody(fixture, zero, weight, out float zeroOnDepth);
+                        int zeroOff = ClothingUnderBody(fixture, zero, 0f, out float zeroOffDepth);
+                        int shownOn = ClothingUnderBody(fixture, shown, weight, out float shownOnDepth);
+                        int shownOff = ClothingUnderBody(fixture, shown, 0f, out float shownOffDepth);
+                        Debug.Log($"[ReFit Tests] Shown followed shape ({path}): under the body with the shape on {zeroOn} " +
+                                  $"({zeroOnDepth * 1000f:0.0} mm) fitted at zero, {shownOn} ({shownOnDepth * 1000f:0.0} mm) fitted with it; " +
+                                  $"off {zeroOff} ({zeroOffDepth * 1000f:0.0} mm), {shownOff} ({shownOffDepth * 1000f:0.0} mm).");
+                        AssertTrue(shownOn <= zeroOn, $"{path}: fitted with the shape, {shownOn} clothing vertices lie under the shaped body " +
+                                                      $"({zeroOn} fitted at zero).");
+                        AssertTrue(shownOff <= zeroOff + ShownShapeOffSlack, $"{path}: without the shape, {shownOff} clothing vertices lie under " +
+                                                                             $"the body ({zeroOff} fitted at zero).");
+                        // Without the shape both refits are the clothing on the body without it: fitted there, or draped back to it. The
+                        // drape taking the shape away only pushes: fabric the shape pushed out stays out where the skin allows, never as
+                        // far as the shape moves the clothing. Fitted at zero, they are the same refit.
+                        var zeroPrimary = GetBlendShapeDeltas(zero.mesh, zero.primaryShapeName);
+                        var shownPrimary = GetBlendShapeDeltas(shown.mesh, shown.primaryShapeName);
+                        var shownShape = GetBlendShapeDeltas(shown.mesh, SingleSecondaryShape(shown));
+                        float apart = 0f, moved = 0f;
+                        for (int i = 0; i < zeroPrimary.Length; i++)
+                        {
+                            apart += (zeroPrimary[i] - shownPrimary[i]).magnitude;
+                            moved += shownShape[i].magnitude * weight / 100f;
+                        }
+                        apart /= Mathf.Max(1, zeroPrimary.Length);
+                        moved /= Mathf.Max(1, zeroPrimary.Length);
+                        Debug.Log($"[ReFit Tests] Shown followed shape ({path}): the refits without the shape lie {apart * 1000f:0.00} mm apart on average; " +
+                                  $"the shape as shown moves the clothing {moved * 1000f:0.00} mm.");
+                        AssertLessOrEqual(apart, clothFit ? moved * .5f : PrimaryRefitDriftTolerance,
+                            $"{path}: the refit giving the shape back lies {apart * 1000f:0.0} mm from the fit at zero on average, the shape as " +
+                            $"shown moves the clothing {moved * 1000f:0.0} mm.");
+                    }
+                    finally
+                    {
+                        DestroyComputationMesh(zero);
+                        DestroyComputationMesh(shown);
+                    }
+                }
+        }
+
+        // Taking the shape away drapes from the fit over the body without it, instead of fitting that body directly.
+        private const int ShownShapeOffSlack = 2;
+
+        // Clothing vertices more than 1 mm under the target body, the refit on and the transferred shape at weight (the body's too).
+        private static int ClothingUnderBody(ReFitTestFixture fixture, ReFitComputation comp, float weight, out float deepest)
+        {
+            var body = MeshSnapshot.Capture(fixture.target.renderer, false,
+                new Dictionary<int, float> { { fixture.target.mesh.GetBlendShapeIndex(BodyShapeName), weight / 100f } }, null);
+            var bodyIndex = SurfaceBvh.Build(body);
+            var asset = MeshSnapshot.Capture(fixture.sourceSpaceAccessory.renderer, false, null, null);
+            var primary = GetBlendShapeDeltas(comp.mesh, comp.primaryShapeName);
+            var shape = GetBlendShapeDeltas(comp.mesh, SingleSecondaryShape(comp));
+            int under = 0;
+            deepest = 0f;
+            for (int i = 0; i < asset.worldVertices.Length; i++)
+            {
+                var p = asset.worldVertices[i] + asset.skinMatrices[i].MultiplyVector(primary[i] + shape[i] * (weight / 100f));
+                var hit = bodyIndex.ClosestPoint(p, 0.1f, null);
+                if (!hit.found) continue;
+                float depth = -Vector3.Dot(p - hit.position, body.BaryNormal(hit.triangle, hit.bary));
+                if (depth <= 0.001f) continue;
+                under++;
+                deepest = Mathf.Max(deepest, depth);
+            }
+            return under;
         }
 
         private static void TransferredBlendshapeSmoothing_IsIndependentFromPrimarySmoothing()

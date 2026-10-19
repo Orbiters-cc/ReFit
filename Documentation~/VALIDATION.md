@@ -1,5 +1,81 @@
 # Validation Records
 
+## 2026-10-19: Followed Shapes Fitted as the Target Shows Them (0.7.0)
+
+Asked: an MCB custom base shows its muscle shapes at 100 by default, and ReFit fitted the clothing with them at zero, then
+added them by a clothing shape draped from that fit (one drape of 48 passes, stopped with 50 to 300 fabric points still
+pushed): what showed by default was the least accurate result. The clothing is now fitted with the followed shapes the
+target shows, and each of those shapes is the drape taking it away; the refit gives back what it shows (DESIGN.md,
+"Shapes the target shows").
+
+Measured with `ReFitRegressionSuite` on the 16 replayed cases that follow a shape the target shows (the Ultinova outfits
+with "orbit muscles 9", the FishingOutfit on the three custom bases, the onesie), against the committed 0.7.0 code run
+again on them (`head.tsv`: `fix2.tsv` predates the star-pose gate for the Ultipaw cases); final run `final3.tsv`. The 16
+other cases are identical.
+
+| Case | Under the body, default | Without the shapes | In the body at rest (3 mm) | Motion added |
+|---|---|---|---|---|
+| Classy turtleneck | 217 → 213 | 186 → 169 | 183 → 152 | 591 → 481 |
+| Classy pants | 144 → 127 | 142 → 114 | 137 → 32 | 708 → 415 |
+| Classy chain | 4517 → 4292 | 4334 → 5898 | 4642 → 4313 | 0 → 0 |
+| Comfy sweater | 142 → 150 | 184 → 113 | 109 → 110 | 724 → 808 |
+| Comfy sweats | 56 → 53 | 53 → 56 | 29 → 34 | 125 → 245 |
+| Comfy tank top | 48 → 49 | 38 → 57 | 74 → 70 | 69 → 58 |
+| Onesie (ThiccWiker) | 617 → 617 | 755 → 755 | 1261 → 1261 | 3241 → 3241 |
+| FishingOutfit Ultipaw shirt | 30 → 21 | 40 → 18 | 10 → 11 | 4131 → 4475 |
+| FishingOutfit Ultipaw shorts | 22 → 32 | 0 → 21 | 42 → 67 | 4818 → 3712 |
+| FishingOutfit Ultipaw vest | 14 → 3 | 19 → 0 | 0 → 0 | 736 → 424 |
+| FishingOutfit Ultinova shirt | 153 → 154 | 147 → 107 | 238 → 235 | 1930 → 1938 |
+| FishingOutfit Ultinova shorts | 337 → 340 | 272 → 139 | 282 → 457 | 4372 → 4953 |
+| FishingOutfit Ultinova vest | 677 → 502 | 395 → 377 | 986 → 734 | 151 → 551 |
+| FishingOutfit Ultirex shirt | 125 → 62 | 140 → 46 | 220 → 17 | 6857 → 6597 |
+| FishingOutfit Ultirex shorts | 177 → 181 | 207 → 146 | 261 → 1 | 5768 → 4581 |
+| FishingOutfit Ultirex vest | 82 → 257 | 76 → 302 | 624 → 473 | 430 → 587 |
+
+In pictures: the Classy pants keep their waistband, fly and belt loops over the muscled thighs (they were dented and
+torn); the Ultirex shirt sits at the neck with clean sleeves, the vest over it (3 vertices under the shirt instead of
+327); the Ultinova vest drapes over the muscles, without the shirt's hole at the chest (the shirt frays under its
+armholes); the Ultinova shorts keep two legs and their pockets. The engine takes the same time in
+all (233 s for the 16 cases).
+
+What did it, and what was tried:
+- Fitting straight onto the muscles: the source laid onto them reached too little of the Ultinova (Classy pants: 8 % of
+  the skin under them unreached, the cloth fit skipped, 44 s in the projection passes), and laid the Novabeast within
+  6 mm (95 %) instead of 2.5. The source is laid onto the target without the shown shapes, then carried by them.
+- Skin weights matched on the muscled body moved the tank top's hips onto the thighs in steps (motion 69 to 816); matched
+  on the body without the shapes, they are the committed ones (58).
+- The thighs spread for the coverage when the muscled thighs meet: the FishingOutfit shorts, skinned to the hips down the
+  thighs, came back through (Ultipaw 22 to 197 under the body). Rejected: the gate looks at the body without the shapes.
+- Where the muscled Ultinova's thighs meet, the coverage pushed the inner panel of one leg of the shorts out around the
+  other thigh (draped up to 204 mm: the legs merged into a skirt). Fabric of one limb is no longer pushed out over the
+  other's skin, for clothing made for another body (on all coverage it moved the onesie, 1261 to 1270). A broader guard,
+  fabric made more than 10 cm from the skin's counterpart, hurt the Ultirex sleeves (118 to 159): rejected.
+- The passes without the cloth fit took a shown shape away the same way, but their clearance and coverage only push
+  out: the FBX fixture's base lay 28 mm from its authored result (10 allowed) and the onesie clipped more (1261 to 1607
+  samples). They fit at zero again, from the target captured without the shapes (its own enclosed skin): identical to
+  the committed results, FBX tests passing.
+- Twice the fit's drape passes when shapes are shown: no gain, the Ultinova vest twice as slow. Rejected.
+- Enzo saw the FishingOutfit sitting too high on the Ultirex. Its armature stood on the avatar's (and the Rexouium's)
+  bones; the stage scaled the Rexouium by 0.965 to the Ultirex's bounds (ears and feathers at their weights), the shirt
+  in the avatar's space was left 4 to 6 cm above it, and the fit carried that onto the target (shirt up 7 cm on average,
+  its collar onto the muzzle, half of it bound to head skin; the coverage then tore the sleeves over the arms). Clothing
+  lined up with the source as it stands now keeps the source unscaled: the shirt moves 4 mm on average.
+
+Tests: the deterministic suite (90 cases through the stepped runner, the window run in its own log scope) passes but for
+the cases failing on the committed code as well (the dense-peaks coverage stance, the onesie's 1261 samples over its
+1250 limit). New: a followed shape the target shows is fitted with it (the cloth fit at 25 %, the projection passes at
+100 % fitting at zero); the case "active non-target body blendshapes do not affect primary refit", stale since the
+target is fitted as it shows, now checks that such a shape moves the refit with the body. `ReFitRegressionSuite`
+resumes after a domain reload (another package compiling in the same editor dropped a run).
+
+Still open: the vests' motion checks (Ultinova 151 to 551: the armholes, fitted over the muscled shoulders, cover the
+upper arm at rest and it comes out of them in motion) and the Sweats' (125 to 245, thighs in steps); the Ultirex vest's
+257 vertices under the body (its dorsal spikes, the avatar's own, through it; it rose over them before); the Ultipaw
+shorts' hems at the back of the knees, kept as tight cuffs over the muscled calves (22 to 32); the Comfy sweater's
+shoulder blades, under the body as authored (142 to 150); the Ultipaw shirt's neckline 1 cm more open at the front.
+With the muscles off, clothing stands a little looser than a fit made there. Shapes-only transfers still add followed
+shapes from zero (no refit shape to give them back).
+
 ## 2026-10-18: Clothing Made for Another Body on the Custom Bases (0.7.0)
 
 Reported: the Rexouium FishingOutfit put on an Ultipaw by My Avatar (resized to 91 %) and refitted from the original base

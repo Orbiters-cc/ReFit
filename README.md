@@ -50,6 +50,16 @@
   the skin under the arms pushed them down over the upper arms, stretched across them when the arms rose. They stay on
   the shoulders (in motion 156 skin points come through the vest, 151 before). The ThiccWiker onesie clips less: 946
   samples in the body at rest instead of 1261, 473 vertices under it instead of 617.
+- Clothing My Avatar resized from another body is covered as such, however little of it lay in the body it is fitted
+  from (`ReFitSettings.madeForAnotherBody`, given by Orbiters Toolkit). The FashionSuit's trousers, made for the Vulper,
+  lay in the Masculine Canine only at the calves, as little as clothing made for that body with a strap pressing in, and
+  the fit kept the calves through them on the Ultipaw. With the Toolkit asking coverage for the suit's pieces too, the
+  jacket on the Ultipaw has 33 vertices under the body instead of 431 (the arms no longer through the sleeves), the
+  trousers 22 instead of 136.
+- The separate pieces of clothing made for another body (a belt with its loops and buckle, pockets) follow the fabric
+  the coverage moves: the FashionSuit's belt sank under the waistband pushed out over the Ultipaw's hips, and the
+  FishingOutfit vest's strap and buckle partly into the vest. Closed rings follow the coverage repair part by part, as
+  the drape already made them.
 - The thighs are spread for the coverage only when they meet. Clothing skinned to the hips down the thighs (shorts often
   are) stayed where the spread thighs were, and they came back through it.
 - Head skin near a collar (a muzzle the source lacks) no longer counts as body the source cannot reach: the FishingOutfit

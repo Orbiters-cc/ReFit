@@ -143,7 +143,11 @@ over 5 mm under it as authored (next to none for clothing made for that body, fr
 FishingOutfit on the Masculine Canine or the Novabeast). The cloth fit keeps what came through the fabric as authored,
 and nothing there was meant to, so the different-base passes below (the coverage repair and `ReFitDrape`) cover the
 target after it and the inner layers have the last word, as for clothing placed on the target itself. Shapes draped by
-the cloth fit stay over the garments worn under it too. Clothing made for the source keeps the cloth fit alone.
+the cloth fit stay over the garments worn under it too. Clothing made for the source keeps the cloth fit alone. A caller
+that knows the clothing was resized from another body says so (`ReFitSettings.madeForAnotherBody`: My Avatar, through
+Orbiters Toolkit's `RefitJob.MadeForAnotherBody`, for clothing resized onto the avatar and not made for its original
+base), and the share is not asked: the FashionSuit's trousers, made for the Vulper, lay under the Masculine Canine only
+at the calves (4 %), the Rexouium FishingOutfit under the Ultirex's original, which it was made for, as much (4.4 %).
 
 Mesh refit without the registration starts from the bound target-minus-source surface displacement. Blendshape transfer evaluates the
 target body's frame displacement at the target binding. Primary and transferred fields have independent
@@ -160,29 +164,36 @@ the clothing's skinning. It does so only when the target's thighs meet (16 point
 other's, facing it; one mesh point gathering both halves of the crotch does not count): clothing skinned to the hips
 down the thighs stays where the spread thighs were, and they come back through it.
 With the different-base coverage, skin enclosed in another part of the target (`MeshSnapshot.HideEnclosedSkin`: out of
-it, the first surface met faces the same way, and from halfway out every way along the skin leaves through a surface too,
-so a single-sided fluff card encloses nothing) is left out of every target query, and `ReFitDrape` follows the body's
-coverage repair of the primary and each transferred field; the inner layers' repair and the covers come after it. It
-keeps covered only target skin whose counterpart on the source lay under the authored clothing (fold walls and skin
+it, the first surface met faces the same way, and from halfway out every way along the skin leaves through a surface
+too, so a single-sided fluff card encloses nothing) is left out of every target query, and `ReFitDrape` follows the
+body's coverage repair of the primary and each transferred field; the inner layers' repair and the covers come after it.
+It keeps covered only target skin whose counterpart on the source lay under the authored clothing (fold walls and skin
 without a counterpart take the decision of the skin around them); of clothing made for another body, also skin of an arm
 or a leg through fabric lying over that limb of the source, farther than 3 cm along the fabric from a hem (a cuff sunk
-into a larger arm reads as a tight cuff, pushed out it flares; on the torso, skin through a panel is as often a hip below
-a hem or a neck in a collar, and covering it pulled a shirt's hem over the crotch), and that fabric is not kept under the
-skin as made. It relaxes fabric crossing itself where it did not as
-authored (a shape frame only the crossings it adds, never into the skin), lets fabric span the folds of the body (a
-shape frame only over folds of its skin), then pushes the fabric out over covered skin still showing through, spreading
-the push over the fabric and capping it at what the skin around needed. Only skin the fabric is nearer than the other
-side of that part of the body pushes it: going on into the body twice as far as the fabric lies, the way must not leave
-it through skin turned the other way, the skin enclosed in another part included (under a custom base's muscles and
-mane). Past the middle of a part, fabric goes out the short way, from the skin across: a vest's strap sunk into a
-muscled shoulder goes out over its top, where the armpit's skin pushed it down the arm. Closed rings follow the fabric under each part
-of them; small closed details ride with it whole. The fabric's BVH is refitted between rebuilds, and the drape reports
-progress and stops on cancellation. A fit made with the coverage records it, and shapes added to it later are covered
-and draped the same way, the fit standing for where the clothing was made. Of clothing made for another body, fabric of
-one leg or arm (the limb of the source it lay over as made, away from its hems) is never pushed out over the other limb's
-skin: the muscled Ultinova's thighs meet and squeeze the inner panel of one leg of the FishingOutfit shorts into the other
-thigh, and pushed out over that thigh it wrapped around it. There the shoulders (clavicles) belong to the torso and the
-arms start at the upper arms, where a sleeve does: fabric over a shoulder is a strap or a sleeve's cap.
+into a larger arm reads as a tight cuff, pushed out it flares; on the torso, skin through a panel is as often a hip
+below a hem or a neck in a collar, and covering it pulled a shirt's hem over the crotch), and that fabric is not kept
+under the skin as made. It relaxes fabric crossing itself where it did not as authored (a shape frame only the crossings
+it adds, never into the skin), lets fabric span the folds of the body (a shape frame only over folds of its skin), then
+pushes the fabric out over covered skin still showing through, spreading the push over the fabric and capping it at what
+the skin around needed. Only skin the fabric is nearer than the other side of that part of the body pushes it: going on
+into the body twice as far as the fabric lies, the way must not leave it through skin turned the other way, the skin
+enclosed in another part included (under a custom base's muscles and mane). Past the middle of a part, fabric goes out
+the short way, from the skin across: a vest's strap sunk into a muscled shoulder goes out over its top, where the
+armpit's skin pushed it down the arm. Closed rings follow the fabric under each part of them; small closed details ride
+with it whole. Of clothing made for another body, the separate pieces up to an eighth of the garment (a belt, its loops
+and buckle, a pocket) follow what untangling and bridging did to the fabric under each part of them, then are draped
+like the rest: left where they were, the FashionSuit's belt and buckle sank under the waistband relaxed out over the
+Ultipaw's hips. The coverage repair before the drape carries them the same way, and its closed rings part by part
+(`ReFitDrape.CarryDetails` for both): carried whole by the largest correction, a belt slid forward and sank at the back.
+Other clothing keeps its pieces to their own corrections: the onesie, a tangle of its own (4882 crossings), carried its
+zipper up to 45 mm with the collar beside it (1070 samples in the body at rest, 946). The fabric's BVH is refitted
+between rebuilds, and the drape reports progress and stops on cancellation. A fit made with the coverage records it, and
+shapes added to it later are covered and draped the same way, the fit standing for where the clothing was made. Of
+clothing made for another body, fabric of one leg or arm (the limb of the source it lay over as made, away from its
+hems) is never pushed out over the other limb's skin: the muscled Ultinova's thighs meet and squeeze the inner panel of
+one leg of the FishingOutfit shorts into the other thigh, and pushed out over that thigh it wrapped around it. There the
+shoulders (clavicles) belong to the torso and the arms start at the upper arms, where a sleeve does: fabric over a
+shoulder is a strap or a sleeve's cap.
 
 World-space deformation becomes mesh-local pre-skin deltas. Keeping the original rig requires inverse skin
 conversion; replacing it uses planned bindposes and a target-space basis. This is not an exact surface-fitting

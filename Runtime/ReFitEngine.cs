@@ -1301,12 +1301,16 @@ namespace Orbiters.ReFit
                     // would keep all of it. The different-base passes cover the target after the cloth fit, as they cover
                     // clothing placed on the target itself.
                     var steps = new StepTimer();
+                    // Resized from another body, a garment can lie under little of the source (only the calves through a pair of
+                    // trousers), as little as clothing made for the source with a strap pressing in: the caller's word decides.
                     float under = AuthoredUnder(asset, bindings, firstSnap);
-                    state.madeForAnother = under > MadeForAnotherShare;
+                    state.madeForAnother = settings.madeForAnotherBody || under > MadeForAnotherShare;
                     if (state.madeForAnother)
                     {
-                        state.Report.Info("cloth-fit-covered", $"{under * 100f:0} % of the clothing near the skin lay more than {MadeForAnotherDepth * 1000f:0} mm " +
-                                                               "under the body it is fitted from: made for another body, it is pushed out of the target after the fit.");
+                        state.Report.Info("cloth-fit-covered", (settings.madeForAnotherBody ? "Made for another body and resized onto this one: " : "") +
+                                                               $"{under * 100f:0} % of the clothing near the skin lay more than {MadeForAnotherDepth * 1000f:0} mm " +
+                                                               "under the body it is fitted from" + (settings.madeForAnotherBody ? "; " : ": made for another body, ") +
+                                                               "it is pushed out of the target after the fit.");
                         CoverBody(state, firstSnap, firstBvh, bvhTarget, primaryGroupDeltas, steps);
                     }
                     else
@@ -1631,7 +1635,8 @@ namespace Orbiters.ReFit
                 steps.Lap("hidden layers");
             }
             ReFitSurfaceCoverage.RepairPrimary(asset, targetBasis, primaryGroupDeltas,
-                state.assetGroupRegions, state.tubes.groups, settings, state.Report, state.targetTriRegions, hidden: state.hiddenGroups);
+                state.assetGroupRegions, state.tubes.groups, settings, state.Report, state.targetTriRegions, hidden: state.hiddenGroups,
+                carryPieces: state.madeForAnother);
             steps.Lap("coverage");
             if (!settings.coverDifferentBaseBody || !settings.enableClearanceCorrection) return;
             SetBackgroundProgress(state, 0.42f, "Draping the clothing over the body");
@@ -1649,7 +1654,7 @@ namespace Orbiters.ReFit
             for (int layer = 0; layer < state.coverageLayers.Count; layer++)
                 ReFitSurfaceCoverage.RepairPrimary(state.asset, state.coverageLayers[layer], primaryGroupDeltas,
                     state.assetGroupRegions, state.tubes.groups, state.settings, state.Report, null, state.coverageLayersAuthored[layer],
-                    innerGarment: state.coverageLayerNames[layer]);
+                    innerGarment: state.coverageLayerNames[layer], carryPieces: state.madeForAnother);
         }
 
         // Clothing lying under the skin it is fitted from by more than this, over more than this share of it near the skin, was

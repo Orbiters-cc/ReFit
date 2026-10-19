@@ -85,6 +85,12 @@ namespace Orbiters.ReFit
         /// <summary>Opt-in residual body coverage for clothing detected on a different avatar base.</summary>
         public bool coverDifferentBaseBody;
         /// <summary>
+        /// With <see cref="coverDifferentBaseBody"/>: the caller knows the clothing was made for another body than the source
+        /// and resized onto it (My Avatar: put on from another base). Whatever of it lies under the source's skin as placed was
+        /// never meant, and is covered after the cloth fit. Otherwise the share of the clothing under the source's skin decides.
+        /// </summary>
+        public bool madeForAnotherBody;
+        /// <summary>
         /// With <see cref="coverDifferentBaseBody"/>, the asset stays outside each coverage layer only where it was outside
         /// that garment as authored: details made to pass under another part (a bowtie band, a collar) stay there. Needs the
         /// asset and its layers staged together on the target (a refit onto the same avatar).

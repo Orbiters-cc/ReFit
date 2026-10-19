@@ -1,5 +1,59 @@
 # Validation Records
 
+## 2026-10-19: The FashionSuit on the Ultipaw through My Avatar (0.7.0)
+
+Reported (screenshot): the FashionSuit made for the Vulper, put on the Ultipaw by My Avatar ("made for another body:
+shrunk to 91 %") and refitted, still showed the fur under the arms through the jacket and the shins through the
+trousers. Two new cases replay it (`fashion-ultipaw-jacket`, over the vest, and `fashion-ultipaw-pants`, placed like the
+FishingOutfit ones, following the shapes My Avatar's refit followed); the 34 cases measured with the code committed
+before (`exit2all.tsv`, `fashion0.tsv` for the new ones) and now (`made2.tsv`).
+
+What kept the clipping:
+- My Avatar never asked for the coverage: Orbiters Toolkit's `ClothingCoverage` knew garments by whole words (`jacket`,
+  `pants`), and the suit's pieces are named `FashionSuitJacket`, `FashionSuitPants`, `FashionSuitVest`. A joined name is
+  now the thing its last word names (`ShirtButton` stays a button), and vests count, fitted between shirt and jacket.
+- Covered, the trousers were still taken for clothing made for the Masculine Canine: 4 % of them lay more than 5 mm in
+  it (the calves), under the 10 % that tells clothing made for another body, and as little as the FishingOutfit on the
+  Ultirex's original, made for it (4.4 %). My Avatar knows: clothing resized onto the avatar and not made for its
+  original base is made for another body (`ClothingCoverage.Resized`, `RefitJob.MadeForAnotherBody`,
+  `ReFitSettings.madeForAnotherBody`), and the share is no longer asked then.
+- The coverage then pushed the waistband out over the Ultipaw's hips and the belt, its loops and buckle (separate
+  pieces, 100 to 340 vertices each) stayed under it: the coverage repair carried pieces only for clothing placed on its
+  own target with the layer order kept, and the drape not at all; its untangling relaxed the waistband out past them (4
+  to 11 mm). Pieces of clothing made for another body now follow the fabric under each part of them in both, and the
+  repair's closed rings part by part (carried whole by the largest correction, a belt slid forward and sank at the
+  back).
+
+| Case | Under the body, default | In the body at rest (3 mm) | Spikes | Crouch (3 mm) | Without the shapes | Motion added |
+|---|---|---|---|---|---|---|
+| FashionSuit jacket | 431 → 33 | 48 → 5 | 468 → 238 | 569 → 520 | 83 → 27 | 4353 → 5018 |
+| FashionSuit trousers | 136 → 22 | 114 → 65 | 236 → 105 | 5014 → 3683 | 67 → 12 | 3218 → 2823 |
+
+In pictures the arms and the chest under them no longer come through the jacket, nor the calves and the backs of the
+knees through the trousers; the belt, its loops and buckle sit on the waistband. The jacket's motion count rose with the
+skin it now covers at rest (it lay under the sleeves before). The engine takes longer on these (the coverage passes and
+the vest under the jacket covered too: 17 s to 28 s for the jacket).
+
+The other cases: clothing not made for another body is unchanged (identical measures). Of the FishingOutfit, whose
+pieces now follow the fabric: the vest's strap, buckle and D-rings and the shorts' pocket flaps and buttons show over
+the fabric again, which the measures count as the vest's crouch 864 → 702, its motion 456 → 568, the Ultipaw shorts'
+crouch 2759 → 2514, the Ultirex shorts' crouch 1023 → 1312, the Ultinova shorts 340 → 363 vertices under the body
+(renders alike but for the pieces on top).
+
+Tried and rejected: details (buttons, rings) following all the drape does to the fabric, not only its push (the Ultipaw
+shorts 32 → 48 under the body); pieces of every clothing following it (the onesie's zipper carried up to 45 mm by the
+collar beside it, 946 → 1070 samples in the body); only pieces lying on fabric along their normal (worse on both, 1300).
+
+Asked as well, still open: the FishingOutfit shorts' hems on the muscled Ultinova sit up to 1 cm into the front of the
+knees over their last 2 cm (see the motion checks below). Placed on the Novabeast, the hems lie 15 to 20 mm inside its
+knees, turned some 70 degrees off the skin; the cloth fit finds no fabric over the knees' counterparts, and the coverage
+of sleeves and legs leaves a hem's last 3 cm as made (a cuff pressing in). Counting hem fabric buried deeper than a cuff
+presses (8 mm) as the leg's covered nothing more: the fabric is turned too far from the skin for the leg's rule to see
+it. Not kept.
+
+Tests: `ClothingCoverageTests` (joined names, vests, layer order, `Resized`), `RefitRecordsTests` (the cache key and the
+runner pass `MadeForAnotherBody`), through reflection.
+
 ## 2026-10-19: Motion Checks over the Shown Muscles (0.7.0)
 
 Asked: with the followed shapes fitted as shown (below), four motion checks rose: the Ultinova vest 151 to 551 skin

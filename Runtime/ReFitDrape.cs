@@ -37,6 +37,8 @@ namespace Orbiters.ReFit
         private readonly int limbGroups;
         private int limbCovered;
         private readonly bool[] authoredUnder, fixedGroups, details, rings;
+        // Of clothing made for another body: its separate pieces (a belt, its loops, a buckle), carried with the fabric.
+        private readonly List<List<int>> pieces;
         // Where each group was made, on the body it was made for (as authored, or as fitted for shapes added to a fit).
         private readonly Vector3[] made;
         // The target body's vertex neighbours (same topology for its shapes).
@@ -102,6 +104,7 @@ namespace Orbiters.ReFit
             edges = new List<(int, int)>(unique);
             details = ReFitSurfaceCoverage.DetailGroups(asset, tubes);
             rings = tubes != null ? (bool[])tubes.Clone() : new bool[asset.GroupCount];
+            pieces = madeForAnother != null ? ReFitSurfaceCoverage.Pieces(asset, details) : new List<List<int>>();
             fixedGroups = ReFitSurfaceCoverage.ProtectOpenings(asset, regions, details);
             if (hidden != null)
                 for (int g = 0; g < hidden.Length && g < fixedGroups.Length; g++) fixedGroups[g] |= hidden[g];
@@ -393,11 +396,18 @@ namespace Orbiters.ReFit
             var wholeSkin = skin.hiddenTriangles != null
                 ? SurfaceBvh.Build(new MeshSnapshot { worldVertices = skin.worldVertices, triangles = skin.triangles })
                 : skinIndex;
+            // Where the fabric started: the pieces on it follow what untangling and bridging do to it.
+            var start = (Vector3[])deltas.Clone();
+            var startBasis = new Vector3[groups];
+            for (int g = 0; g < groups; g++) startBasis[g] = asset.worldVertices[asset.groupRep[g]] + (primary != null ? primary[g] : Vector3.zero) + deltas[g];
             var (tangled, untangled) = Untangle(primary, deltas, skin, skinIndex, cancellation);
             if (tangled > 0)
                 report?.Info("drape-untangle", $"{label}: {tangled} fabric edges crossed the fabric where they did not as authored; {untangled} left after relaxing the fit around them.");
             // A shape frame bridges only folds of the skin: elsewhere a dip of its displacement is the shape (skin shrinking).
             Bridge(primary, deltas, skin, skinIndex, bodyDelta != null);
+            var groupTriangles = new int[asset.triangles.Length];
+            for (int i = 0; i < groupTriangles.Length; i++) groupTriangles[i] = asset.groupOfVertex[asset.triangles[i]];
+            FollowPieces(groupTriangles, start, startBasis, deltas);
             var enclosed = skin.HiddenVertices();
             var skinNormals = skin.FaceNormals ?? skin.CacheFaceNormals();
             // Whether each skin vertex is a wall of a fold (the skin does not move during the drape): 0 not known yet, 1 yes, 2 no.
@@ -536,7 +546,7 @@ namespace Orbiters.ReFit
                         if (fixedGroups[g] || details[g]) push[g] = Vector3.zero;
                 }
             }
-            CarryDetails(basis, push);
+            CarryDetails(groupTriangles, asset.groupAdjacency, basis, push, details, rings, t => !details[groupTriangles[t * 3]]);
             progress?.Invoke(1f);
 
             float largest = 0;
@@ -735,28 +745,57 @@ namespace Orbiters.ReFit
             return t > 0 && t < 1;
         }
 
-        // A closed detail (a zipper pull, a button) rides with the draped fabric nearest to it as one rigid piece. A closed
+        // Of clothing made for another body, the separate pieces follow what relaxing its tangles and bridging the folds did to
+        // the fabric under each part of them (a belt left where it was sank under the waistband relaxed out), unless they moved
+        // more themselves. The drape then pushes them out of the skin like the rest. Clothing placed on its own target can be
+        // a tangle of its own (the onesie, 4882 crossings), and a zipper carried by the collar beside it went astray.
+        private void FollowPieces(int[] groupTriangles, Vector3[] start, Vector3[] startBasis, Vector3[] deltas)
+        {
+            if (pieces.Count == 0) return;
+            var inPiece = new bool[deltas.Length];
+            foreach (var piece in pieces) foreach (int g in piece) inPiece[g] = true;
+            var change = new Vector3[deltas.Length];
+            for (int g = 0; g < change.Length; g++) change[g] = deltas[g] - start[g];
+            var own = (Vector3[])change.Clone();
+            CarryDetails(groupTriangles, asset.groupAdjacency, startBasis, change, inPiece, inPiece,
+                t => !inPiece[groupTriangles[t * 3]] && !details[groupTriangles[t * 3]]);
+            foreach (var piece in pieces)
+            {
+                float moved = 0, carry = 0;
+                foreach (int g in piece) { moved += own[g].magnitude; carry += change[g].magnitude; }
+                if (carry <= moved) continue;
+                foreach (int g in piece) deltas[g] = start[g] + change[g];
+            }
+        }
+
+        // A closed detail (a zipper pull, a button) rides with the moved fabric nearest to it as one rigid piece. A closed
         // ring (a belt, a collar, a bracelet) goes around the body: each part of it follows the fabric under that part,
         // smoothed along the ring so it stays whole. Carried whole by the largest push, a belt slid forward over a grown belly
         // and its back half sank into the body.
         private const int RingPasses = 4;
 
-        private void CarryDetails(Vector3[] basis, Vector3[] push)
+        /// <summary>
+        /// Moves the details (<paramref name="details"/>) with the fabric nearest to them: by <paramref name="push"/>, the
+        /// fabric's displacement per group, set in place for the details' groups.
+        /// </summary>
+        /// <param name="triangles">The fabric's triangles by group, over <paramref name="basis"/> (positions by group).</param>
+        /// <param name="rings">Groups of closed rings (<see cref="ReFitTubeField"/>): a detail with one follows along itself.</param>
+        /// <param name="fabric">The triangles a detail may follow.</param>
+        internal static void CarryDetails(int[] triangles, List<int>[] adjacency, Vector3[] basis, Vector3[] push, bool[] details, bool[] rings,
+            Func<int, bool> fabric)
         {
             var visited = new bool[details.Length];
-            var fabric = new MeshSnapshot { worldVertices = new Vector3[asset.worldVertices.Length], triangles = asset.triangles };
-            for (int i = 0; i < fabric.worldVertices.Length; i++) fabric.worldVertices[i] = basis[asset.groupOfVertex[i]];
             SurfaceBvh index = null;
             for (int start = 0; start < details.Length; start++)
             {
                 if (!details[start] || visited[start]) continue;
-                index ??= SurfaceBvh.Build(fabric);
+                index ??= SurfaceBvh.Build(new MeshSnapshot { worldVertices = basis, triangles = triangles });
                 var members = new List<int>();
                 var queue = new Queue<int>(); queue.Enqueue(start); visited[start] = true;
                 while (queue.Count > 0)
                 {
                     int g = queue.Dequeue(); members.Add(g);
-                    foreach (int n in asset.groupAdjacency[g]) if (details[n] && !visited[n]) { visited[n] = true; queue.Enqueue(n); }
+                    foreach (int n in adjacency[g]) if (details[n] && !visited[n]) { visited[n] = true; queue.Enqueue(n); }
                 }
                 var carried = new Vector3[members.Count];
                 var found = new bool[members.Count];
@@ -765,12 +804,11 @@ namespace Orbiters.ReFit
                 for (int m = 0; m < members.Count; m++)
                 {
                     int g = members[m];
-                    ring |= rings[g];
-                    var hit = index.ClosestPoint(basis[g], .04f, t => !details[asset.groupOfVertex[asset.triangles[t * 3]]]);
+                    ring |= rings != null && rings[g];
+                    var hit = index.ClosestPoint(basis[g], .04f, fabric);
                     if (!hit.found) continue;
                     int t3 = hit.triangle * 3;
-                    var d = push[asset.groupOfVertex[asset.triangles[t3]]] * hit.bary.x + push[asset.groupOfVertex[asset.triangles[t3 + 1]]] * hit.bary.y +
-                            push[asset.groupOfVertex[asset.triangles[t3 + 2]]] * hit.bary.z;
+                    var d = push[triangles[t3]] * hit.bary.x + push[triangles[t3 + 1]] * hit.bary.y + push[triangles[t3 + 2]] * hit.bary.z;
                     carried[m] = d;
                     found[m] = true;
                     if (d.sqrMagnitude > carry.sqrMagnitude) carry = d;
@@ -780,14 +818,14 @@ namespace Orbiters.ReFit
                     foreach (int g in members) push[g] = carry;
                     continue;
                 }
-                FollowAlong(members, carried, found);
+                FollowAlong(adjacency, members, carried, found);
                 for (int m = 0; m < members.Count; m++) push[members[m]] = carried[m];
             }
         }
 
         // A ring's carry: parts away from the fabric take it from their neighbours along the ring, then the whole is smoothed
         // over the ring (its cross-sections stay round, its path unkinked).
-        private void FollowAlong(List<int> members, Vector3[] carried, bool[] found)
+        private static void FollowAlong(List<int>[] adjacency, List<int> members, Vector3[] carried, bool[] found)
         {
             var member = new Dictionary<int, int>(members.Count);
             for (int m = 0; m < members.Count; m++) member[members[m]] = m;
@@ -796,7 +834,7 @@ namespace Orbiters.ReFit
             while (queue.Count > 0)
             {
                 int m = queue.Dequeue();
-                foreach (int n in asset.groupAdjacency[members[m]])
+                foreach (int n in adjacency[members[m]])
                 {
                     if (!member.TryGetValue(n, out int other) || found[other]) continue;
                     found[other] = true;
@@ -811,7 +849,7 @@ namespace Orbiters.ReFit
                 {
                     var sum = Vector3.zero;
                     int count = 0;
-                    foreach (int n in asset.groupAdjacency[members[m]])
+                    foreach (int n in adjacency[members[m]])
                         if (member.TryGetValue(n, out int other)) { sum += carried[other]; count++; }
                     next[m] = count > 0 ? Vector3.Lerp(carried[m], sum / count, .5f) : carried[m];
                 }

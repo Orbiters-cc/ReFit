@@ -35,12 +35,14 @@ namespace Orbiters.ReFit
         private bool repair;
         // A clothing layer kept in its authored order: supports keep the authored gap (up to LayerClearance), not RepairSafety.
         private bool layer;
-        // Small separate pieces (a pocket square, pins, buttons) carried with the fabric around them, when the order is kept.
+        // Small separate pieces (a pocket square, pins, a belt and its loops) carried with the fabric around them, when the order
+        // is kept or the clothing was made for another body.
         private List<List<int>> pieces;
         private bool[] protectedGroups;
         private int[] triangles;
         private Vector3[] outward;
-        private bool[] tubes;
+        // The closed details carried with the fabric, and of them the closed rings (a belt, a drawstring).
+        private bool[] tubes, rings;
         // What the supports keep the clothing outside of, for diagnostics: the body or an inner garment.
         private string surfaceName;
         // Where the time went (diagnostics): building the supports, the passes, and the regularization within them.
@@ -62,9 +64,13 @@ namespace Orbiters.ReFit
 
         /// <param name="authored">A clothing layer's vertices as authored: support only where the asset was outside it.</param>
         /// <param name="innerGarment">The garment's name when <paramref name="body"/> is an inner garment, not the body.</param>
+        /// <param name="carryPieces">
+        /// Clothing made for another body: the coverage moves it far (a waistband pushed out over larger hips), and its separate
+        /// pieces come along (<see cref="ReFitSettings.coverageKeepsLayerOrder"/> carries them too).
+        /// </param>
         public static ReFitSurfaceCoverage Build(MeshSnapshot asset, MeshSnapshot body, Vector3[] primary,
             BodyRegion[] regions, bool[] tubes, ReFitSettings settings, BodyRegion[] bodyRegions = null, Vector3[] authored = null,
-            bool[] hidden = null, string innerGarment = null)
+            bool[] hidden = null, string innerGarment = null, bool carryPieces = false)
         {
             if (!settings.enableClearanceCorrection || (!settings.coverDifferentBaseBody &&
                 (!settings.preserveLowerBodyCoverage || !IsLowerBodyCloth(asset, regions, tubes)))) return null;
@@ -72,7 +78,8 @@ namespace Orbiters.ReFit
             var result = new ReFitSurfaceCoverage { basis = new Vector3[asset.GroupCount], adjacency = asset.groupAdjacency, repair = settings.coverDifferentBaseBody,
                 layer = authored != null, surfaceName = innerGarment != null ? $"inner garment '{innerGarment}'" : "the body surface" };
             result.tubes = result.repair ? DetailGroups(asset, tubes) : tubes;
-            if (result.repair && settings.coverageKeepsLayerOrder) result.pieces = Pieces(asset, result.tubes);
+            result.rings = tubes;
+            if (result.repair && (settings.coverageKeepsLayerOrder || carryPieces)) result.pieces = Pieces(asset, result.tubes);
             result.protectedGroups = result.repair ? ProtectOpenings(asset, regions, result.tubes) : tubes;
             if (result.repair && hidden != null)
                 for (int g = 0; g < hidden.Length; g++) result.protectedGroups[g] |= hidden[g];
@@ -387,10 +394,10 @@ namespace Orbiters.ReFit
 
         public static void RepairPrimary(MeshSnapshot asset, MeshSnapshot body, Vector3[] primary,
             BodyRegion[] regions, bool[] tubes, ReFitSettings settings, ReFitReport report, BodyRegion[] bodyRegions, Vector3[] authored = null,
-            bool[] hidden = null, string innerGarment = null)
+            bool[] hidden = null, string innerGarment = null, bool carryPieces = false)
         {
             if (!settings.coverDifferentBaseBody) return;
-            var coverage = Build(asset, body, primary, regions, tubes, settings, bodyRegions, authored, hidden, innerGarment);
+            var coverage = Build(asset, body, primary, regions, tubes, settings, bodyRegions, authored, hidden, innerGarment, carryPieces);
             if (coverage == null) return;
             var correction = new Vector3[primary.Length];
             coverage.Apply(body, null, correction, new Vector3[primary.Length], settings, report, "different-base coverage");
@@ -533,7 +540,7 @@ namespace Orbiters.ReFit
             : $"{label}: clothing remains only {clearance * 1000:F2}mm from {surface} after the bounded correction and may clip. Inspect the garment at individual and combined shape weights.";
 
         // Separate pieces up to an eighth of the garment, other than the closed details already carried.
-        private static List<List<int>> Pieces(MeshSnapshot asset, bool[] details)
+        internal static List<List<int>> Pieces(MeshSnapshot asset, bool[] details)
         {
             var visited = new bool[asset.GroupCount]; var components = new List<List<int>>(); int largest = 0;
             for (int start = 0; start < visited.Length; start++)
@@ -550,60 +557,39 @@ namespace Orbiters.ReFit
             return components.Where(c => c.Count < largest / 8 && !c.Exists(g => details != null && details[g])).ToList();
         }
 
-        // A piece not connected to the fabric it sits on rides with it as one rigid part, unless its own correction is larger:
-        // a pocket square or a pin must not sink into fabric pushed out of the body.
+        // A piece not connected to the fabric it sits on follows the fabric under each part of it, unless its own correction is
+        // larger: a pocket square, a pin or a belt must not sink into fabric pushed out of the body. A belt goes around the
+        // waist: carried whole by the largest correction, its loops and buckle sank under the waistband pushed out at the front.
         private void FollowPieces(Vector3[] deltas, Vector3[] original)
         {
             if (pieces == null || pieces.Count == 0) return;
-            var cloth = new MeshSnapshot { worldVertices = basis, triangles = triangles };
-            var index = SurfaceBvh.Build(cloth);
+            var inPiece = new bool[deltas.Length];
+            foreach (var piece in pieces) foreach (int g in piece) inPiece[g] = true;
+            var moved = new Vector3[deltas.Length];
+            for (int g = 0; g < moved.Length; g++) moved[g] = deltas[g] - original[g];
+            var carried = (Vector3[])moved.Clone();
+            ReFitDrape.CarryDetails(triangles, adjacency, basis, carried, inPiece, inPiece,
+                t => !inPiece[triangles[t * 3]] && !inPiece[triangles[t * 3 + 1]] && !inPiece[triangles[t * 3 + 2]]);
             foreach (var piece in pieces)
             {
-                var members = new HashSet<int>(piece);
-                Vector3 carry = Vector3.zero, own = Vector3.zero;
-                foreach (int g in piece)
-                {
-                    own += deltas[g] - original[g];
-                    var hit = index.ClosestPoint(basis[g], .04f, t => !members.Contains(triangles[t * 3]) && !members.Contains(triangles[t * 3 + 1]) && !members.Contains(triangles[t * 3 + 2]));
-                    if (!hit.found) continue;
-                    int a = triangles[hit.triangle * 3], b = triangles[hit.triangle * 3 + 1], c = triangles[hit.triangle * 3 + 2];
-                    var d = (deltas[a] - original[a]) * hit.bary.x + (deltas[b] - original[b]) * hit.bary.y + (deltas[c] - original[c]) * hit.bary.z;
-                    if (d.sqrMagnitude > carry.sqrMagnitude) carry = d;
-                }
-                own /= piece.Count;
-                if (carry.sqrMagnitude <= own.sqrMagnitude) continue;
-                foreach (int g in piece) deltas[g] = original[g] + carry;
+                float own = 0, carry = 0;
+                foreach (int g in piece) { own += moved[g].magnitude; carry += carried[g].magnitude; }
+                if (carry <= own) continue;
+                foreach (int g in piece) deltas[g] = original[g] + carried[g];
             }
         }
 
         private void FollowDetails(Vector3[] deltas, Vector3[] original)
         {
             if (tubes == null || Array.IndexOf(tubes, true) < 0) return;
-            // Carry a closed detail (e.g. a drawstring) with the nearby expanded fabric as one
-            // rigid piece. Its cross-section and authored folds must not be inflated vertex by vertex.
-            var cloth = new MeshSnapshot { worldVertices = basis, triangles = triangles };
-            var index = SurfaceBvh.Build(cloth);
-            var visited = new bool[basis.Length];
-            for (int start = 0; start < tubes.Length; start++)
-            {
-                if (!tubes[start] || visited[start]) continue;
-                var members = new List<int>(); var queue = new Queue<int>(); queue.Enqueue(start); visited[start] = true;
-                while (queue.Count > 0)
-                {
-                    int g = queue.Dequeue(); members.Add(g);
-                    foreach (int n in adjacency[g]) if (tubes[n] && !visited[n]) { visited[n] = true; queue.Enqueue(n); }
-                }
-                Vector3 carry = Vector3.zero;
-                foreach (int g in members)
-                {
-                    var hit = index.ClosestPoint(basis[g], .04f, t => !protectedGroups[triangles[t*3]] && !protectedGroups[triangles[t*3+1]] && !protectedGroups[triangles[t*3+2]]);
-                    if (!hit.found) continue;
-                    int a = triangles[hit.triangle*3], b = triangles[hit.triangle*3+1], c = triangles[hit.triangle*3+2];
-                    var d = (deltas[a]-original[a])*hit.bary.x + (deltas[b]-original[b])*hit.bary.y + (deltas[c]-original[c])*hit.bary.z;
-                    if (d.sqrMagnitude > carry.sqrMagnitude) carry = d;
-                }
-                foreach (int g in members) deltas[g] = original[g] + carry;
-            }
+            // A closed detail (a button) rides with the expanded fabric near it as one rigid piece, its cross-section and
+            // folds never inflated vertex by vertex; a closed ring (a belt) follows the fabric under each part of it: carried
+            // whole by the largest correction, a belt slid forward and its back half sank under the waistband pushed out.
+            var moved = new Vector3[deltas.Length];
+            for (int g = 0; g < moved.Length; g++) moved[g] = deltas[g] - original[g];
+            ReFitDrape.CarryDetails(triangles, adjacency, basis, moved, tubes, rings,
+                t => !protectedGroups[triangles[t * 3]] && !protectedGroups[triangles[t * 3 + 1]] && !protectedGroups[triangles[t * 3 + 2]]);
+            for (int g = 0; g < deltas.Length; g++) if (tubes[g]) deltas[g] = original[g] + moved[g];
         }
 
         private sealed class RegularizationLimits

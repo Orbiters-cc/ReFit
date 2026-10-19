@@ -50,6 +50,11 @@ namespace Orbiters.ReFit.Editor.Tests
             /// for it (ClothingCoverage: resized garments). Implies <see cref="myAvatar"/>.
             /// </summary>
             public bool placed;
+            /// <summary>
+            /// Of a <see cref="placed"/> case: made for the target's original base (My Avatar's fit check), so not made for
+            /// another body even when the placement resized it.
+            /// </summary>
+            public bool madeForOriginal;
             /// <summary>Pieces of the same clothing model worn under this one: fitted first, then kept covered (coverage layers).</summary>
             public List<string> layers = new List<string>();
         }
@@ -188,31 +193,49 @@ namespace Orbiters.ReFit.Editor.Tests
         /// FishingOutfit made for the Rexouium, put on by My Avatar: resized onto the Ultipaw and the Ultinova (made for
         /// another body: coverage), worn as made on the Ultirex (the Rexouium's custom base). The jacket over the shirt.
         /// </summary>
-        private static IEnumerable<Case> CustomBase(string name, string sourcePath, string targetPath, Dictionary<string, float> defaults, params string[] shapes)
+        private static IEnumerable<Case> CustomBase(string name, string sourcePath, string targetPath, bool madeForOriginal, Dictionary<string, float> defaults,
+            params string[] shapes)
         {
             foreach (var piece in new[] { "Shirt", "Shorts", "Jacket" })
                 yield return new Case
                 {
                     name = "fishing-" + name + "-" + piece.ToLowerInvariant(), sourcePath = sourcePath, targetPath = targetPath, clothingPath = Fishing,
                     clothingName = piece, targetWeights = new Dictionary<string, float>(defaults), shapes = shapes.ToList(), placed = true, fullBody = true,
-                    layers = piece == "Jacket" ? new List<string> { "Shirt" } : new List<string>(),
+                    madeForOriginal = madeForOriginal, layers = piece == "Jacket" ? new List<string> { "Shirt" } : new List<string>(),
                 };
         }
 
         public static readonly Case[] CustomBaseCases = CustomBase("ultipaw", "Assets/my custom winterpaw orbit/default_MasculineCanine.v1.5.fbx",
-                "Assets/my custom winterpaw orbit/ulti paw v2.8.fbx",
+                "Assets/my custom winterpaw orbit/ulti paw v2.8.fbx", false,
                 new Dictionary<string, float> { { "orbit muscles", 100 }, { "orbit face", 100 }, { "orbit paws", 100 }, { "jawline", 50 }, { "goatee", 50 } },
                 "orbit muscles")
-            .Concat(CustomBase("ultinova", NovabeastPath, Ultinova,
+            .Concat(CustomBase("ultinova", NovabeastPath, Ultinova, false,
                 new Dictionary<string, float> { { "orbit muscles 9", 100 }, { "handsome", 100 }, { "round ears", 100 }, { "goatee", 100 }, { "beard", 100 },
                     { "hideCollar", 100 }, { "hide blush", 100 } },
                 "orbit muscles 9", "bodybuilder"))
             .Concat(CustomBase("ultirex", "Assets/MCB/Authoring/Ultirex/Originals/RexouiumRig1.5_V264_FthrOptions.fbx",
-                "Assets/MCB/Authoring/Ultirex/Ultirex V5.1 custom model.prefab",
+                "Assets/MCB/Authoring/Ultirex/Ultirex V5.1 custom model.prefab", true,
                 new Dictionary<string, float> { { "MuscleOrbit", 100 }, { "bodybuilder", 15 }, { "orbit canine", 100 }, { "jawline", 15 },
                     { "orbit ears wide", 33 }, { "orbit ears floof", 33 }, { "flooooooooof", 100 } },
                 "MuscleOrbit", "bodybuilder"))
+            .Concat(new[]
+            {
+                FashionOnUltipaw("Jacket", new List<string> { "FashionSuitVest" }, "orbit muscles", "orbit face", "jawline"),
+                FashionOnUltipaw("Pants", new List<string>(), "orbit muscles", "orbit face", "orbit paws"),
+            })
             .ToArray();
+
+        /// <summary>
+        /// A FashionSuit piece (made for the Vulper) put on the Ultipaw by My Avatar as reported (2026-10-19): resized onto it
+        /// (made for another body: coverage), following the shapes My Avatar's refit followed. The jacket over the vest.
+        /// </summary>
+        private static Case FashionOnUltipaw(string piece, List<string> layers, params string[] shapes) => new Case
+        {
+            name = "fashion-ultipaw-" + piece.ToLowerInvariant(), sourcePath = "Assets/my custom winterpaw orbit/default_MasculineCanine.v1.5.fbx",
+            targetPath = "Assets/my custom winterpaw orbit/ulti paw v2.8.fbx", clothingPath = FashionSuit, clothingName = "FashionSuit" + piece,
+            targetWeights = new Dictionary<string, float> { { "orbit muscles", 100 }, { "orbit face", 100 }, { "orbit paws", 100 }, { "jawline", 50 }, { "goatee", 50 } },
+            shapes = shapes.ToList(), placed = true, fullBody = true, layers = layers,
+        };
 
         /// <summary>Every replayable case, in the order the regression suite runs them.</summary>
         public static IEnumerable<Case> AllCases => NovabeastCases.Concat(OutfitCases).Concat(new[] { Jockstrap, Onesie, FbxFixture }).Concat(CustomBaseCases);
@@ -362,6 +385,9 @@ namespace Orbiters.ReFit.Editor.Tests
                                                  Orbiters.Toolkit.Editor.VRChat.Refit.ClothingCoverage.Eligible(attachment, renderer ?? clothing) },
                     wornBodyShapes = new Dictionary<string, float>(setup.wornShapes)
                 };
+                // As My Avatar tells it: resized from another body, not made for the original base.
+                request.settings.madeForAnotherBody = request.settings.coverDifferentBaseBody && setup.placed && !setup.madeForOriginal &&
+                                                      Orbiters.Toolkit.Editor.VRChat.Refit.ClothingCoverage.Resized(attachment);
                 // Clothing (underwear and swimwear included) fits snug, as the window's default.
                 ReFitSettingsPresets.ApplyTightness(request.settings, toolkit ? Orbiters.Toolkit.Editor.Refit.RefitPreferences.DefaultTightness
                     : ReFitClothingDetection.IsClothing(clothing, request.targetAvatar) ? .93f : 0f);

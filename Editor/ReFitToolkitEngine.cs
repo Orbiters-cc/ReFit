@@ -39,6 +39,7 @@ namespace Orbiters.ReFit.Editor
             ReFitSettingsPresets.ApplyTightness(settings, job.Tightness);
             // A fit asks for the coverage itself; shapes added to a fit made with it keep it, read from the fit's own data.
             settings.coverDifferentBaseBody = job.Mode == RefitMode.Fit && job.CoverDifferentBaseBody;
+            settings.madeForAnotherBody = settings.coverDifferentBaseBody && job.MadeForAnotherBody;
             bool fit = job.Mode == RefitMode.Fit;
             return new ReFitRequest
             {

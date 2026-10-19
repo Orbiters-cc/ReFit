@@ -9,8 +9,8 @@ Armature planning is in the `ReFitEngine.Armature` partial; it resolves Unity tr
 The split does not introduce a second engine or alternate algorithm.
 
 `orbiters.refit.Editor` owns undo, output assets, snapshots and UI. `ReFitService` is the public facade.
-The optional `orbiters.refit.XRay.Editor` assembly registers external gizmos through `ReFitGizmoIntegration`;
-the main editor assembly has no XRay reference. MCB's optional reflection/authentication bridge is centralized
+`ReFitXRayIntegration` registers the projection and welded-group toggles of `ReFitGizmoIntegration` with the
+Toolkit's Avatar Gizmos toolbar. MCB's optional reflection/authentication bridge is centralized
 in `MCBIntegrationService`, not repeated in commission UI code.
 
 ## Staging and Correspondence

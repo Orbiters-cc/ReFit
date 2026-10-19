@@ -2,7 +2,7 @@
 
 ## 0.7.1 — 2026-10-19
 
-- Requires Orbiters Toolkit 0.4.0: the XRay toolbar entries (projection rays, welded groups) register with the Toolkit's XRay gizmos directly; the separate XRay integration assembly is gone.
+- Requires Orbiters Toolkit 0.4.0: the Scene toolbar entries (projection rays, welded groups) register with the Toolkit's avatar gizmos directly; the separate integration assembly is gone.
 
 ## 0.7.0 — 2026-10-18
 
@@ -439,7 +439,7 @@ into blendshape space, and skin weights that follow the change of skinning betwe
 ## Requirements
 
 - Unity 2022.3+
-- Orbiters Toolkit 0.3.x (shared bone name matching)
+- Orbiters Toolkit 0.4.0 (shared bone name matching, avatar gizmos)
 - No dependency on the VRChat SDK (humanoid `Animator` rigs recommended for best results)
-- XRay Gizmos is optional. Its adapter adds projection/island toggles when installed; the engine and wizard
-  compile without it. The Orbiters account and environment come from Orbiters Toolkit.
+- The projection and welded-group toggles join the Toolkit's Avatar Gizmos toolbar. The Orbiters account and environment come
+  from Orbiters Toolkit.

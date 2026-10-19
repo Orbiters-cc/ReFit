@@ -3114,9 +3114,7 @@ namespace Orbiters.ReFit.Editor.Tests
 
         private static void XRayExtraGizmoRegistry_RegistersAndTogglesExternalGizmo()
         {
-            var adapter = Type.GetType("Orbiters.ReFit.Editor.ReFitXRayIntegration, orbiters.refit.XRay.Editor");
-            if (adapter == null) throw new SkippedTestException("Optional XRay integration is not installed.");
-            adapter.GetMethod("VerifyRegistry").Invoke(null, null);
+            ReFitXRayIntegration.VerifyRegistry();
         }
 
         private static void ArmatureReplacement_ChildFirstPlan_MaterializesWithoutDrift()

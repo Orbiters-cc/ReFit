@@ -1,5 +1,9 @@
 # ReFit
 
+## 0.7.1 — 2026-10-19
+
+- Requires Orbiters Toolkit 0.4.0: the XRay toolbar entries (projection rays, welded groups) register with the Toolkit's XRay gizmos directly; the separate XRay integration assembly is gone.
+
 ## 0.7.0 — 2026-10-18
 
 - Twice as fast. The 23 replayed outfits take 159 s instead of 303 s: bodies laid onto each other are kept between

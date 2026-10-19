@@ -17,9 +17,7 @@ namespace Orbiters.ReFit.Editor.Tests
             string root = Path.GetFullPath("Packages/orbiters.refit");
             string output = Path.GetFullPath("Temp/ReFitTests/standalone");
             Directory.CreateDirectory(output);
-            var sources = Directory.GetFiles(root, "*.cs", SearchOption.AllDirectories)
-                .Where(p => !p.Replace('\\', '/').Contains("/Integrations/XRay/"))
-                .ToArray();
+            var sources = Directory.GetFiles(root, "*.cs", SearchOption.AllDirectories);
             var builder = new AssemblyBuilder(Path.Combine(output, "ReFitStandalone.dll"), sources)
             {
                 flags = AssemblyBuilderFlags.EditorAssembly,

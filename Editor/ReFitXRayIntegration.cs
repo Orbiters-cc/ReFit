@@ -1,4 +1,4 @@
-using Orbiters.XRayGizmos.Editor;
+using Orbiters.Toolkit.Editor.XRay;
 using UnityEditor;
 
 namespace Orbiters.ReFit.Editor

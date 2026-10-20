@@ -9,8 +9,19 @@ namespace Orbiters.ReFit
     /// <summary>Dense body support for cloth triangle interiors, with opt-in repair after fitting across bases.</summary>
     internal sealed class ReFitSurfaceCoverage
     {
-        // A visible allowance for coarse triangles over a curved body, including in-between shape weights.
+        // A visible allowance for coarse triangles over a curved body, including in-between shape weights, for clothing the
+        // different-base passes fitted (only near the body).
         private const float RepairSafety = .01f;
+        // After the cloth fit the clothing lies as made over the target and clips only where the bodies differ: what clips is
+        // pushed out to the clearance the settings ask for, spread over few rings. With RepairSafety and the wide spread every
+        // tight part rose to a centimetre and took the fabric around it along (the FashionSuit's shirt on the Ultipaw: sleeves
+        // 4 mm over the skin as fitted, 17 mm after; the jacket over it 18 mm looser on the arms, 20 on the torso).
+        private const int FittedSpreadIterations = 2;
+        private const float FittedSpreadStrength = .5f;
+        // The least clearance the repair keeps over the body.
+        private float least;
+        // The clothing comes from the cloth fit: the push spreads less.
+        private bool fitted;
         // Clothing left short of its targeted clearance clips only inside the surface it covers or this close to it.
         // Farther out it only has less room than the correction aims for (RepairSafety): not worth a warning.
         internal const float ClipTolerance = .001f;
@@ -70,13 +81,15 @@ namespace Orbiters.ReFit
         /// </param>
         public static ReFitSurfaceCoverage Build(MeshSnapshot asset, MeshSnapshot body, Vector3[] primary,
             BodyRegion[] regions, bool[] tubes, ReFitSettings settings, BodyRegion[] bodyRegions = null, Vector3[] authored = null,
-            bool[] hidden = null, string innerGarment = null, bool carryPieces = false)
+            bool[] hidden = null, string innerGarment = null, bool carryPieces = false, bool fitted = false)
         {
             if (!settings.enableClearanceCorrection || (!settings.coverDifferentBaseBody &&
                 (!settings.preserveLowerBodyCoverage || !IsLowerBodyCloth(asset, regions, tubes)))) return null;
             var watch = System.Diagnostics.Stopwatch.StartNew();
             var result = new ReFitSurfaceCoverage { basis = new Vector3[asset.GroupCount], adjacency = asset.groupAdjacency, repair = settings.coverDifferentBaseBody,
                 layer = authored != null, surfaceName = innerGarment != null ? $"inner garment '{innerGarment}'" : "the body surface" };
+            result.fitted = fitted;
+            result.least = fitted ? settings.clearanceMinimumSafetyDistance : Mathf.Max(RepairSafety, settings.clearanceMinimumSafetyDistance);
             result.tubes = result.repair ? DetailGroups(asset, tubes) : tubes;
             result.rings = tubes;
             if (result.repair && (settings.coverageKeepsLayerOrder || carryPieces)) result.pieces = Pieces(asset, result.tubes);
@@ -151,7 +164,7 @@ namespace Orbiters.ReFit
                     var p0 = asset.worldVertices[asset.triangles[t]]; var p1 = asset.worldVertices[asset.triangles[t + 1]]; var p2 = asset.worldVertices[asset.triangles[t + 2]];
                     var clothAuthored = p0 * hit.bary.x + p1 * hit.bary.y + p2 * hit.bary.z;
                     // The garment passed under this layer here as authored (a collar over a lapel): leave it there.
-                    float authoredGap = Vector3.Dot(clothAuthored - authored[i], Vector3.Cross(p1 - p0, p2 - p0).normalized);
+                    float authoredGap = Vector3.Dot(clothAuthored - authored[i], MeshSnapshot.Unit(Vector3.Cross(p1 - p0, p2 - p0)));
                     if (authoredGap < -AuthoredTolerance) return;
                     gap = Mathf.Min(gap, Mathf.Clamp(authoredGap, 0, LayerClearance));
                 }
@@ -340,7 +353,7 @@ namespace Orbiters.ReFit
         private static float AuthoredGap(Vector3 cloth, Vector3[] layer, int[] triangles, int triangle, Vector3 bary)
         {
             var a = layer[triangles[triangle * 3]]; var b = layer[triangles[triangle * 3 + 1]]; var c = layer[triangles[triangle * 3 + 2]];
-            return Vector3.Dot(cloth - (a * bary.x + b * bary.y + c * bary.z), Vector3.Cross(b - a, c - a).normalized);
+            return Vector3.Dot(cloth - (a * bary.x + b * bary.y + c * bary.z), MeshSnapshot.Unit(Vector3.Cross(b - a, c - a)));
         }
 
         internal static bool[] ProtectOpenings(MeshSnapshot asset, BodyRegion[] regions, bool[] tubes)
@@ -394,10 +407,10 @@ namespace Orbiters.ReFit
 
         public static void RepairPrimary(MeshSnapshot asset, MeshSnapshot body, Vector3[] primary,
             BodyRegion[] regions, bool[] tubes, ReFitSettings settings, ReFitReport report, BodyRegion[] bodyRegions, Vector3[] authored = null,
-            bool[] hidden = null, string innerGarment = null, bool carryPieces = false)
+            bool[] hidden = null, string innerGarment = null, bool carryPieces = false, bool fitted = false)
         {
             if (!settings.coverDifferentBaseBody) return;
-            var coverage = Build(asset, body, primary, regions, tubes, settings, bodyRegions, authored, hidden, innerGarment, carryPieces);
+            var coverage = Build(asset, body, primary, regions, tubes, settings, bodyRegions, authored, hidden, innerGarment, carryPieces, fitted);
             if (coverage == null) return;
             var correction = new Vector3[primary.Length];
             coverage.Apply(body, null, correction, new Vector3[primary.Length], settings, report, "different-base coverage");
@@ -438,7 +451,7 @@ namespace Orbiters.ReFit
                     var skin = body.worldVertices[a] * s.bary.x + body.worldVertices[b] * s.bary.y + body.worldVertices[c] * s.bary.z + motion;
                     // Shapes are additive. Each one preserves the achieved base clearance rather
                     // than applying the same unresolved base repair again (even for tiny skin motion).
-                    float safety = bodyDelta != null ? s.signedGap : layer ? s.gap : Mathf.Max(RepairSafety, s.gap);
+                    float safety = bodyDelta != null ? s.signedGap : layer ? s.gap : Mathf.Max(least, s.gap);
                     float missing = safety - Vector3.Dot(positions[s.group] - skin, s.normal);
                     if (missing <= .00005f) continue;
                     corrections[s.group] += s.normal * missing; weights[s.group]++;
@@ -452,12 +465,12 @@ namespace Orbiters.ReFit
                     // Retain the original material correspondence. Rebinding to the nearest moving
                     // face can jump to the opposite leg or lining and progressively fold the seam.
                     int ga = s.a, gb = s.b, gc = s.c;
-                    var n = Vector3.Cross(positions[gb] - positions[ga], positions[gc] - positions[ga]).normalized;
+                    var n = MeshSnapshot.Unit(Vector3.Cross(positions[gb] - positions[ga], positions[gc] - positions[ga]));
                     if (Vector3.Dot(n, reference) < .35f) continue;
                     var p = positions[ga] * s.bary.x + positions[gb] * s.bary.y + positions[gc] * s.bary.z;
                     // Do not spend the original gap independently in every additive shape.
                     float safety = repair && bodyDelta != null ? s.signedGap : repair && layer ? s.gap :
-                        Mathf.Max(repair ? Mathf.Max(RepairSafety, settings.clearanceMinimumSafetyDistance) : settings.clearanceMinimumSafetyDistance, s.gap);
+                        Mathf.Max(repair ? least : settings.clearanceMinimumSafetyDistance, s.gap);
                     float missing = safety - Vector3.Dot(p - skin, n);
                     if (missing <= .00005f) continue;
                     worst = Mathf.Max(worst, missing); corrected++;
@@ -483,7 +496,7 @@ namespace Orbiters.ReFit
                 {
                     var field = new Vector3[deltas.Length];
                     for (int g = 0; g < field.Length; g++) field[g] = deltas[g] - original[g];
-                    DeltaField.Smooth(field, adjacency, repair ? 5 : 1, repair ? .8f : .5f);
+                    DeltaField.Smooth(field, adjacency, repair ? fitted ? FittedSpreadIterations : 5 : 1, repair ? fitted ? FittedSpreadStrength : .8f : .5f);
                     for (int g = 0; g < field.Length; g++)
                     {
                         if (repair && protectedGroups != null && protectedGroups[g]) { deltas[g] = original[g]; continue; }
@@ -511,10 +524,10 @@ namespace Orbiters.ReFit
                 {
                     if (bodyDelta != null && bodyDelta[s.vertex].sqrMagnitude < 1e-10f) continue;
                     var a = basis[s.a] + deltas[s.a]; var b = basis[s.b] + deltas[s.b]; var c = basis[s.c] + deltas[s.c];
-                    var n = Vector3.Cross(b - a, c - a).normalized;
+                    var n = MeshSnapshot.Unit(Vector3.Cross(b - a, c - a));
                     if (Vector3.Dot(n, body.worldNormals[s.vertex]) < .35f) continue;
                     var skin = body.worldVertices[s.vertex] + (bodyDelta != null ? bodyDelta[s.vertex] : Vector3.zero);
-                    float safety = bodyDelta != null ? s.signedGap : layer ? s.gap : Mathf.Max(Mathf.Max(RepairSafety, settings.clearanceMinimumSafetyDistance), s.gap);
+                    float safety = bodyDelta != null ? s.signedGap : layer ? s.gap : Mathf.Max(least, s.gap);
                     float shortfall = safety - Vector3.Dot(a*s.bary.x + b*s.bary.y + c*s.bary.z - skin, n);
                     residual = Mathf.Max(residual, shortfall);
                     if (RisksClipping(shortfall, safety - shortfall)) clipping = Mathf.Min(clipping, safety - shortfall);
@@ -600,8 +613,8 @@ namespace Orbiters.ReFit
             // A limit depends only on its groups' displacements: one met when last tested, whose groups have not moved since,
             // is met still and is skipped (the order and the arithmetic of the others are unchanged). Times on one clock: when
             // each group last moved, when each limit was last tested; the displacements as the last regularization left them.
-            public int clock;
-            public int[] moved, edgeTested, faceTested;
+            public long clock;
+            public long[] moved, edgeTested, faceTested;
             public Vector3[] left;
         }
 
@@ -625,9 +638,9 @@ namespace Orbiters.ReFit
                 if (normal.sqrMagnitude < 1e-16f) continue;
                 limits.faces.Add((a, b, c, da, db, dc, normal, normal.sqrMagnitude * .1f));
             }
-            limits.moved = new int[original.Length];
-            limits.edgeTested = new int[limits.edges.Count];
-            limits.faceTested = new int[limits.faces.Count];
+            limits.moved = new long[original.Length];
+            limits.edgeTested = new long[limits.edges.Count];
+            limits.faceTested = new long[limits.faces.Count];
             for (int g = 0; g < original.Length; g++) limits.moved[g] = ++limits.clock;
             return limits;
         }
@@ -653,7 +666,7 @@ namespace Orbiters.ReFit
                     {
                         var edge = limits.edges[e];
                         int a = edge.a, b = edge.b;
-                        int tested = limits.edgeTested[e];
+                        long tested = limits.edgeTested[e];
                         if (moved[a] < tested && moved[b] < tested) continue;
                         limits.edgeTested[e] = ++limits.clock;
                         var da = deltas[a] - original[a]; var db = deltas[b] - original[b];
@@ -686,7 +699,7 @@ namespace Orbiters.ReFit
                 {
                     var face = limits.faces[f];
                     int a = face.a, b = face.b, c = face.c;
-                    int tested = limits.faceTested[f];
+                    long tested = limits.faceTested[f];
                     if (moved[a] < tested && moved[b] < tested && moved[c] < tested) continue;
                     limits.faceTested[f] = ++limits.clock;
                     var da = face.da; var db = face.db; var dc = face.dc;

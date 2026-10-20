@@ -45,22 +45,37 @@ namespace Orbiters.ReFit.Editor
             foreach (var (clothing, request) in pieces)
             {
                 if (clothing == null) continue;
-                var body = ReFitRecordIntegration.BodyOf(clothing) ?? request?.targetBodyRenderer;
+                // Unity objects: their own null test, never ?? (a destroyed renderer is not null to it).
+                var recorded = ReFitRecordIntegration.BodyOf(clothing);
+                var body = recorded != null ? recorded : request?.targetBodyRenderer;
                 var avatar = request?.targetAvatar != null ? request.targetAvatar : targetAvatar;
                 if (body == null || avatar == null || !clothing.transform.IsChildOf(avatar.transform) || !body.transform.IsChildOf(avatar.transform)) continue;
                 motionItems.Add(new MotionItem { clothing = clothing, body = body, avatar = avatar });
             }
-            if (motionItems.Count > 0) motionUpdate = rootVisualElement.schedule.Execute(CheckNextPiece).StartingIn(PressPaint);
+            ScheduleMotion();
+        }
+
+        // A piece still to check, whose clothing is still there.
+        private MotionItem PendingPiece() => motionItems.FirstOrDefault(i => i.result == null && i.clothing != null);
+
+        // The next piece is checked on a later tick, unless one is due already; the result page asks again each time it shows,
+        // so a check left when the page changed picks up where it stopped.
+        private void ScheduleMotion()
+        {
+            if (motionUpdate != null || PendingPiece() == null || rootVisualElement == null) return;
+            motionUpdate = rootVisualElement.schedule.Execute(CheckNextPiece).StartingIn(PressPaint);
         }
 
         // One piece per tick, so the page stays live while an outfit is checked.
         private void CheckNextPiece()
         {
-            var item = motionItems.FirstOrDefault(i => i.result == null);
+            motionUpdate = null;
+            var item = PendingPiece();
             if (item == null || page != Page.Result || isExecuting) return;
             Check(item, false);
+            // Before the page is built again: a page that fails to build never stops the pieces after this one.
+            ScheduleMotion();
             Render();
-            if (motionItems.Any(i => i.result == null)) motionUpdate = rootVisualElement.schedule.Execute(CheckNextPiece).StartingIn(PressPaint);
         }
 
         private static void Check(MotionItem item, bool planShrink)
@@ -87,6 +102,7 @@ namespace Orbiters.ReFit.Editor
         private void BuildMotion()
         {
             if (motionItems.Count == 0) return;
+            ScheduleMotion();
             var card = Box(content, "refit-card", "refit-motion");
             var heading = Box(card, "refit-result__heading");
             Text(heading, "In motion", "refit-section");

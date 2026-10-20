@@ -1,7 +1,15 @@
 using System;
 using System.Collections.Generic;
+using System.IO;
+using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
+using Orbiters.Toolkit.Editor.Meshes;
+using Orbiters.Toolkit.Editor.Storage;
+using Orbiters.Toolkit.Storage;
+#if REFIT_VRCHAT_AVATARS
+using Orbiters.Toolkit.Editor.VRChat.Refit;
+#endif
 using UnityEditor;
 using UnityEngine;
 using Object = UnityEngine.Object;
@@ -14,7 +22,11 @@ namespace Orbiters.ReFit.Editor
     /// outside come from the air around the body, not from the nearest skin), most at the brush's centre and none at its edge,
     /// shared with its neighbours so no spike is made. The body and the piece are taken as they show when the brush starts
     /// (pose and shapes); the pushes go into the piece's own mesh (its rest shape, through each vertex's skinning), with Undo,
-    /// and the mesh asset is saved when the brush ends. [ and ] change the brush's size, Esc ends it.
+    /// and the mesh asset is saved when the brush ends. A mesh other pieces may wear (a refit kept for reuse is worn by every
+    /// avatar on that base) is copied next to it at the first push and the piece wears the copy (its refit record follows):
+    /// the brush never changes another avatar. Each stroke is one undo step of positions and normals only
+    /// (<see cref="ReFitPushOutUndo"/>), and the stroked fabric's normals follow it. [ and ] change the brush's size, Esc
+    /// ends it.
     /// </summary>
     internal static class ReFitClipFixTool
     {
@@ -27,6 +39,9 @@ namespace Orbiters.ReFit.Editor
         private const float StepShare = .5f;
         private const double StepInterval = .03;
         private const int MaxDots = 3000;
+        // The control's hint, and the label marking a mesh the brush copied for one piece (pushed in place from then on).
+        private static readonly int ControlHint = "ReFitPushOut".GetHashCode();
+        private const string OwnLabel = "ReFitPushOut";
 
         private sealed class Session
         {
@@ -48,8 +63,12 @@ namespace Orbiters.ReFit.Editor
             public int inside;
             public bool stroking;
             public double lastStep;
-            public int control;
             public bool hasHit;
+            // The mesh is the piece's own to push (copied when other pieces may wear it).
+            public bool owned;
+            // The stroke under way: the mesh before it and the vertices it moved.
+            public Vector3[] strokeBefore, strokeNormalsBefore;
+            public readonly HashSet<int> touched = new HashSet<int>();
             public Vector3 hitPoint, hitNormal;
         }
 
@@ -100,6 +119,7 @@ namespace Orbiters.ReFit.Editor
             if (session == null) return;
             var mesh = session.mesh;
             session.cancel?.Cancel();
+            if (session.stroking) FinishStroke(session);
             session = null;
             EditorApplication.update -= WaitForField;
             SceneView.duringSceneGui -= OnSceneGui;
@@ -240,6 +260,8 @@ namespace Orbiters.ReFit.Editor
         private static void OnUndoRedo()
         {
             if (session == null) return;
+            // The stroke's positions first (also handled on their own when the brush has ended).
+            ReFitPushOutUndo.Apply();
             if (session.clothing == null || session.body == null || session.clothing.sharedMesh != session.mesh) { End(); return; }
             // The mesh came back as it was: the piece is read again (the field stays: the body has not moved).
             var field = session.field;
@@ -269,8 +291,8 @@ namespace Orbiters.ReFit.Editor
             if (s == null) return;
             if (s.clothing == null || s.body == null || s.clothing.sharedMesh != s.mesh) { End(); return; }
             var e = Event.current;
-            if (s.control == 0) s.control = GUIUtility.GetControlID("ReFitPushOut".GetHashCode(), FocusType.Passive);
-            int id = s.control;
+            // Asked on every event: the id follows the controls drawn before it in this view.
+            int id = GUIUtility.GetControlID(ControlHint, FocusType.Passive);
             switch (e.GetTypeForControl(id))
             {
                 case EventType.Layout:
@@ -283,10 +305,9 @@ namespace Orbiters.ReFit.Editor
                 case EventType.MouseDown:
                     if (e.button != 0 || e.alt) break;
                     Aim(s, e.mousePosition);
-                    if (!s.hasHit) break;
-                    Undo.RegisterCompleteObjectUndo(s.mesh, "Push the fabric out");
+                    if (!s.hasHit || !Own(s)) break;
                     GUIUtility.hotControl = id;
-                    s.stroking = true;
+                    StartStroke(s);
                     s.lastStep = 0;
                     Step(s);
                     e.Use();
@@ -300,7 +321,7 @@ namespace Orbiters.ReFit.Editor
                 case EventType.MouseUp:
                     if (GUIUtility.hotControl != id) break;
                     GUIUtility.hotControl = 0;
-                    s.stroking = false;
+                    FinishStroke(s);
                     Measure(s);
                     Changed?.Invoke();
                     e.Use();
@@ -333,11 +354,93 @@ namespace Orbiters.ReFit.Editor
             var s = session;
             if (s == null) return 0;
             if (s.field == null) { s.building.Wait(); TakeField(s); }
+            if (s == null || session != s || !Own(s)) return 0;
             s.hitPoint = point;
             s.hasHit = true;
+            StartStroke(s);
             Step(s);
+            FinishStroke(s);
             Measure(s);
             return s.inside;
+        }
+
+        /// <summary>The mesh the brush pushes now (tests: the piece's own copy once it pushed a shared mesh).</summary>
+        internal static Mesh PushedMesh => session?.mesh;
+
+        // ------------------------------------------------------------------
+        // The piece's own mesh, strokes and their undo steps
+        // ------------------------------------------------------------------
+
+        // The piece pushes a mesh of its own: a mesh asset other pieces may wear (not one the brush copied for this piece, or
+        // worn by another loaded renderer) is copied next to it first, and the piece wears the copy, with Undo. False when the
+        // copy could not be made.
+        private static bool Own(Session s)
+        {
+            if (s.owned) return true;
+            var mesh = s.mesh;
+            if (EditorUtility.IsPersistent(mesh) && (!AssetDatabase.GetLabels(mesh).Contains(OwnLabel) || WornElsewhere(mesh, s.clothing)))
+            {
+                Mesh copy;
+                string path;
+                try
+                {
+                    string folder = Path.GetDirectoryName(AssetDatabase.GetAssetPath(mesh))?.Replace('\\', '/');
+                    if (string.IsNullOrEmpty(folder) || !folder.StartsWith("Assets", StringComparison.Ordinal)) folder = "Assets";
+                    path = AssetDatabase.GenerateUniqueAssetPath(folder + "/" + SafePaths.FileName(s.clothing.name + " pushed out", "Pushed out") + ".asset");
+                    copy = Object.Instantiate(mesh);
+                    copy.name = mesh.name;
+                    AssetDatabase.CreateAsset(copy, path);
+                    AssetDatabase.SetLabels(copy, new[] { OwnLabel });
+                    // Gone again once nothing wears it (the copy undone, the piece refitted).
+                    GeneratedAssets.Track(path);
+                }
+                catch (Exception ex) when (ex is IOException || ex is UnauthorizedAccessException || ex is ArgumentException)
+                {
+                    Debug.LogWarning("[ReFit] Push out: the piece's own copy of its mesh could not be saved: " + ex.Message);
+                    return false;
+                }
+                bool recorded = false;
+#if REFIT_VRCHAT_AVATARS
+                var record = RefitRecords.Find(s.clothing);
+                if (record != null && record.Applied && record.mesh == mesh) recorded = RefitRecords.ReplaceMesh(record, copy, path, "Push the fabric out");
+#endif
+                if (!recorded)
+                {
+                    Undo.RecordObject(s.clothing, "Push the fabric out");
+                    s.clothing.sharedMesh = copy;
+                    EditorUtility.SetDirty(s.clothing);
+                    PrefabUtility.RecordPrefabInstancePropertyModifications(s.clothing);
+                }
+                s.mesh = copy;
+                Debug.Log($"[ReFit] Push out: {s.clothing.name} wears its own copy of its mesh ({path}): the pushes never change another avatar.");
+            }
+            s.owned = true;
+            return true;
+        }
+
+        // Another loaded renderer wears the mesh.
+        private static bool WornElsewhere(Mesh mesh, SkinnedMeshRenderer piece) =>
+            Resources.FindObjectsOfTypeAll<SkinnedMeshRenderer>().Any(r => r != null && r != piece && r.sharedMesh == mesh && !EditorUtility.IsPersistent(r));
+
+        private static void StartStroke(Session s)
+        {
+            s.stroking = true;
+            s.touched.Clear();
+            s.strokeBefore = (Vector3[])s.meshVertices.Clone();
+            s.strokeNormalsBefore = s.mesh.normals;
+        }
+
+        // The stroke's fabric gets normals from its faces as they are now, and the stroke becomes one undo step.
+        private static void FinishStroke(Session s)
+        {
+            if (!s.stroking) return;
+            s.stroking = false;
+            if (s.touched.Count == 0 || s.mesh == null || s.strokeBefore == null) return;
+            MeshNormals.Recalculate(s.mesh, s.touched);
+            ReFitPushOutUndo.For(s.mesh).Record(s.strokeBefore, s.strokeNormalsBefore, "Push the fabric out");
+            EditorUtility.SetDirty(s.mesh);
+            s.strokeBefore = s.strokeNormalsBefore = null;
+            s.touched.Clear();
         }
 
         /// <summary>Where the piece's points inside the body are now (tests).</summary>
@@ -398,7 +501,10 @@ namespace Orbiters.ReFit.Editor
             // Into the mesh: every vertex of a moved group, through its own skinning.
             for (int v = 0; v < s.meshVertices.Length; v++)
                 if (shared.TryGetValue(s.groupOf[v], out var world) && world.sqrMagnitude >= 1e-14f)
+                {
                     s.meshVertices[v] += s.toMesh[v].MultiplyVector(world);
+                    s.touched.Add(v);
+                }
             s.mesh.vertices = s.meshVertices;
             s.mesh.RecalculateBounds();
             EditorUtility.SetDirty(s.mesh);

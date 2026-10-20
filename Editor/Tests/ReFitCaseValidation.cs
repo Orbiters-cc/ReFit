@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
 using System.IO;
 using System.Linq;
@@ -222,6 +223,7 @@ namespace Orbiters.ReFit.Editor.Tests
             {
                 FashionOnUltipaw("Jacket", new List<string> { "FashionSuitVest" }, "orbit muscles", "orbit face", "jawline"),
                 FashionOnUltipaw("Pants", new List<string>(), "orbit muscles", "orbit face", "orbit paws"),
+                FashionOnUltipaw("Vest", new List<string>(), "orbit muscles", "orbit face", "jawline"),
             })
             .ToArray();
 
@@ -245,21 +247,18 @@ namespace Orbiters.ReFit.Editor.Tests
         /// <summary>"queued", "done ..." or "failed ..." of the last <see cref="Queue"/>d run.</summary>
         public static string Status => SessionState.GetString(StatusKey, "");
 
-        /// <summary>Runs <see cref="Run"/> on the next editor update so an MCP call returns at once; poll <see cref="Status"/>.</summary>
+        /// <summary>
+        /// Runs <see cref="Run"/> from the next editor update a step at a time (the refit on ReFit's worker thread), so an
+        /// MCP call returns at once and the editor stays responsive meanwhile; poll <see cref="Status"/>.
+        /// </summary>
         /// <param name="settings">Optional "field=value;field=value" overrides of <see cref="ReFitSettings"/> for comparisons.</param>
         /// <param name="render">"none", "fit" (refit renders only) or "all" (also baselines and heatmaps).</param>
         public static void Queue(string caseName, string label, bool replaceArmature = true, string render = "all", string settings = null)
         {
             SessionState.SetString(StatusKey, "queued " + label);
-            EditorApplication.CallbackFunction tick = null;
-            tick = () =>
-            {
-                EditorApplication.update -= tick;
-                try { SessionState.SetString(StatusKey, "done " + label + "\n" + Run(Find(caseName), label, replaceArmature, render, settings).text); }
-                catch (Exception e) { SessionState.SetString(StatusKey, "failed " + label + "\n" + e); }
-            };
-            EditorApplication.update += tick;
-            EditorApplication.QueuePlayerLoopUpdate();
+            EditorRoutine.Start(RunRoutine(Find(caseName), label, replaceArmature, render, settings,
+                    result => SessionState.SetString(StatusKey, "done " + label + "\n" + result.text)),
+                e => SessionState.SetString(StatusKey, "failed " + label + "\n" + e));
         }
 
         /// <summary>Clipping and triangle quality of the refitted clothing in one pose (and shape).</summary>
@@ -404,6 +403,14 @@ namespace Orbiters.ReFit.Editor.Tests
 
         public static Result Run(Case setup, string label, bool replaceArmature = true, string render = "all", string settings = null)
         {
+            Result result = null;
+            EditorRoutine.Drain(RunRoutine(setup, label, replaceArmature, render, settings, r => result = r));
+            return result;
+        }
+
+        /// <summary><see cref="Run"/> as a coroutine for <see cref="EditorRoutine"/>: the refits compute on ReFit's worker thread.</summary>
+        internal static IEnumerator RunRoutine(Case setup, string label, bool replaceArmature, string render, string settings, Action<Result> done)
+        {
             if (setup == null) throw new ArgumentException("Unknown ReFit case.");
             var owned = new List<Object>();
             var lines = new List<string>();
@@ -424,7 +431,8 @@ namespace Orbiters.ReFit.Editor.Tests
                     {
                         var layerRequest = fixture.Request(replaceArmature, layer);
                         Override(layerRequest.settings, settings);
-                        var layerComp = new ReFitEngine().Run(layerRequest);
+                        ReFitComputation layerComp = null;
+                        yield return new ReFitEngine().RunCoroutine(layerRequest, null, c => layerComp = c);
                         if (!layerComp.success) throw new InvalidOperationException(layer.name + ": " + string.Join("\n", layerComp.report.messages));
                         owned.Add(layerComp.mesh);
                         if (layerComp.armatureReplaced) throw new InvalidOperationException("Layers are worn on their own armature: " + layer.name);
@@ -456,10 +464,16 @@ namespace Orbiters.ReFit.Editor.Tests
                         }
                         lines.Add("registration moves: " + string.Join(", ", parts) + $"; lies within p50 {registration.medianGap * 1000:F1}mm p95 {registration.p95Gap * 1000:F1}mm");
                     };
+                    // The room over the skin after each step covering the target (where the ease comes from).
+                    var stepRegions = ReFitEaseProbe.Regions(fixture.target, out var stepArms);
+                    var stepLines = new List<string>();
+                    ReFitEngine.CoverStepCaptured = (step, asset, body, deltas) =>
+                        stepLines.Add($"step {step}: " + ReFitEaseProbe.MeasureStep(asset, body, deltas, stepRegions, stepArms));
                     var watch = System.Diagnostics.Stopwatch.StartNew();
-                    ReFitComputation comp;
-                    try { comp = new ReFitEngine().Run(request); }
-                    finally { ReFitClothFit.CoverageCaptured = null; ReFitBodyRegistration.Captured = null; }
+                    ReFitComputation comp = null;
+                    try { yield return new ReFitEngine().RunCoroutine(request, null, c => comp = c); }
+                    finally { ReFitClothFit.CoverageCaptured = null; ReFitBodyRegistration.Captured = null; ReFitEngine.CoverStepCaptured = null; }
+                    lines.AddRange(stepLines);
                     watch.Stop();
                     if (!comp.success) throw new InvalidOperationException(string.Join("\n", comp.report.messages));
                     owned.Add(comp.mesh);
@@ -533,6 +547,7 @@ namespace Orbiters.ReFit.Editor.Tests
 
                     foreach (string pose in new[] { "rest", "spread", "crouch" })
                     {
+                        yield return null;
                         var restore = Pose(pose, fixture);
                         try
                         {
@@ -553,6 +568,7 @@ namespace Orbiters.ReFit.Editor.Tests
                                 lines.Add("authored " + Exposed(sourceBody, original));
                                 lines.Add("refit " + Exposed(body, fitted));
                                 lines.Add($"{pose} spikes: {spikeText}");
+                                lines.Add($"{pose} " + ReFitEaseProbe.Measure(sourceBody, original, body, fitted, fixture.target));
                             }
                             result.metrics[pose] = metrics;
                             lines.Add($"{pose} refit: {text}");
@@ -637,7 +653,7 @@ namespace Orbiters.ReFit.Editor.Tests
             }
             result.text = string.Join("\n", lines);
             File.WriteAllLines(Output + label + ".txt", lines);
-            return result;
+            done?.Invoke(result);
         }
 
         /// <summary>

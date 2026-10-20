@@ -558,6 +558,8 @@ namespace Orbiters.ReFit.Editor
             connection.Add(devEnvironment);
             AddInlineHelp(connection, "Uses the local Orbiters API on port 4100. Production is used when disabled. This setting is shared with MCB when MCB is installed.");
 
+            BuildDiagnosticsSettings();
+
             var debugCard = SettingsCard("Debug");
             var debug = new Toggle("Debug mode") { value = ReFitDebugService.Enabled };
             debug.AddToClassList("refit-field");

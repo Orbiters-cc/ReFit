@@ -510,6 +510,9 @@ namespace Orbiters.ReFit
                     state.settings.coverDifferentBaseBody = true;
                     report.Info("coverage-kept", "The clothing was fitted from another base: its new shapes are covered and draped like the fit.");
                 }
+                // Covered as made for another body, its new shapes keep the guards the fit had: its pieces follow the fabric, its
+                // sleeves and legs cover the limbs that came through them.
+                if (metadata != null && metadata.madeForAnother) state.madeForAnother = true;
                 state.targetIdentity = ReFitCacheIdentity.Renderer(originalTarget, false);
                 string worn = ReFitWornShapes.Describe(stage.targetBody, request.wornBodyShapes);
                 if (worn.Length > 0)
@@ -586,6 +589,9 @@ namespace Orbiters.ReFit
                     : state.targetTriRegions;
                 if (state.wantMesh && state.sourceBody != state.targetBasis)
                     state.sourceLimbRegions = TriangleRegions(state.sourceBody, HumanoidBoneMapper.ClassifyBones(stage.sourceRoot, stage.sourceHumanMap, true));
+                // Shapes added to a fit made for another body drape from the fit over the target: its limbs are the target's.
+                else if (state.madeForAnother && !state.wantMesh)
+                    state.sourceLimbRegions = TriangleRegions(state.targetBasis, HumanoidBoneMapper.ClassifyBones(stage.targetRoot, stage.targetHumanMap, true));
                 state.assetGroupRegions = AssetGroupRegions(state.asset, stage, sourceRegions);
                 if (state.wantMesh && state.sourceBody != state.targetBasis && state.settings.registerBodies)
                     state.sourceBoneRetarget = SkeletonRetarget(stage, stage.sourceBody);
@@ -966,6 +972,7 @@ namespace Orbiters.ReFit
                 settingsIdentity = state.settingsIdentity,
                 bindingSettingsIdentity = state.bindingSettingsIdentity,
                 coverDifferentBaseBody = state.settings.coverDifferentBaseBody,
+                madeForAnother = state.madeForAnother,
                 groupCount = groupCount,
                 targetBodyVertexCount = targetBasis.localVertices.Length,
                 targetBodyTriangleIndexCount = targetBasis.triangles.Length,
@@ -1190,18 +1197,22 @@ namespace Orbiters.ReFit
                     if (!localBindings[g].valid) { localTarget[g].valid = false; return; }
                     var region = state.assetGroupRegions != null ? state.assetGroupRegions[g] : BodyRegion.Unknown;
                     localTarget[g] = chained[g];
-                    if (registration != null && RegisteredPoint(registration, localBindings[g], targetBasis, bvhTarget, state.targetTriRegions,
-                            region, out var registered))
+                    if (registration == null) return;
+                    bool near = localBindings[g].distance <= ClothingNearSkin;
+                    if (RegisteredPoint(registration, localBindings[g], targetBasis, bvhTarget, state.targetTriRegions, region, out var registered))
                     {
                         localTarget[g] = registered;
-                        disagrees[g] = chained[g].valid && localBindings[g].distance <= ClothingNearSkin &&
-                                       (chained[g].point - registered.point).magnitude > RegistrationDisagreement;
-                        if (localBindings[g].distance <= ClothingNearSkin)
-                        {
-                            var laid = registration.Point(localBindings[g].triangle, localBindings[g].bary);
-                            var onTarget = bvhTarget.ClosestPoint(laid, RegistrationReachLimit);
-                            reach[g] = onTarget.found ? onTarget.distance : RegistrationReachLimit;
-                        }
+                        disagrees[g] = chained[g].valid && near && (chained[g].point - registered.point).magnitude > RegistrationDisagreement;
+                    }
+                    // Laid farther than RegisteredReach from any target skin, the source cannot agree with the skin met along the
+                    // normal (that skin is on the target): the registration does not reach there.
+                    else disagrees[g] = chained[g].valid && near;
+                    if (near)
+                    {
+                        // Every point near the skin is measured, reached or not, up to the limit.
+                        var laid = registration.Point(localBindings[g].triangle, localBindings[g].bary);
+                        var onTarget = bvhTarget.ClosestPoint(laid, RegistrationReachLimit);
+                        reach[g] = onTarget.found ? onTarget.distance : RegistrationReachLimit;
                     }
                 });
                 if (registration != null)
@@ -1389,6 +1400,14 @@ namespace Orbiters.ReFit
                 state.tubes.Apply(asset, targetBasis, bvhTarget, null, null, primaryGroupDeltas, settings, state.Report, "primary refit");
                 steps.Lap("tubes");
 
+                if (settings.coverDifferentBaseBody && settings.madeForAnotherBody && !state.madeForAnother)
+                {
+                    // The cloth fit (which decides it otherwise) did not run or fell back: the caller's word decides, so its
+                    // pieces follow the fabric the coverage moves and its sleeves and legs cover the limbs that came through.
+                    state.madeForAnother = true;
+                    state.Report.Info("made-for-another-covered", "Made for another body and resized onto this one: fitted by the different-base passes, " +
+                                                           "its pieces carried with the fabric and its limbs covered.");
+                }
                 CoverBody(state, firstSnap, firstBvh, bvhTarget, primaryGroupDeltas, steps);
                 state.Report.Info("deformation-timing", "The fit: " + steps);
                 CoverLayers(state, primaryGroupDeltas);
@@ -1405,7 +1424,7 @@ namespace Orbiters.ReFit
                 // Shapes added to a fit draped over the target drape like the fit's own: the skin the fit covers stays covered.
                 if (settings.coverDifferentBaseBody && settings.enableClearanceCorrection && state.shapes.Count > 0)
                     state.drape = new ReFitDrape(asset, primaryGroupDeltas, targetBasis, bvhTarget, targetBasis, state.targetTriRegions,
-                        state.assetGroupRegions, state.tubes.groups, null);
+                        state.assetGroupRegions, state.tubes.groups, null, state.madeForAnother ? state.sourceLimbRegions : null);
             }
 
             if (state.wantMesh)
@@ -1419,12 +1438,13 @@ namespace Orbiters.ReFit
 
             var coverage = state.shapes.Count > 0 && state.clothFit == null
                 ? ReFitSurfaceCoverage.Build(asset, targetBasis, primaryGroupDeltas,
-                    state.assetGroupRegions, state.tubes.groups, settings, state.targetTriRegions, hidden: state.hiddenGroups) : null;
+                    state.assetGroupRegions, state.tubes.groups, settings, state.targetTriRegions, hidden: state.hiddenGroups,
+                    carryPieces: state.madeForAnother) : null;
             var layerCoverage = new List<ReFitSurfaceCoverage>();
             for (int layer = 0; layer < state.coverageLayers.Count; layer++)
                 layerCoverage.Add(ReFitSurfaceCoverage.Build(asset, state.coverageLayers[layer], primaryGroupDeltas,
                     state.assetGroupRegions, state.tubes.groups, settings, authored: state.coverageLayersAuthored[layer],
-                    innerGarment: state.coverageLayerNames[layer]));
+                    innerGarment: state.coverageLayerNames[layer], carryPieces: state.madeForAnother));
 
             // ---- Blendshape transfer fields ----------------------------------------------
             if (state.shapes.Count > 0)
@@ -1622,9 +1642,13 @@ namespace Orbiters.ReFit
         // Where the time of a deformation goes, step by step (diagnostics).
         // Clothing fitted across bases covers the target: pushed out of its body where it lies under it, then draped over the
         // skin still showing through. The garments worn under it come after (CoverLayers): the drape knows only the body.
+        /// <summary>Debug: the clothing's group deltas after each step covering the target, on that target (tests only).</summary>
+        internal static Action<string, MeshSnapshot, MeshSnapshot, Vector3[]> CoverStepCaptured;
+
         private static void CoverBody(State state, MeshSnapshot firstSnap, SurfaceBvh firstBvh, SurfaceBvh bvhTarget, Vector3[] primaryGroupDeltas,
             StepTimer steps)
         {
+            CoverStepCaptured?.Invoke("before", state.asset, state.targetBasis, primaryGroupDeltas);
             var settings = state.settings;
             var asset = state.asset;
             var targetBasis = state.targetBasis;
@@ -1636,8 +1660,9 @@ namespace Orbiters.ReFit
             }
             ReFitSurfaceCoverage.RepairPrimary(asset, targetBasis, primaryGroupDeltas,
                 state.assetGroupRegions, state.tubes.groups, settings, state.Report, state.targetTriRegions, hidden: state.hiddenGroups,
-                carryPieces: state.madeForAnother);
+                carryPieces: state.madeForAnother, fitted: state.clothFit != null);
             steps.Lap("coverage");
+            CoverStepCaptured?.Invoke("coverage", asset, targetBasis, primaryGroupDeltas);
             if (!settings.coverDifferentBaseBody || !settings.enableClearanceCorrection) return;
             SetBackgroundProgress(state, 0.42f, "Draping the clothing over the body");
             state.drape = new ReFitDrape(asset, null, firstSnap, firstBvh, targetBasis, state.targetTriRegions, state.assetGroupRegions, state.tubes.groups,
@@ -1646,6 +1671,7 @@ namespace Orbiters.ReFit
             state.drape.Apply(targetBasis, null, null, primaryGroupDeltas, state.Report, "different-base coverage", state.cancellationToken,
                 t => state.backgroundProgress = 0.42f + 0.06f * t);
             steps.Lap("drape");
+            CoverStepCaptured?.Invoke("drape", asset, targetBasis, primaryGroupDeltas);
         }
 
         // Over the garments worn under the clothing, in their authored order: the last word on the layers.
@@ -1654,7 +1680,9 @@ namespace Orbiters.ReFit
             for (int layer = 0; layer < state.coverageLayers.Count; layer++)
                 ReFitSurfaceCoverage.RepairPrimary(state.asset, state.coverageLayers[layer], primaryGroupDeltas,
                     state.assetGroupRegions, state.tubes.groups, state.settings, state.Report, null, state.coverageLayersAuthored[layer],
-                    innerGarment: state.coverageLayerNames[layer], carryPieces: state.madeForAnother);
+                    innerGarment: state.coverageLayerNames[layer], carryPieces: state.madeForAnother,
+                    fitted: state.clothFit != null);
+            if (state.coverageLayers.Count > 0) CoverStepCaptured?.Invoke("layers", state.asset, state.targetBasis, primaryGroupDeltas);
         }
 
         // Clothing lying under the skin it is fitted from by more than this, over more than this share of it near the skin, was

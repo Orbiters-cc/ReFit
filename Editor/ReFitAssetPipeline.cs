@@ -627,6 +627,26 @@ namespace Orbiters.ReFit.Editor
                     localScale = transformState.localScale
                 });
             }
+            // The objects of a prefab the run hid instead of removing (an old armature): any tool's restore shows them again,
+            // where they are.
+            foreach (var hidden in hiddenObjects)
+            {
+                var transform = hidden.gameObject != null ? hidden.gameObject.transform : null;
+                string path = PathOf(transform, hidden.path);
+                if (transform == null || path == null) continue;
+                var shown = state.transforms.FirstOrDefault(t => t.transform == transform);
+                if (shown == null)
+                {
+                    shown = new Orbiters.Toolkit.VRChat.RefitTransformState
+                    {
+                        transform = transform, path = path,
+                        localPosition = transform.localPosition, localRotation = transform.localRotation, localScale = transform.localScale
+                    };
+                    state.transforms.Add(shown);
+                }
+                shown.activeCaptured = true;
+                shown.active = true;
+            }
             // Same-named objects (two accessories called "Jacket") stay apart once the record keeps only paths.
             Orbiters.Toolkit.Editor.VRChat.Refit.RefitRecords.CaptureSiblingOrdinals(avatarRoot, state);
             return state;
@@ -752,7 +772,8 @@ namespace Orbiters.ReFit.Editor
                         if (CanMoveWithoutUnpacking(container))
                             Undo.SetTransformParent(container, targetInstance.transform, "ReFit parent asset");
                         else
-                            report.Info("asset-left-in-prefab", $"Left '{container.name}' where it is: moving it would unpack its prefab.");
+                            report.Warn("asset-left-in-prefab", $"Left '{container.name}' where it is, outside the avatar: moving it would unpack its prefab. " +
+                                                                "It follows the avatar's bones, but it is uploaded only once it is under the avatar.");
                     }
                 }
                 ApplyGeneratedMetadata(renderer, comp.generatedMetadata);
@@ -1335,8 +1356,14 @@ namespace Orbiters.ReFit.Editor
                 var parent = FindMaterializedTargetAncestor(candidate.target.parent, candidateByTarget);
                 if (parent != null && candidate.bone.parent != parent)
                 {
-                    Undo.RecordObject(candidate.bone, "ReFit normalize target bone parent");
-                    ReparentPreservingWorld(candidate.bone, parent, candidate.bone.lossyScale);
+                    var bone = candidate.bone;
+                    Vector3 position = bone.position, lossyScale = bone.lossyScale;
+                    var rotation = bone.rotation;
+                    // A bone of the scene: moved with Undo (a plain SetParent is not undone).
+                    Undo.SetTransformParent(bone, parent, "ReFit normalize target bone parent");
+                    Undo.RecordObject(bone, "ReFit normalize target bone parent");
+                    bone.SetPositionAndRotation(position, rotation);
+                    bone.localScale = DivideScale(lossyScale, parent.lossyScale);
                     reparented++;
                 }
             }
@@ -1741,6 +1768,7 @@ namespace Orbiters.ReFit.Editor
             var scanned = new HashSet<Component>();
             var stats = new ComponentReferenceRebindStats();
             var unresolved = new List<string>();
+            int sharedPhysBones = 0;
             if (transformMap.Count > 0)
             {
                 var staleArmatureRoots = CollectMappedOldArmatureRoots(transformMap, assetInstanceRoot);
@@ -1756,6 +1784,20 @@ namespace Orbiters.ReFit.Editor
                         // The outfit's other parts keep their bones: their meshes are bound to them (bindposes), and moved onto
                         // the rebuilt bones they would bend wherever the two skeletons differ.
                         if (component is SkinnedMeshRenderer other && other != renderer) continue;
+                        // A PhysBone of a chain the outfit's other parts are skinned to keeps moving it, and the rebuilt chain
+                        // gets one of its own on the rebuilt armature (gone with it on a reset), as an Armature Link does:
+                        // moved, the other parts' chain would stop moving.
+                        if (newArmatureRoot != null && SimulatesSharedChain(component, transformMap, renderer, assetInstanceRoot))
+                        {
+                            var own = CopyComponentTo(component, newArmatureRoot.gameObject);
+                            if (own != null)
+                            {
+                                scanned.Add(own);
+                                RebindComponentReferences(own, transformMap, newArmatureRoot, report, ref stats, unresolved);
+                                sharedPhysBones++;
+                                continue;
+                            }
+                        }
                         RebindComponentReferences(component, transformMap, newArmatureRoot, report, ref stats, unresolved);
                     }
                 }
@@ -1772,6 +1814,10 @@ namespace Orbiters.ReFit.Editor
             if (repairedVrcfuryLinks > 0)
                 report.Info("vrcfury-armature-link-repaired",
                     $"Repaired {repairedVrcfuryLinks} VRCFury Armature Link component(s) to use the rebuilt clothing armature.");
+
+            if (sharedPhysBones > 0)
+                report.Info("physbone-shared-chain-kept",
+                    $"Kept {sharedPhysBones} PhysBone(s) on the chains the outfit's other parts are skinned to, and gave the rebuilt armature a copy of each.");
 
             if (unresolved.Count > 0)
             {
@@ -1883,6 +1929,18 @@ namespace Orbiters.ReFit.Editor
                 }
             }
             return repaired;
+        }
+
+        private const string PhysBoneType = "VRC.SDK3.Dynamics.PhysBone.Components.VRCPhysBone";
+
+        // A PhysBone whose chain (its root transform, rebuilt for the refitted mesh) another part of the outfit is skinned to.
+        private static bool SimulatesSharedChain(Component component, Dictionary<Transform, Transform> transformMap,
+            SkinnedMeshRenderer refitted, Transform outfitRoot)
+        {
+            if (component == null || component.GetType().FullName != PhysBoneType) return false;
+            var root = new SerializedObject(component).FindProperty("rootTransform");
+            var chain = root != null && root.propertyType == SerializedPropertyType.ObjectReference ? root.objectReferenceValue as Transform : null;
+            return chain != null && transformMap.ContainsKey(chain) && OtherRenderersUse(chain, refitted, outfitRoot);
         }
 
         // A renderer of the outfit other than the refitted one is skinned to bones under (or at) the linked bone.
@@ -2412,8 +2470,7 @@ namespace Orbiters.ReFit.Editor
             foreach (var root in roots)
             {
                 if (root == null) continue;
-                RemoveOrHide(root.gameObject, report);
-                removed++;
+                if (RemoveOrHide(root.gameObject, report)) removed++;
             }
 
             removed += CollapseUnusedArmatureContainers(candidates, assetInstanceRoot, protectedSelf, report);
@@ -2473,8 +2530,7 @@ namespace Orbiters.ReFit.Editor
                             continue;
                         }
 
-                        RemoveOrHide(branch.gameObject, report);
-                        removed++;
+                        if (RemoveOrHide(branch.gameObject, report)) removed++;
                     }
                 }
             }
@@ -2523,7 +2579,7 @@ namespace Orbiters.ReFit.Editor
                 for (int i = 0; i < assetRoot.childCount; i++)
                 {
                     var child = assetRoot.GetChild(i);
-                    if (child == keepArmatureRoot || IsProtectedOrContainsProtected(child, protectedTransforms))
+                    if (child == keepArmatureRoot || IsHiddenPrefabPart(child) || IsProtectedOrContainsProtected(child, protectedTransforms))
                         continue;
                     if (!IsArmatureContainerTransform(child) && !ContainsHumanoidBoneName(child))
                         continue;
@@ -2542,8 +2598,7 @@ namespace Orbiters.ReFit.Editor
                 foreach (var root in roots)
                 {
                     if (root == null) continue;
-                    RemoveOrHide(root.gameObject, report);
-                    removed++;
+                    if (RemoveOrHide(root.gameObject, report)) removed++;
                 }
             }
             if (removed > 0)
@@ -2645,7 +2700,7 @@ namespace Orbiters.ReFit.Editor
             for (int i = 0; i < assetRoot.childCount; i++)
             {
                 var child = assetRoot.GetChild(i);
-                if (child == armatureRoot) continue;
+                if (child == armatureRoot || IsHiddenPrefabPart(child)) continue;
                 if (IsArmatureContainerTransform(child) || ContainsHumanoidBoneName(child))
                 {
                     if (!IsTreeUsedBySkinning(child, assetRoot, renderer, bones) && CanDeleteTransformTree(child))
@@ -2821,10 +2876,12 @@ namespace Orbiters.ReFit.Editor
             if (root == null) return result;
             foreach (var parent in root.GetComponentsInChildren<Transform>(true))
             {
+                if (InsideHiddenPrefabPart(parent, root)) continue;
                 var counts = new Dictionary<string, int>();
                 for (int i = 0; i < parent.childCount; i++)
                 {
                     var child = parent.GetChild(i);
+                    if (IsHiddenPrefabPart(child)) continue;
                     var key = SemanticDuplicateKey(child);
                     if (string.IsNullOrEmpty(key)) continue;
                     counts.TryGetValue(key, out var count);
@@ -3032,22 +3089,37 @@ namespace Orbiters.ReFit.Editor
         /// <summary>
         /// Removes a stale object of the clothing, or hides it when it belongs to a prefab instance. Unity keeps a prefab
         /// instance's own objects; unpacking the prefab to delete them would cut the outfit from its prefab (updates, the
-        /// VRCFury and Modular Avatar setup its creator made). A hidden unused bone does nothing.
+        /// VRCFury and Modular Avatar setup its creator made). A hidden unused bone does nothing. False when there was nothing
+        /// to do (hidden already).
         /// </summary>
-        private static void RemoveOrHide(GameObject gameObject, ReFitReport report)
+        private static bool RemoveOrHide(GameObject gameObject, ReFitReport report)
         {
-            if (gameObject == null) return;
+            if (gameObject == null) return false;
             if (PrefabUtility.IsPartOfPrefabInstance(gameObject) && !PrefabUtility.IsAddedGameObjectOverride(gameObject))
             {
-                if (!gameObject.activeSelf) return;
+                if (!gameObject.activeSelf) return false;
                 resetJournal?.RecordHidden(gameObject);
                 Undo.RecordObject(gameObject, "ReFit hide stale armature");
                 gameObject.SetActive(false);
                 report?.Info("prefab-object-hidden", $"Hid '{HierarchyPath(gameObject.transform)}' instead of removing it: it belongs to a prefab, which stays packed.");
-                return;
+                return true;
             }
             resetJournal?.RecordRemoved(gameObject);
             Undo.DestroyObjectImmediate(gameObject);
+            return true;
+        }
+
+        // An object of a prefab instance kept hidden (what RemoveOrHide does with a stale one): removed as far as the clean-up
+        // and its checks go.
+        private static bool IsHiddenPrefabPart(Transform t) =>
+            t != null && !t.gameObject.activeSelf && PrefabUtility.IsPartOfPrefabInstance(t.gameObject) &&
+            !PrefabUtility.IsAddedGameObjectOverride(t.gameObject);
+
+        private static bool InsideHiddenPrefabPart(Transform t, Transform root)
+        {
+            for (var current = t; current != null && current != root; current = current.parent)
+                if (IsHiddenPrefabPart(current)) return true;
+            return false;
         }
 
         /// <summary>

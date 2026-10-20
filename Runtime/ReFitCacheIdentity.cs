@@ -10,9 +10,13 @@ namespace Orbiters.ReFit
         /// rebuilt (8: the target fitted with the followed shapes it shows, their clothing shapes taking them away; clothing
         /// lined up with the source keeps the source unscaled; 9: fabric sunk into the body draped out the nearer way, a
         /// shoulder's fabric not a sleeve's; 10: clothing the caller says was made for another body covered as such, its
-        /// separate pieces carried with the fabric, closed rings following the coverage repair part by part).
+        /// separate pieces carried with the fabric, closed rings following the coverage repair part by part; 11: after the cloth
+        /// fit, only what clips pushed out, to the settings' clearance and spread little, over the body and the layers worn
+        /// under it; made for another body also when the cloth fit falls back, and in shapes added later; the registration
+        /// gate measuring every clothing point near the skin; the cloth fit's counterpart the nearer of the skin beneath and
+        /// above; coverage supports on millimetre triangles).
         /// </summary>
-        public const int Revision = 10;
+        public const int Revision = 11;
 
         public static string Renderer(SkinnedMeshRenderer renderer, bool includeShapes)
         {

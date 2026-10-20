@@ -1,5 +1,51 @@
 # ReFit
 
+## 0.7.2 — 2026-10-20
+
+- Clothing made for another body and resized onto this one (the FashionSuit on the Ultipaw) fits close again instead
+  of bulky. After the cloth fit, which lays it on the body as it was made, the coverage now pushes out only what clips,
+  to the clearance the tightness asks for (3 mm by default), and spreads that push over a couple of rings of fabric;
+  it used to lift every part within a centimetre of the skin to a centimetre and smooth that over the whole garment,
+  and the garment worn over it followed. On the FashionSuit the shirt's sleeves sat 17 mm over the arms where the fit
+  left them at 4 mm, and the jacket over it gained 18 mm on the arms and 20 on the torso; now the jacket keeps its
+  authored room over the chest and shoulders (median within 2-4 mm of it) and gains 7 mm on the arms and 9 on the
+  torso, with less clipping than before (deepest 5 mm instead of 44). Clothing fitted from a rough start (the different-
+  base passes) keeps the centimetre. Earlier fits are refitted once (cache revision 11).
+- Clothing made for another body is covered as such also when the cloth fit falls back, and in shapes added to the fit
+  later; the registration check counts every clothing point near the skin, a registration that reaches nothing is not
+  used, and the cloth fit's counterpart is the nearer of the skin beneath and above (a thigh smaller than the source's
+  no longer finds the other thigh).
+- **Share ReFit diagnostics** (wizard settings › Diagnostics, off by default) sends ReFit's own warnings and errors, with
+  their stack traces, to Orbiters through Orbiters Toolkit's shared reporter. The card says it covers every Unity
+  project on the computer and that reports are linked to your Orbiters account while you are signed in. Tokens, keys,
+  cookies, e-mails, links, VRChat ids, other accounts' and avatars' names, your user and computer names and folder
+  paths are removed first; My Avatar's, VRCFury's and Unity's logs and tests' deliberate failures are never sent as
+  ReFit's.
+- **Export FBX** on the result page, and **Export** on each re-fitted asset, write the re-fitted mesh as it looks
+  fitted (the fit applied to the mesh, the body's blendshapes kept at their weights) with its armature to an FBX file
+  that Unity and Blender import as it is; an outfit goes into one file. A file saved inside Assets is imported and
+  pinged. Requires Orbiters Toolkit 0.4.1.
+- Fits kept to choose from work: the avatar's Fits menu showed the current fit whatever was picked, because each kept
+  fit became an empty blendshape (it was taken from the mesh's vertices, while ReFit keeps the fit in its "refit"
+  blendshape). A kept fit fitted with another armature is left out of the menu, with a warning, instead of uploading
+  wrong. Using a kept fit again drops the body shrink planned under the fit worn before (Orbiters Toolkit 0.4.1).
+- The push-out brush never changes another avatar: a mesh other pieces may wear (a refit reused on a second avatar
+  with the same base) is copied next to it at the first push, and the piece wears its copy. Each stroke is one undo step
+  of the moved positions only (not the whole mesh with its blendshapes), the stroked fabric's normals follow it, and the
+  brush keeps working next to other Scene view tools.
+- A refit is reused only while the outfit's toggles set the same body shapes (VRCFury toggles, Modular Avatar Shape
+  Changers): editing them refits again instead of bringing back the old mesh. Those toggles are read under the avatar's
+  own root, also when the avatar sits under another object of the scene.
+- Re-fitting an outfit whose other parts share its armature: a PhysBone on a chain those parts are skinned to stays
+  theirs and the rebuilt armature gets a copy, so the other parts keep moving. Objects of a prefab hidden by an earlier
+  run are no longer counted as removed again (or reported as duplicate armature branches), the bone reparenting of the
+  repair can be undone, and clothing left outside the avatar because moving it would unpack its prefab is a warning:
+  it is not uploaded with the avatar. The old armature of a prefab that a run hid comes back with any Orbiters tool's
+  reset (My Avatar, MCB), not only ReFit's own, so its PhysBones and contacts work again (Orbiters Toolkit 0.4.1).
+- In motion: a check left half done when the page changed carries on when the result shows again (it stayed at
+  "Checking…"), the hidden copy is made at rest while a posing preview plays, two objects of one name are told apart,
+  and a deleted piece no longer breaks the Touch up card.
+
 ## 0.7.1 — 2026-10-19
 
 - Requires Orbiters Toolkit 0.4.0: the Scene toolbar entries (projection rays, welded groups) register with the Toolkit's avatar gizmos directly; the separate integration assembly is gone.

@@ -13,7 +13,7 @@ namespace Orbiters.ReFit.Editor
     /// ReFit as the refit engine of the other Orbiters tools (MCB, My Avatar), registered with Orbiters Toolkit when the
     /// editor loads: they ask Toolkit for a refit and never reference this package.
     /// </summary>
-    internal sealed class ReFitToolkitEngine : IRefitEngine
+    internal sealed class ReFitToolkitEngine : IRefitEngine, IRefitInputs
     {
         // The last result of each renderer, so the commission window can show it.
         private static readonly Dictionary<int, (ReFitRequest request, ReFitResult result)> Last = new Dictionary<int, (ReFitRequest, ReFitResult)>();
@@ -101,6 +101,14 @@ namespace Orbiters.ReFit.Editor
                 default: return RefitSeverity.Info;
             }
         }
+
+        /// <summary>
+        /// What the fit reads beyond the job: the body shapes the outfit's toggles set while the clothing is worn (VRCFury
+        /// toggles, Modular Avatar Shape Changers). A toggle edited since makes the Toolkit's kept result miss.
+        /// </summary>
+        public string Inputs(RefitJob job) =>
+            job?.Renderer == null ? "" : ReFitOutfitToggles.Describe(ReFitOutfitToggles.WornBodyShapes(job.Renderer, job.Body,
+                job.Avatar != null ? job.Avatar.transform : null));
 
         public string SaveMetadata(SkinnedMeshRenderer renderer)
         {

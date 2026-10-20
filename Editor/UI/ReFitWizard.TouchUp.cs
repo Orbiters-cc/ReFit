@@ -1,3 +1,4 @@
+using System.Linq;
 using UnityEngine;
 using UnityEngine.UIElements;
 
@@ -42,12 +43,15 @@ namespace Orbiters.ReFit.Editor
                 return;
             }
             Spacer(actions);
-            foreach (var item in motionItems)
+            // A piece or body deleted since the run has nothing to push.
+            var pieces = motionItems.Where(i => i.clothing != null && i.body != null).ToList();
+            foreach (var item in pieces)
             {
                 var captured = item;
-                string label = motionItems.Count > 1 ? "Push out: " + item.clothing.name : "Push out by hand";
-                actions.Add(BusyButton(label, motionItems.Count > 1 ? "refit-button--ghost" : "refit-button--primary", "Preparing…", () =>
+                string label = pieces.Count > 1 ? "Push out: " + item.clothing.name : "Push out by hand";
+                actions.Add(BusyButton(label, pieces.Count > 1 ? "refit-button--ghost" : "refit-button--primary", "Preparing…", () =>
                 {
+                    if (captured.clothing == null || captured.body == null) return;
                     string error = ReFitClipFixTool.Begin(captured.clothing, captured.body);
                     if (error != null) Debug.LogWarning("[ReFit] Push out: " + error + ".");
                 }));

@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 #if REFIT_VRCHAT_AVATARS
 using Orbiters.Toolkit.Editor.VRChat;
 using Orbiters.Toolkit.Editor.VRChat.Attachments;
+using Orbiters.Toolkit.Editor.VRChat.Posing;
 #endif
 using UnityEditor;
 using UnityEngine;
@@ -114,20 +115,25 @@ namespace Orbiters.ReFit.Editor
                 return result;
             }
 #if REFIT_VRCHAT_AVATARS
-            string bodyPath = PathUnder(avatar.transform, body.transform), clothingPath = PathUnder(avatar.transform, clothing.transform);
+            // By sibling index: two objects of one name (two "Body" children) stay apart in the copy.
+            var bodyPath = ReFitUtility.IndexPath(body.transform, avatar.transform);
+            var clothingPath = ReFitUtility.IndexPath(clothing.transform, avatar.transform);
             if (bodyPath == null || clothingPath == null)
             {
                 result.error = "the body and the clothing must be under the avatar";
                 return result;
             }
-            using (var copy = new HiddenAvatarCopy(avatar))
+            // Copied at rest: a posing preview of the avatar is paused while the copy is made.
+            HiddenAvatarCopy copy;
+            using (AccessoryPoseSync.Pause(avatar.transform)) copy = new HiddenAvatarCopy(avatar);
+            using (copy)
             {
                 var root = copy.Copy.transform;
-                var copyBody = Find(root, bodyPath)?.GetComponent<SkinnedMeshRenderer>();
-                var copyClothing = Find(root, clothingPath)?.GetComponent<SkinnedMeshRenderer>();
+                var copyBody = ReFitUtility.ResolvePath(root, bodyPath)?.GetComponent<SkinnedMeshRenderer>();
+                var copyClothing = ReFitUtility.ResolvePath(root, clothingPath)?.GetComponent<SkinnedMeshRenderer>();
                 if (copyBody == null || copyClothing == null)
                 {
-                    result.error = "the copy has no body or clothing at their paths";
+                    result.error = "the copy has no body or clothing at their places";
                     return result;
                 }
                 var session = new Session(root, copyBody, copyClothing, avatar.transform);
@@ -145,9 +151,6 @@ namespace Orbiters.ReFit.Editor
         }
 
 #if REFIT_VRCHAT_AVATARS
-
-        private static string PathUnder(Transform root, Transform t) => t == root ? "" : t.IsChildOf(root) ? AnimationUtility.CalculateTransformPath(t, root) : null;
-        private static Transform Find(Transform root, string path) => path.Length == 0 ? root : root.Find(path);
 
         // Accepts triangles turned along or against a direction.
         private readonly struct EitherFacing : ITriangleFilter
@@ -189,16 +192,25 @@ namespace Orbiters.ReFit.Editor
                 this.root = root;
                 this.body = body;
                 this.clothing = clothing;
-                var clothingTop = clothing.transform;
-                while (clothingTop.parent != null && clothingTop.parent != root) clothingTop = clothingTop.parent;
-                bones = HumanoidBoneMapper.GetHumanoidMap(root.gameObject, null, clothingTop == body.transform ? null : clothingTop);
-                // Followed as the build will (Toolkit's posing preview shares these links): rest is the avatar as uploaded.
-                links = AttachmentFollow.Links(root);
-                int Depth(Transform t) { int d = 0; for (; t != null; t = t.parent) d++; return d; }
-                links.Sort((a, b) => Depth(a.Follower).CompareTo(Depth(b.Follower)));
-                foreach (var t in root.GetComponentsInChildren<Transform>(true)) rest[t] = (t.localPosition, t.localRotation, t.localScale);
-                bodyTriangles = body.sharedMesh.triangles;
-                clothTriangles = clothing.sharedMesh.triangles;
+                try
+                {
+                    var clothingTop = clothing.transform;
+                    while (clothingTop.parent != null && clothingTop.parent != root) clothingTop = clothingTop.parent;
+                    bones = HumanoidBoneMapper.GetHumanoidMap(root.gameObject, null, clothingTop == body.transform ? null : clothingTop);
+                    // Followed as the build will (Toolkit's posing preview shares these links): rest is the avatar as uploaded.
+                    links = AttachmentFollow.Links(root);
+                    int Depth(Transform t) { int d = 0; for (; t != null; t = t.parent) d++; return d; }
+                    links.Sort((a, b) => Depth(a.Follower).CompareTo(Depth(b.Follower)));
+                    foreach (var t in root.GetComponentsInChildren<Transform>(true)) rest[t] = (t.localPosition, t.localRotation, t.localScale);
+                    bodyTriangles = body.sharedMesh.triangles;
+                    clothTriangles = clothing.sharedMesh.triangles;
+                }
+                catch
+                {
+                    // The baking meshes are made with the session: never left behind by one that could not start.
+                    Release();
+                    throw;
+                }
             }
 
             public void Release()

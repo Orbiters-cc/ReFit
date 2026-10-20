@@ -83,18 +83,16 @@ namespace Orbiters.ReFit.Editor.Tests
             queue.RemoveAt(0);
             SessionState.SetString(Key + "Queue", string.Join("\n", queue));
             SessionState.SetString(Key + "Status", $"running {label} {total - queue.Count}/{total} {name}");
-            string row;
-            try
-            {
-                string settings = SessionState.GetString(Key + "Settings", "");
-                var result = ReFitCaseValidation.Run(ReFitCaseValidation.Find(name), label, true, SessionState.GetString(Key + "Render", "none"),
-                    settings.Length > 0 ? settings : null);
-                row = Row(name, result);
-            }
-            catch (Exception e)
-            {
-                row = name + "\tFAILED " + e.GetType().Name + ": " + e.Message.Replace('\n', ' ').Replace('\t', ' ');
-            }
+            string settings = SessionState.GetString(Key + "Settings", "");
+            // A case at a time, a step per editor update: the refits compute on ReFit's worker thread and the editor (and
+            // other tools' MCP calls) stays responsive while the suite runs.
+            EditorRoutine.Start(ReFitCaseValidation.RunRoutine(ReFitCaseValidation.Find(name), label, true, SessionState.GetString(Key + "Render", "none"),
+                    settings.Length > 0 ? settings : null, result => Finish(label, Row(name, result))),
+                e => Finish(label, name + "\tFAILED " + e.GetType().Name + ": " + e.Message.Replace('\n', ' ').Replace('\t', ' ')));
+        }
+
+        private static void Finish(string label, string row)
+        {
             File.AppendAllText(Output + label + ".tsv", row + "\n");
             Schedule();
         }

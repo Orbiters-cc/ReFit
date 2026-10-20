@@ -1,4 +1,7 @@
+using System;
 using System.Collections.Generic;
+using System.Globalization;
+using System.Linq;
 using UnityEditor;
 using UnityEngine;
 
@@ -14,26 +17,38 @@ namespace Orbiters.ReFit.Editor
     {
         private const string VrcFury = "VF.Model.VRCFury", ShapeChanger = "nadena.dev.modular_avatar.core.ModularAvatarShapeChanger";
 
-        /// <summary>Body shape weights (0..100) by name while <paramref name="part"/> is worn; empty when nothing sets any.</summary>
-        public static Dictionary<string, float> WornBodyShapes(SkinnedMeshRenderer part, SkinnedMeshRenderer body)
+        /// <summary>
+        /// Body shape weights (0..100) by name while <paramref name="part"/> is worn; empty when nothing sets any.
+        /// <paramref name="avatar"/>: the avatar's root (its descriptor's object), which may lie under other objects of the
+        /// scene; by default the body's scene root.
+        /// </summary>
+        public static Dictionary<string, float> WornBodyShapes(SkinnedMeshRenderer part, SkinnedMeshRenderer body, Transform avatar = null)
         {
             var shapes = new Dictionary<string, float>();
             if (part == null) return shapes;
-            var outfit = OutfitRoot(part.transform, body);
+            if (avatar == null || !part.transform.IsChildOf(avatar)) avatar = body != null ? body.transform.root : null;
+            var outfit = OutfitRoot(part.transform, avatar);
             foreach (var component in outfit.GetComponentsInChildren<Component>(true))
             {
                 if (component == null) continue;
                 string type = component.GetType().FullName;
                 if (type == VrcFury) ReadVrcFury(component, part.transform, outfit, body, shapes);
-                else if (type == ShapeChanger && part.transform.IsChildOf(component.transform)) ReadShapeChanger(component, body, shapes);
+                else if (type == ShapeChanger && part.transform.IsChildOf(component.transform)) ReadShapeChanger(component, body, avatar, shapes);
             }
             return shapes;
         }
 
-        // The outfit holding the part: its object directly under the avatar (the body's root), or the part's own root.
-        private static Transform OutfitRoot(Transform part, SkinnedMeshRenderer body)
+        /// <summary>
+        /// The worn shapes as one line ("name weight" sorted by name), for identities: a result kept for reuse is reused only
+        /// while the outfit's toggles set the same.
+        /// </summary>
+        public static string Describe(IDictionary<string, float> shapes) =>
+            shapes == null ? "" : string.Join(",", shapes.OrderBy(p => p.Key, StringComparer.Ordinal)
+                .Select(p => p.Key + " " + p.Value.ToString("0.###", CultureInfo.InvariantCulture)));
+
+        // The outfit holding the part: its object directly under the avatar, or the part's own root.
+        private static Transform OutfitRoot(Transform part, Transform avatar)
         {
-            var avatar = body != null ? body.transform.root : null;
             var top = part;
             while (top.parent != null && top.parent != avatar) top = top.parent;
             return top;
@@ -82,15 +97,17 @@ namespace Orbiters.ReFit.Editor
             }
         }
 
-        // Shapes the changer sets (or deletes: hidden all the same) on the body while it is active.
-        private static void ReadShapeChanger(Component component, SkinnedMeshRenderer body, Dictionary<string, float> shapes)
+        // Shapes the changer sets (or deletes: hidden all the same) on the body while it is active. Its paths are under the
+        // avatar's root.
+        private static void ReadShapeChanger(Component component, SkinnedMeshRenderer body, Transform avatar, Dictionary<string, float> shapes)
         {
             if (body == null || body.sharedMesh == null) return;
             var serialized = new SerializedObject(component);
             if (serialized.FindProperty("m_inverted")?.boolValue == true) return;
             var list = serialized.FindProperty("m_shapes");
             if (list == null || !list.isArray) return;
-            string bodyPath = AnimationUtility.CalculateTransformPath(body.transform, body.transform.root);
+            var root = avatar != null && body.transform.IsChildOf(avatar) ? avatar : body.transform.root;
+            string bodyPath = AnimationUtility.CalculateTransformPath(body.transform, root);
             for (int i = 0; i < list.arraySize; i++)
             {
                 var shape = list.GetArrayElementAtIndex(i);

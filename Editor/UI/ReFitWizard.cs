@@ -27,6 +27,8 @@ namespace Orbiters.ReFit.Editor
             public Mesh originalMesh;
             public ReFitRendererState originalRendererState;
             public Mesh refitMesh;
+            /// <summary>The generated blendshape carrying the fit (applied when the result is exported to FBX).</summary>
+            public string fitShape;
         }
 
         /// <summary>All re-fits performed this session (survives reopening the window, cleared on assembly reload).</summary>
@@ -767,7 +769,8 @@ namespace Orbiters.ReFit.Editor
                 sceneRenderer = result.sceneRenderer,
                 originalMesh = result.originalMesh,
                 originalRendererState = result.originalRendererState,
-                refitMesh = result.mesh
+                refitMesh = result.mesh,
+                fitShape = result.primaryShapeName
             });
         }
 

@@ -540,6 +540,8 @@ namespace Orbiters.ReFit
         public string bindingSettingsIdentity;
         /// <summary>Fitted with the different-base coverage (and drape): shapes added later are covered the same way.</summary>
         public bool coverDifferentBaseBody;
+        /// <summary>Covered as made for another body (pieces carried, limbs covered): shapes added later keep those guards.</summary>
+        public bool madeForAnother;
         public string primaryShapeName;
         public int groupCount;
         public int targetBodyVertexCount;
@@ -570,6 +572,7 @@ namespace Orbiters.ReFit
                 settingsIdentity = settingsIdentity,
                 bindingSettingsIdentity = bindingSettingsIdentity,
                 coverDifferentBaseBody = coverDifferentBaseBody,
+                madeForAnother = madeForAnother,
                 primaryShapeName = primaryShapeName,
                 groupCount = groupCount,
                 targetBodyVertexCount = targetBodyVertexCount,

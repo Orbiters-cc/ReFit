@@ -218,7 +218,8 @@ namespace Orbiters.ReFit.Editor
             {
                 if (request != null && request.wornBodyShapes == null && request.assetRenderer != null)
                     request.wornBodyShapes = ReFitOutfitToggles.WornBodyShapes(request.assetRenderer,
-                        request.targetBodyRenderer != null ? request.targetBodyRenderer : ReFitAutoSetup.Body(request.targetAvatar, request.assetRenderer));
+                        request.targetBodyRenderer != null ? request.targetBodyRenderer : ReFitAutoSetup.Body(request.targetAvatar, request.assetRenderer),
+                        request.targetAvatar != null ? request.targetAvatar.transform : null);
             }
             catch (Exception e) { report.Warn("worn-shapes-unread", "The clothing's toggles could not be read: " + e.Message); }
             return report;

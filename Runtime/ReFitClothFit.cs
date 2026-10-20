@@ -182,9 +182,12 @@ namespace Orbiters.ReFit
                 var counterpart = registeredIndex.ClosestPoint(p, CounterpartReach, facing);
                 if (!counterpart.found && main[t])
                 {
-                    // Grown skin: the skin beneath it on the laid source (or above it, where the target is smaller).
-                    counterpart = registeredIndex.Raycast(p, -n, GrownReach, facing);
-                    if (!counterpart.found) counterpart = registeredIndex.Raycast(p, n, ShrunkReach, facing);
+                    // Grown skin: the skin beneath it on the laid source, or above it where the target is smaller, whichever is
+                    // nearer (as ReFitDrape.CounterpartCovered): a ray in through a thigh smaller than the source's goes on to the
+                    // other thigh.
+                    var inward = registeredIndex.Raycast(p, -n, GrownReach, facing);
+                    var outward = registeredIndex.Raycast(p, n, ShrunkReach, facing);
+                    counterpart = outward.found && (!inward.found || outward.distance < inward.distance) ? outward : inward;
                 }
                 if (!counterpart.found) { unmatched[t] = true; return; }
                 var sp = source.BaryPoint(counterpart.triangle, counterpart.bary);

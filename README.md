@@ -9,8 +9,10 @@
   and the garment worn over it followed. On the FashionSuit the shirt's sleeves sat 17 mm over the arms where the fit
   left them at 4 mm, and the jacket over it gained 18 mm on the arms and 20 on the torso; now the jacket keeps its
   authored room over the chest and shoulders (median within 2-4 mm of it) and gains 7 mm on the arms and 9 on the
-  torso, with less clipping than before (deepest 5 mm instead of 44). Clothing fitted from a rough start (the different-
-  base passes) keeps the centimetre. Earlier fits are refitted once (cache revision 11).
+  torso, with less clipping than before (deepest 5 mm instead of 44). The legs keep the centimetre (by how much of the
+  skin's skinning is theirs, so the hips blend into it): they bend far more crouching and sitting, and trousers and
+  shorts fitted to 3 mm came through the knees and thighs more often when crouching. Clothing fitted from a rough start
+  (the different-base passes) keeps the centimetre everywhere. Earlier fits are refitted once (cache revision 12).
 - Clothing made for another body is covered as such also when the cloth fit falls back, and in shapes added to the fit
   later; the registration check counts every clothing point near the skin, a registration that reaches nothing is not
   used, and the cloth fit's counterpart is the nearer of the skin beneath and above (a thigh smaller than the source's

@@ -18,6 +18,10 @@ namespace Orbiters.ReFit
         // 4 mm over the skin as fitted, 17 mm after; the jacket over it 18 mm looser on the arms, 20 on the torso).
         private const int FittedSpreadIterations = 2;
         private const float FittedSpreadStrength = .5f;
+        // The legs keep RepairSafety's room, by how much of the skin's skinning is theirs: crouching and sitting bend them
+        // far more than the torso and arms, and fitted to the settings' clearance alone, trousers and shorts came through
+        // them crouching (the FashionSuit's trousers 3683 -> 4614 skin points through by more than 3 mm; 4098 with it).
+        private float[] legs;
         // The least clearance the repair keeps over the body.
         private float least;
         // The clothing comes from the cloth fit: the push spreads less.
@@ -81,7 +85,7 @@ namespace Orbiters.ReFit
         /// </param>
         public static ReFitSurfaceCoverage Build(MeshSnapshot asset, MeshSnapshot body, Vector3[] primary,
             BodyRegion[] regions, bool[] tubes, ReFitSettings settings, BodyRegion[] bodyRegions = null, Vector3[] authored = null,
-            bool[] hidden = null, string innerGarment = null, bool carryPieces = false, bool fitted = false)
+            bool[] hidden = null, string innerGarment = null, bool carryPieces = false, bool fitted = false, float[] legs = null)
         {
             if (!settings.enableClearanceCorrection || (!settings.coverDifferentBaseBody &&
                 (!settings.preserveLowerBodyCoverage || !IsLowerBodyCloth(asset, regions, tubes)))) return null;
@@ -89,6 +93,7 @@ namespace Orbiters.ReFit
             var result = new ReFitSurfaceCoverage { basis = new Vector3[asset.GroupCount], adjacency = asset.groupAdjacency, repair = settings.coverDifferentBaseBody,
                 layer = authored != null, surfaceName = innerGarment != null ? $"inner garment '{innerGarment}'" : "the body surface" };
             result.fitted = fitted;
+            result.legs = fitted && legs != null && legs.Length == body.worldVertices.Length ? legs : null;
             result.least = fitted ? settings.clearanceMinimumSafetyDistance : Mathf.Max(RepairSafety, settings.clearanceMinimumSafetyDistance);
             result.tubes = result.repair ? DetailGroups(asset, tubes) : tubes;
             result.rings = tubes;
@@ -407,10 +412,10 @@ namespace Orbiters.ReFit
 
         public static void RepairPrimary(MeshSnapshot asset, MeshSnapshot body, Vector3[] primary,
             BodyRegion[] regions, bool[] tubes, ReFitSettings settings, ReFitReport report, BodyRegion[] bodyRegions, Vector3[] authored = null,
-            bool[] hidden = null, string innerGarment = null, bool carryPieces = false, bool fitted = false)
+            bool[] hidden = null, string innerGarment = null, bool carryPieces = false, bool fitted = false, float[] legs = null)
         {
             if (!settings.coverDifferentBaseBody) return;
-            var coverage = Build(asset, body, primary, regions, tubes, settings, bodyRegions, authored, hidden, innerGarment, carryPieces, fitted);
+            var coverage = Build(asset, body, primary, regions, tubes, settings, bodyRegions, authored, hidden, innerGarment, carryPieces, fitted, legs);
             if (coverage == null) return;
             var correction = new Vector3[primary.Length];
             coverage.Apply(body, null, correction, new Vector3[primary.Length], settings, report, "different-base coverage");
@@ -451,7 +456,7 @@ namespace Orbiters.ReFit
                     var skin = body.worldVertices[a] * s.bary.x + body.worldVertices[b] * s.bary.y + body.worldVertices[c] * s.bary.z + motion;
                     // Shapes are additive. Each one preserves the achieved base clearance rather
                     // than applying the same unresolved base repair again (even for tiny skin motion).
-                    float safety = bodyDelta != null ? s.signedGap : layer ? s.gap : Mathf.Max(least, s.gap);
+                    float safety = bodyDelta != null ? s.signedGap : layer ? s.gap : Mathf.Max(LeastAt(a, b, c, s.bary), s.gap);
                     float missing = safety - Vector3.Dot(positions[s.group] - skin, s.normal);
                     if (missing <= .00005f) continue;
                     corrections[s.group] += s.normal * missing; weights[s.group]++;
@@ -470,7 +475,7 @@ namespace Orbiters.ReFit
                     var p = positions[ga] * s.bary.x + positions[gb] * s.bary.y + positions[gc] * s.bary.z;
                     // Do not spend the original gap independently in every additive shape.
                     float safety = repair && bodyDelta != null ? s.signedGap : repair && layer ? s.gap :
-                        Mathf.Max(repair ? least : settings.clearanceMinimumSafetyDistance, s.gap);
+                        Mathf.Max(repair ? LeastAt(s.vertex) : settings.clearanceMinimumSafetyDistance, s.gap);
                     float missing = safety - Vector3.Dot(p - skin, n);
                     if (missing <= .00005f) continue;
                     worst = Mathf.Max(worst, missing); corrected++;
@@ -527,7 +532,7 @@ namespace Orbiters.ReFit
                     var n = MeshSnapshot.Unit(Vector3.Cross(b - a, c - a));
                     if (Vector3.Dot(n, body.worldNormals[s.vertex]) < .35f) continue;
                     var skin = body.worldVertices[s.vertex] + (bodyDelta != null ? bodyDelta[s.vertex] : Vector3.zero);
-                    float safety = bodyDelta != null ? s.signedGap : layer ? s.gap : Mathf.Max(least, s.gap);
+                    float safety = bodyDelta != null ? s.signedGap : layer ? s.gap : Mathf.Max(LeastAt(s.vertex), s.gap);
                     float shortfall = safety - Vector3.Dot(a*s.bary.x + b*s.bary.y + c*s.bary.z - skin, n);
                     residual = Mathf.Max(residual, shortfall);
                     if (RisksClipping(shortfall, safety - shortfall)) clipping = Mathf.Min(clipping, safety - shortfall);
@@ -539,6 +544,12 @@ namespace Orbiters.ReFit
             if (clipping < ClipTolerance)
                 report?.Warn("surface-coverage-limited", LimitedWarning(label, surfaceName, clipping));
         }
+
+        // The least clearance over a body vertex, and over a point of a body triangle: the legs keep more.
+        private float LegRoom => Mathf.Max(0f, RepairSafety - least);
+        private float LeastAt(int vertex) => legs == null ? least : least + LegRoom * legs[vertex];
+        private float LeastAt(int a, int b, int c, Vector3 bary) =>
+            legs == null ? least : least + LegRoom * (legs[a] * bary.x + legs[b] * bary.y + legs[c] * bary.z);
 
         /// <summary>
         /// A support the bounded correction left at risk of clipping: still short of its targeted clearance, and inside the

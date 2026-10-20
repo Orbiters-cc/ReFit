@@ -335,6 +335,8 @@ namespace Orbiters.ReFit
             /// <summary>The source's triangle regions with the shoulders in the torso: the limbs a sleeve or a leg lies over.</summary>
             public BodyRegion[] sourceLimbRegions;
             public BodyRegion[] targetTriRegions;
+            // Per target vertex, how much of its skinning is the legs' (LegShares).
+            public float[] targetLegShares;
             // Every region of each triangle (SurfaceBindingSolver.RegionMask bits), for binding across transition bands.
             public int[] sourceTriRegionMasks;
             public int[] targetTriRegionMasks;
@@ -579,6 +581,7 @@ namespace Orbiters.ReFit
                 var sourceRegions = HumanoidBoneMapper.ClassifyBones(stage.sourceRoot, stage.sourceHumanMap);
                 var targetRegions = stage.sourceIsTarget ? sourceRegions : HumanoidBoneMapper.ClassifyBones(stage.targetRoot, stage.targetHumanMap);
                 state.targetTriRegions = TriangleRegions(state.targetBasis, targetRegions);
+                state.targetLegShares = LegShares(state.targetBasis, targetRegions);
                 state.targetTriRegionMasks = TriangleRegionMasks(state.targetBasis, targetRegions);
                 state.targetTriCrossMasks = LimbsAcceptTorso(state.targetTriRegionMasks);
                 state.sourceTriRegionMasks = state.wantMesh && state.sourceBody != state.targetBasis
@@ -1660,7 +1663,7 @@ namespace Orbiters.ReFit
             }
             ReFitSurfaceCoverage.RepairPrimary(asset, targetBasis, primaryGroupDeltas,
                 state.assetGroupRegions, state.tubes.groups, settings, state.Report, state.targetTriRegions, hidden: state.hiddenGroups,
-                carryPieces: state.madeForAnother, fitted: state.clothFit != null);
+                carryPieces: state.madeForAnother, fitted: state.clothFit != null, legs: state.targetLegShares);
             steps.Lap("coverage");
             CoverStepCaptured?.Invoke("coverage", asset, targetBasis, primaryGroupDeltas);
             if (!settings.coverDifferentBaseBody || !settings.enableClearanceCorrection) return;
@@ -3186,6 +3189,27 @@ namespace Orbiters.ReFit
         // ------------------------------------------------------------------
         // Regions
         // ------------------------------------------------------------------
+
+        /// <summary>
+        /// How much of each body vertex's skinning is the legs' (0 the torso and arms, 1 the thighs and shins, in between
+        /// across the hips), from its weights. Null for a body without skin weights.
+        /// </summary>
+        private static float[] LegShares(MeshSnapshot body, Dictionary<Transform, BodyRegion> boneRegions)
+        {
+            var weights = body.boneWeights;
+            if (weights == null || weights.Length != body.worldVertices.Length || body.bones == null) return null;
+            var leg = new bool[body.bones.Length];
+            for (int k = 0; k < leg.Length; k++)
+                leg[k] = body.bones[k] != null && boneRegions.TryGetValue(body.bones[k], out var r) && (r == BodyRegion.LeftLeg || r == BodyRegion.RightLeg);
+            float Leg(int bone, float weight) => bone >= 0 && bone < leg.Length && leg[bone] ? weight : 0f;
+            var shares = new float[weights.Length];
+            for (int v = 0; v < weights.Length; v++)
+            {
+                var w = weights[v];
+                shares[v] = Mathf.Clamp01(Leg(w.boneIndex0, w.weight0) + Leg(w.boneIndex1, w.weight1) + Leg(w.boneIndex2, w.weight2) + Leg(w.boneIndex3, w.weight3));
+            }
+            return shares;
+        }
 
         private static BodyRegion[] TriangleRegions(MeshSnapshot body, Dictionary<Transform, BodyRegion> boneRegions)
         {

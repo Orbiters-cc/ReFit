@@ -88,6 +88,73 @@ namespace Orbiters.ReFit.Editor.Tests
         }
 
         [Test]
+        public void AnUndoOfSomethingElseKeepsWhatAnotherToolDidToThePushedMesh()
+        {
+            var body = Renderer("Body", Box("Body", .1f));
+            var shared = Box("Shirt", .096f);
+            AssetDatabase.CreateAsset(shared, folder + "/Shirt.asset");
+            var piece = Renderer("Shirt", shared);
+            var authored = shared.vertices;
+
+            Assert.That(ReFitClipFixTool.Begin(piece, body), Is.Null);
+            ReFitClipFixTool.PushAt(piece.transform.TransformPoint(authored[7]));
+            var own = ReFitClipFixTool.PushedMesh;
+            ReFitClipFixTool.End();
+
+            // Another tool moves a point after the stroke, then an Undo (of anything else: the brush's record is unchanged)
+            // runs the record's handler.
+            var edited = own.vertices;
+            edited[0] += new Vector3(0f, .01f, 0f);
+            own.vertices = edited;
+            ReFitPushOutUndo.Apply();
+            Assert.That(own.vertices, Is.EqualTo(edited), "The other tool's edit stays.");
+
+            // The stroke's own undo step still puts the positions back.
+            Undo.FlushUndoRecordObjects();
+            Undo.RevertAllDownToGroup(undoGroup);
+            ReFitPushOutUndo.Apply();
+            Assert.That(own.vertices, Is.EqualTo(authored));
+        }
+
+        [Test]
+        public void HiddenEditorCopiesWearingThePiecesOwnMeshNeverMakeTheBrushCopyItAgain()
+        {
+            var body = Renderer("Body", Box("Body", .1f));
+            var own = Box("Shirt", .096f);
+            AssetDatabase.CreateAsset(own, folder + "/Shirt pushed out.asset");
+            AssetDatabase.SetLabels(own, new[] { "ReFitPushOut" });
+            var piece = Renderer("Shirt", own);
+            var corner = piece.transform.TransformPoint(own.vertices[7]);
+            var hiddenScene = EditorSceneManager.NewPreviewScene();
+            try
+            {
+                // A hidden avatar copy in a preview scene of its own, and a helper never saved next to the piece, wear it too.
+                var hidden = EditorUtility.CreateGameObjectWithHideFlags("Hidden copy", HideFlags.HideAndDontSave);
+                SceneManager.MoveGameObjectToScene(hidden, hiddenScene);
+                hidden.hideFlags = HideFlags.None;
+                hidden.AddComponent<SkinnedMeshRenderer>().sharedMesh = own;
+                Renderer("Unsaved helper", own).gameObject.hideFlags = HideFlags.DontSave;
+
+                Assert.That(ReFitClipFixTool.Begin(piece, body), Is.Null);
+                ReFitClipFixTool.PushAt(corner);
+                Assert.That(ReFitClipFixTool.PushedMesh, Is.SameAs(own), "The piece's own copy is pushed in place.");
+                Assert.That(piece.sharedMesh, Is.SameAs(own));
+
+                // A piece of another avatar loaded next to it still gets the mesh copied first.
+                var twin = Renderer("Shirt on another avatar", own);
+                Assert.That(ReFitClipFixTool.Begin(piece, body), Is.Null);
+                ReFitClipFixTool.PushAt(corner);
+                Assert.That(ReFitClipFixTool.PushedMesh, Is.Not.SameAs(own));
+                Assert.That(twin.sharedMesh, Is.SameAs(own));
+            }
+            finally
+            {
+                ReFitClipFixTool.End();
+                EditorSceneManager.ClosePreviewScene(hiddenScene);
+            }
+        }
+
+        [Test]
         public void TheWornShapesDescribeTheSameWhateverTheirOrder()
         {
             var a = new Dictionary<string, float> { ["Shrink"] = 100f, ["Fluff off"] = 50f };

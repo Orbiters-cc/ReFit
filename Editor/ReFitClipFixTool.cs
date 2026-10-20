@@ -11,6 +11,7 @@ using Orbiters.Toolkit.Storage;
 using Orbiters.Toolkit.Editor.VRChat.Refit;
 #endif
 using UnityEditor;
+using UnityEditor.SceneManagement;
 using UnityEngine;
 using Object = UnityEngine.Object;
 
@@ -260,7 +261,7 @@ namespace Orbiters.ReFit.Editor
         private static void OnUndoRedo()
         {
             if (session == null) return;
-            // The stroke's positions first (also handled on their own when the brush has ended).
+            // The stroke's positions first (also handled on their own when the brush has ended; done once either way).
             ReFitPushOutUndo.Apply();
             if (session.clothing == null || session.body == null || session.clothing.sharedMesh != session.mesh) { End(); return; }
             // The mesh came back as it was: the piece is read again (the field stays: the body has not moved).
@@ -310,6 +311,8 @@ namespace Orbiters.ReFit.Editor
                     StartStroke(s);
                     s.lastStep = 0;
                     Step(s);
+                    // The pressed brush shows at once.
+                    view.Repaint();
                     e.Use();
                     break;
                 case EventType.MouseDrag:
@@ -384,6 +387,8 @@ namespace Orbiters.ReFit.Editor
                 string path;
                 try
                 {
+                    // Seconds on a body-sized piece with many shapes: shown at once, on the press that asked.
+                    EditorUtility.DisplayProgressBar("ReFit", $"Copying the mesh of {s.clothing.name} so the push changes it alone…", .5f);
                     string folder = Path.GetDirectoryName(AssetDatabase.GetAssetPath(mesh))?.Replace('\\', '/');
                     if (string.IsNullOrEmpty(folder) || !folder.StartsWith("Assets", StringComparison.Ordinal)) folder = "Assets";
                     path = AssetDatabase.GenerateUniqueAssetPath(folder + "/" + SafePaths.FileName(s.clothing.name + " pushed out", "Pushed out") + ".asset");
@@ -398,6 +403,10 @@ namespace Orbiters.ReFit.Editor
                 {
                     Debug.LogWarning("[ReFit] Push out: the piece's own copy of its mesh could not be saved: " + ex.Message);
                     return false;
+                }
+                finally
+                {
+                    EditorUtility.ClearProgressBar();
                 }
                 bool recorded = false;
 #if REFIT_VRCHAT_AVATARS
@@ -418,9 +427,22 @@ namespace Orbiters.ReFit.Editor
             return true;
         }
 
-        // Another loaded renderer wears the mesh.
+        // Another loaded renderer wears the mesh. Hidden editor copies (a posing preview, an estimate, a build) don't count:
+        // made again each session, they would make the brush copy its own copy again every time.
         private static bool WornElsewhere(Mesh mesh, SkinnedMeshRenderer piece) =>
-            Resources.FindObjectsOfTypeAll<SkinnedMeshRenderer>().Any(r => r != null && r != piece && r.sharedMesh == mesh && !EditorUtility.IsPersistent(r));
+            Resources.FindObjectsOfTypeAll<SkinnedMeshRenderer>().Any(r => r != null && r != piece && r.sharedMesh == mesh &&
+                                                                         !EditorUtility.IsPersistent(r) && !IsEditorCopy(r, piece));
+
+        // In a preview scene other than the piece's (a hidden avatar copy has one of its own), or never saved (it or an
+        // object above it).
+        private static bool IsEditorCopy(Component component, Component piece)
+        {
+            if (component.gameObject.scene != piece.gameObject.scene && EditorSceneManager.IsPreviewSceneObject(component)) return true;
+            if ((component.hideFlags & HideFlags.DontSaveInEditor) != 0) return true;
+            for (var t = component.transform; t != null; t = t.parent)
+                if ((t.gameObject.hideFlags & HideFlags.DontSaveInEditor) != 0) return true;
+            return false;
+        }
 
         private static void StartStroke(Session s)
         {

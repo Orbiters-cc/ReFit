@@ -1957,17 +1957,15 @@ namespace Orbiters.ReFit.Editor
             return false;
         }
 
-        // An undoable copy of a component added to another object (the copy belongs to that object's lifetime).
+        // An undoable copy of a component added to another object (the copy belongs to that object's lifetime). Copied
+        // directly, not through the component clipboard: the component the user copied stays there to paste.
         private static Component CopyComponentTo(Component component, GameObject target)
         {
             if (component == null || target == null) return null;
-            var before = target.GetComponents(component.GetType());
-            if (!UnityEditorInternal.ComponentUtility.CopyComponent(component) ||
-                !UnityEditorInternal.ComponentUtility.PasteComponentAsNew(target))
-                return null;
-            foreach (var added in target.GetComponents(component.GetType()))
-                if (System.Array.IndexOf(before, added) < 0) return added;
-            return null;
+            var copy = Undo.AddComponent(target, component.GetType());
+            if (copy == null) return null;
+            EditorUtility.CopySerialized(component, copy);
+            return copy;
         }
 
         // The link settings for an armature ReFit rebuilt in the target pose: VRCFury merges it as it is, without aligning it.

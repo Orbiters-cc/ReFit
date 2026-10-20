@@ -26,7 +26,8 @@
 - **Export FBX** on the result page, and **Export** on each re-fitted asset, write the re-fitted mesh as it looks
   fitted (the fit applied to the mesh, the body's blendshapes kept at their weights) with its armature to an FBX file
   that Unity and Blender import as it is; an outfit goes into one file. A file saved inside Assets is imported and
-  pinged. Requires Orbiters Toolkit 0.4.1.
+  pinged. Once the fit was undone or reset, they say so instead of writing the original, unfitted mesh. Requires
+  Orbiters Toolkit 0.4.1.
 - Fits kept to choose from work: the avatar's Fits menu showed the current fit whatever was picked, because each kept
   fit became an empty blendshape (it was taken from the mesh's vertices, while ReFit keeps the fit in its "refit"
   blendshape). A kept fit fitted with another armature is left out of the menu, with a warning, instead of uploading
@@ -34,12 +35,16 @@
 - The push-out brush never changes another avatar: a mesh other pieces may wear (a refit reused on a second avatar
   with the same base) is copied next to it at the first push, and the piece wears its copy. Each stroke is one undo step
   of the moved positions only (not the whole mesh with its blendshapes), the stroked fabric's normals follow it, and the
-  brush keeps working next to other Scene view tools.
+  brush keeps working next to other Scene view tools. Undoing something else no longer puts the last stroke back over
+  what other tools did to the mesh since (a sculpt in Mixer, a reimport). A progress bar shows while the copy is saved,
+  and hidden copies of the avatar (posing preview, estimates, builds) no longer make the brush copy the piece's copy
+  again in every session.
 - A refit is reused only while the outfit's toggles set the same body shapes (VRCFury toggles, Modular Avatar Shape
   Changers): editing them refits again instead of bringing back the old mesh. Those toggles are read under the avatar's
   own root, also when the avatar sits under another object of the scene.
 - Re-fitting an outfit whose other parts share its armature: a PhysBone on a chain those parts are skinned to stays
-  theirs and the rebuilt armature gets a copy, so the other parts keep moving. Objects of a prefab hidden by an earlier
+  theirs and the rebuilt armature gets a copy, so the other parts keep moving (the component you copied in the
+  Inspector stays there to paste). Objects of a prefab hidden by an earlier
   run are no longer counted as removed again (or reported as duplicate armature branches), the bone reparenting of the
   repair can be undone, and clothing left outside the avatar because moving it would unpack its prefab is a warning:
   it is not uploaded with the avatar. The old armature of a prefab that a run hid comes back with any Orbiters tool's

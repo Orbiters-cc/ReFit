@@ -13,6 +13,18 @@ namespace Orbiters.ReFit.Editor
         public Mesh mesh;
         public Vector3[] vertices;
         public Vector3[] normals;
+        // One more with each stroke; Undo and Redo bring it back with the positions.
+        public int revision;
+
+        // The revision the mesh shows, out of Undo's reach (and kept through domain reloads): only a record Undo changed is
+        // put back on its mesh, so undoing anything else never overwrites what other tools did to the mesh since.
+        private string ShownKey => "Orbiters.ReFit.PushOut.Shown." + GetInstanceID();
+
+        private int Shown
+        {
+            get => SessionState.GetInt(ShownKey, 0);
+            set => SessionState.SetInt(ShownKey, value);
+        }
 
         /// <summary>The record of <paramref name="mesh"/>, made the first time.</summary>
         public static ReFitPushOutUndo For(Mesh mesh)
@@ -33,27 +45,27 @@ namespace Orbiters.ReFit.Editor
             Undo.RecordObject(this, undoName);
             vertices = mesh.vertices;
             normals = mesh.normals;
+            revision++;
+            Shown = revision;
         }
+
+        private void OnDestroy() => SessionState.EraseInt(ShownKey);
 
         [InitializeOnLoadMethod]
         private static void FollowUndo() => Undo.undoRedoPerformed += Apply;
 
-        /// <summary>Puts each record's positions and normals back on its mesh where an Undo or Redo changed them.</summary>
+        /// <summary>
+        /// Puts each record an Undo or Redo changed back on its mesh; the others are left alone. Called again for the same
+        /// Undo (the brush asks first, to read the piece again), it finds nothing left to do.
+        /// </summary>
         internal static void Apply()
         {
             foreach (var record in Resources.FindObjectsOfTypeAll<ReFitPushOutUndo>())
             {
-                var mesh = record != null ? record.mesh : null;
+                if (record == null || record.revision == record.Shown) continue;
+                record.Shown = record.revision;
+                var mesh = record.mesh;
                 if (mesh == null || record.vertices == null || record.vertices.Length != mesh.vertexCount) continue;
-                var current = mesh.vertices;
-                bool changed = false;
-                for (int i = 0; i < current.Length && !changed; i++)
-                {
-                    // Exactly: Vector3's own != lets moves under 0.01 mm through.
-                    Vector3 a = current[i], b = record.vertices[i];
-                    changed = a.x != b.x || a.y != b.y || a.z != b.z;
-                }
-                if (!changed) continue;
                 mesh.vertices = record.vertices;
                 if (record.normals != null && record.normals.Length == record.vertices.Length) mesh.normals = record.normals;
                 mesh.RecalculateBounds();

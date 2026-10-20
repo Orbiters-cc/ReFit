@@ -947,7 +947,7 @@ namespace Orbiters.ReFit.Editor
             foreach (var item in recordedAssets)
             {
                 var captured = item;
-                AddRefittedAssetRow(section, captured.DisplayName, captured.renderer, null, () =>
+                AddRefittedAssetRow(section, captured.DisplayName, captured.renderer, null, null, () =>
                 {
                     // A refit from this session also undoes its armature replacement; the record is then only dropped.
                     var sessionEntry = SessionLog.FindLast(e => e?.originalRendererState != null &&
@@ -959,11 +959,12 @@ namespace Orbiters.ReFit.Editor
             foreach (var entry in activeSessionEntries)
             {
                 var captured = entry;
-                AddRefittedAssetRow(section, entry.assetName, entry.sceneRenderer, entry.fitShape, () => RevertEntry(captured));
+                AddRefittedAssetRow(section, entry.assetName, entry.sceneRenderer, entry.fitShape, entry.refitMesh, () => RevertEntry(captured));
             }
         }
 
-        private void AddRefittedAssetRow(VisualElement parent, string displayName, SkinnedMeshRenderer renderer, string fitShape, Action resetAction)
+        private void AddRefittedAssetRow(VisualElement parent, string displayName, SkinnedMeshRenderer renderer, string fitShape, Mesh fitted,
+            Action resetAction)
         {
             var row = Box(parent, "refit-row");
             Box(row, "refit-row__dot");
@@ -980,8 +981,15 @@ namespace Orbiters.ReFit.Editor
             {
                 var export = FlatButton("Export", () =>
                 {
-                    if (capturedRenderer != null)
-                        ExportFbx(new Dictionary<SkinnedMeshRenderer, string> { { capturedRenderer, fitShape } }, capturedRenderer.name);
+                    if (capturedRenderer == null) return;
+                    // Undone or reset since the page was built: said, never written unfitted.
+                    if (!WearsFit(capturedRenderer, fitShape, fitted))
+                    {
+                        RefuseUnfitted(new[] { capturedRenderer.name });
+                        Render();
+                        return;
+                    }
+                    ExportFbx(new Dictionary<SkinnedMeshRenderer, string> { { capturedRenderer, fitShape } }, capturedRenderer.name);
                 }, "refit-button--small");
                 export.tooltip = "Writes this mesh as it looks fitted, with its bones and blendshapes, to an FBX file.";
                 row.Add(export);

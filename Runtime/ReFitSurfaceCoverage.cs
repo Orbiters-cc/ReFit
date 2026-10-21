@@ -18,10 +18,18 @@ namespace Orbiters.ReFit
         // 4 mm over the skin as fitted, 17 mm after; the jacket over it 18 mm looser on the arms, 20 on the torso).
         private const int FittedSpreadIterations = 2;
         private const float FittedSpreadStrength = .5f;
-        // The legs keep RepairSafety's room, by how much of the skin's skinning is theirs: crouching and sitting bend them
-        // far more than the torso and arms, and fitted to the settings' clearance alone, trousers and shorts came through
-        // them crouching (the FashionSuit's trousers 3683 -> 4614 skin points through by more than 3 mm; 4098 with it).
+        // The legs keep more room, by how much of the skin's skinning is theirs: crouching and sitting bend them far more than
+        // the torso and arms, and fitted to the settings' clearance alone, trousers and shorts came through them crouching (the
+        // FashionSuit's trousers 3683 -> 4614 skin points through by more than 3 mm; 4098 with RepairSafety's centimetre).
         private float[] legs;
+        // That room is the garment's own, up to RepairSafety: the gap it keeps over the loosest quarter of the leg skin under it,
+        // as the cloth fit laid it. Trousers and shorts keep the centimetre (made 10-25 mm off the legs there: the FishingOutfit's
+        // shorts, LunaVRC's dress pants and sweats); stockings, leggings and leg warmers made 3-4 mm off the skin keep that,
+        // where the centimetre ballooned them. The feet are not the legs (ReFitEngine.LegShares): shoes and socks keep the
+        // settings' clearance over them.
+        private const float LegRoomQuantile = .75f;
+        // The least clearance over the legs (LegLeast).
+        private float legLeast;
         // The least clearance the repair keeps over the body.
         private float least;
         // The clothing comes from the cloth fit: the push spreads less.
@@ -177,6 +185,7 @@ namespace Orbiters.ReFit
             });
             // The solver accumulates constraints in vertex order, regardless of query completion order.
             foreach (var sample in samples) if (sample.HasValue) result.supports.Add(sample.Value);
+            if (result.legs != null) result.legLeast = result.LegLeast();
             result.buildMs = watch.ElapsedMilliseconds;
             return result.supports.Count == 0 && result.vertexSupports.Count == 0 ? null : result;
         }
@@ -539,14 +548,26 @@ namespace Orbiters.ReFit
                 }
             }
             for (int g = 0; g < deltas.Length; g++) max = Mathf.Max(max, (deltas[g] - original[g]).magnitude);
-            report?.Info("surface-coverage", $"{label}: {supports.Count} supports on {surfaceName}, {corrected} constraint corrections, maximum coverage correction {max * 1000:F3}mm, last support residual {residual * 1000:F3}mm short of the targeted clearance. Support residual is not a full mesh-intersection test. " +
+            report?.Info("surface-coverage", $"{label}: {supports.Count} supports on {surfaceName}" +
+                                             (legs != null ? $" ({least * 1000:F1}mm least, {legLeast * 1000:F1}mm over the legs)" : "") + $", {corrected} constraint corrections, maximum coverage correction {max * 1000:F3}mm, last support residual {residual * 1000:F3}mm short of the targeted clearance. Support residual is not a full mesh-intersection test. " +
                                              $"(build {buildMs} ms, {passes} passes {watch.ElapsedMilliseconds} ms, of which regularizing {regularizeWatch.ElapsedMilliseconds} ms)");
             if (clipping < ClipTolerance)
                 report?.Warn("surface-coverage-limited", LimitedWarning(label, surfaceName, clipping));
         }
 
+        // The room the garment keeps over the legs: LegRoomQuantile of its supports' gaps over skin mostly the legs', between the
+        // settings' clearance and RepairSafety.
+        private float LegLeast()
+        {
+            var gaps = new List<float>();
+            foreach (var s in supports) if (legs[s.vertex] >= .5f) gaps.Add(s.gap);
+            if (gaps.Count == 0) return least;
+            gaps.Sort();
+            return Mathf.Max(least, Mathf.Min(RepairSafety, gaps[Mathf.Min(gaps.Count - 1, (int)(gaps.Count * LegRoomQuantile))]));
+        }
+
         // The least clearance over a body vertex, and over a point of a body triangle: the legs keep more.
-        private float LegRoom => Mathf.Max(0f, RepairSafety - least);
+        private float LegRoom => Mathf.Max(0f, legLeast - least);
         private float LeastAt(int vertex) => legs == null ? least : least + LegRoom * legs[vertex];
         private float LeastAt(int a, int b, int c, Vector3 bary) =>
             legs == null ? least : least + LegRoom * (legs[a] * bary.x + legs[b] * bary.y + legs[c] * bary.z);

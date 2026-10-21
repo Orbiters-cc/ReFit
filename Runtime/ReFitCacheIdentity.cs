@@ -15,9 +15,9 @@ namespace Orbiters.ReFit
         /// under it; made for another body also when the cloth fit falls back, and in shapes added later; the registration
         /// gate measuring every clothing point near the skin; the cloth fit's counterpart the nearer of the skin beneath and
         /// above; coverage supports on millimetre triangles; 12: after the cloth fit the legs keep the centimetre of room, by
-        /// their share of the skin's skinning).
+        /// their share of the skin's skinning; 13: that room up to the garment's own over the legs, none over the feet).
         /// </summary>
-        public const int Revision = 12;
+        public const int Revision = 13;
 
         public static string Renderer(SkinnedMeshRenderer renderer, bool includeShapes)
         {

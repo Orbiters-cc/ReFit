@@ -33,6 +33,9 @@ namespace Orbiters.ReFit.Editor.Tests
             RunCase(failures, "Tiny triangles keep their face normal", FaceNormal_TinyTrianglesKeepTheirDirection);
             RunCase(failures, "A refitted BVH answers like a rebuilt one", Bvh_RefitMatchesRebuild);
             RunCase(failures, "Coarse clothing keeps the depth its edges sagged into the body as authored", AuthoredClearance_SaggingEdgesStayAsAuthored);
+            RunCase(failures, "The feet are not the legs: no leg room over them", LegShares_LeaveTheFeetOut);
+            RunCase(failures, "After the cloth fit the legs keep the room the garment has over them: tights close, trousers a centimetre",
+                LegRoom_TheGarmentsOwnOverTheLegs);
             RunCase(failures, "The window locks and snapshots its choices while a run works", Window_LocksChoicesWhileRunning);
             RunCase(failures, "A window run holds the avatar, keeps the original under added shapes and gives a failed fit back",
                 Window_RunKeepsOriginalsAndEarlierFits);
@@ -363,6 +366,94 @@ namespace Orbiters.ReFit.Editor.Tests
             }
         }
 
+        // ---- Leg room -----------------------------------------------------------------------------------------------------
+
+        private const float LegRadius = .06f;
+
+        // A leg's chain with a helper bone under the foot, and skin weighted along it: only the thighs and shins count.
+        internal static void LegShares_LeaveTheFeetOut()
+        {
+            // A preview scene: the open scene is never touched.
+            var scene = EditorSceneManager.NewPreviewScene();
+            try
+            {
+                var root = new GameObject("__ReFitSynthetic_Leg");
+                UnityEngine.SceneManagement.SceneManager.MoveGameObjectToScene(root, scene);
+                Transform Bone(string name, Transform parent)
+                {
+                    var bone = new GameObject(name).transform;
+                    bone.SetParent(parent, false);
+                    return bone;
+                }
+                var hips = Bone("Hips", root.transform); var upper = Bone("UpperLeg", hips); var lower = Bone("LowerLeg", upper);
+                var foot = Bone("Foot", lower); var toes = Bone("Toes", foot); var heel = Bone("HeelHelper", foot);
+                var map = new Dictionary<HumanBodyBones, Transform>
+                {
+                    { HumanBodyBones.Hips, hips }, { HumanBodyBones.LeftUpperLeg, upper }, { HumanBodyBones.LeftLowerLeg, lower },
+                    { HumanBodyBones.LeftFoot, foot }, { HumanBodyBones.LeftToes, toes },
+                };
+                var body = new MeshSnapshot
+                {
+                    worldVertices = new Vector3[6], bones = new[] { hips, upper, lower, foot, toes, heel },
+                    boneWeights = new[]
+                    {
+                        new BoneWeight { boneIndex0 = 1, weight0 = 1 },
+                        new BoneWeight { boneIndex0 = 2, weight0 = .5f, boneIndex1 = 3, weight1 = .5f },
+                        new BoneWeight { boneIndex0 = 3, weight0 = 1 },
+                        new BoneWeight { boneIndex0 = 4, weight0 = 1 },
+                        new BoneWeight { boneIndex0 = 5, weight0 = 1 },
+                        new BoneWeight { boneIndex0 = 0, weight0 = .6f, boneIndex1 = 1, weight1 = .4f },
+                    }
+                };
+                var shares = ReFitEngine.LegShares(body, HumanoidBoneMapper.ClassifyBones(root, map), map);
+                AssertTrue(shares != null, "A skinned body got no leg shares.");
+                var skin = new[] { "thigh", "ankle", "foot", "toes", "heel helper", "hip" };
+                var expected = new[] { 1f, .5f, 0f, 0f, 0f, .4f };
+                for (int v = 0; v < expected.Length; v++)
+                    AssertTrue(Mathf.Abs(shares[v] - expected[v]) < 1e-5f, $"The {skin[v]}'s skin is {shares[v]:F2} the legs', not {expected[v]:F2}.");
+            }
+            finally { EditorSceneManager.ClosePreviewScene(scene); }
+        }
+
+        // A leg 6 cm round wearing, as the cloth fit laid them, tights 1.5 mm off it and trousers 2 cm off it but at the front,
+        // where they touch it 1 mm off. The coverage after the fit gives the tights the settings' clearance (a centimetre
+        // ballooned them) and the trousers' front the centimetre to crouch in, which the leg's share of the skinning brings.
+        internal static void LegRoom_TheGarmentsOwnOverTheLegs()
+        {
+            var settings = new ReFitSettings { coverDifferentBaseBody = true };
+            float least = settings.clearanceMinimumSafetyDistance;
+            var legVertices = new List<Vector3>(); var legTriangles = new List<int>();
+            AddCylinder(legVertices, legTriangles, 48, 21, 0f, .4f, (a, y) => LegRadius);
+            var leg = Snapshot(legVertices, legTriangles, false);
+            var shares = Enumerable.Repeat(1f, legVertices.Count).ToArray();
+            // Each clothing vertex away from the hems after the coverage: its angle around the leg and its gap over it.
+            List<(float angle, float gap)> Covered(Func<float, float> authoredGap, float[] legs)
+            {
+                var vertices = new List<Vector3>(); var triangles = new List<int>();
+                AddCylinder(vertices, triangles, 48, 21, 0f, .4f, (a, y) => LegRadius + authoredGap(a));
+                var cloth = Snapshot(vertices, triangles, true);
+                var primary = new Vector3[cloth.GroupCount];
+                var report = new ReFitReport();
+                ReFitSurfaceCoverage.RepairPrimary(cloth, leg, primary, null, null, settings, report, null, fitted: true, legs: legs);
+                AssertReportContains(report, "surface-coverage", "The coverage found no support on the leg.");
+                return Enumerable.Range(0, vertices.Count).Where(v => vertices[v].y > .03f && vertices[v].y < .37f).Select(v =>
+                {
+                    var moved = vertices[v] + primary[cloth.groupOfVertex[v]];
+                    return (AngleOf(vertices[v]), new Vector2(moved.x, moved.z).magnitude - LegRadius);
+                }).ToList();
+            }
+
+            var tights = Covered(a => .0015f, shares);
+            AssertLessOrEqual(tights.Max(p => p.gap), least + .0005f, "Tights made 1.5 mm off the leg ballooned over it.");
+            AssertGreater(tights.Min(p => p.gap), least - .0005f, "Tights were left closer than the settings' clearance.");
+
+            float Trousers(float a) => .02f - .019f * Mathf.Pow(Mathf.Max(0f, Mathf.Sin(a)), 4);
+            float Front(List<(float angle, float gap)> points) => points.Where(p => Mathf.Sin(p.angle) > .99f).Min(p => p.gap);
+            AssertGreater(Front(Covered(Trousers, shares)), .008f, "Trousers touching the leg lost the room to crouch in.");
+            AssertLessOrEqual(Front(Covered(Trousers, null)), least + .002f,
+                "The trousers fixture no longer tells the legs' room from the settings' clearance.");
+        }
+
         // ---- The window ---------------------------------------------------------------------------------------------------
 
         // A custom base for the window run's avatar only (it cannot fit from an original): the run reads it once it holds the
@@ -631,6 +722,8 @@ namespace Orbiters.ReFit.Editor.Tests
         [Test] public void FaceNormalTinyTriangles() => ReFitDeterministicTestRunner.FaceNormal_TinyTrianglesKeepTheirDirection();
         [Test] public void BvhRefitMatchesRebuild() => ReFitDeterministicTestRunner.Bvh_RefitMatchesRebuild();
         [Test] public void AuthoredClearanceKeepsSaggingEdges() => ReFitDeterministicTestRunner.AuthoredClearance_SaggingEdgesStayAsAuthored();
+        [Test] public void LegSharesLeaveTheFeetOut() => ReFitDeterministicTestRunner.LegShares_LeaveTheFeetOut();
+        [Test] public void LegRoomIsTheGarmentsOwn() => ReFitDeterministicTestRunner.LegRoom_TheGarmentsOwnOverTheLegs();
         [Test] public void WindowLocksChoicesWhileRunning() => ReFitDeterministicTestRunner.Window_LocksChoicesWhileRunning();
         [Test] public void WindowRunKeepsOriginalsAndEarlierFits() => ReFitDeterministicTestRunner.Window_RunKeepsOriginalsAndEarlierFits();
     }

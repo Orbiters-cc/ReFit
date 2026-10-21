@@ -206,14 +206,16 @@ namespace Orbiters.ReFit.Editor.Tests
                 };
         }
 
-        public static readonly Case[] CustomBaseCases = CustomBase("ultipaw", "Assets/my custom winterpaw orbit/default_MasculineCanine.v1.5.fbx",
-                "Assets/my custom winterpaw orbit/ulti paw v2.8.fbx", false,
-                new Dictionary<string, float> { { "orbit muscles", 100 }, { "orbit face", 100 }, { "orbit paws", 100 }, { "jawline", 50 }, { "goatee", 50 } },
-                "orbit muscles")
-            .Concat(CustomBase("ultinova", NovabeastPath, Ultinova, false,
-                new Dictionary<string, float> { { "orbit muscles 9", 100 }, { "handsome", 100 }, { "round ears", 100 }, { "goatee", 100 }, { "beard", 100 },
-                    { "hideCollar", 100 }, { "hide blush", 100 } },
-                "orbit muscles 9", "bodybuilder"))
+        private const string Canine = "Assets/my custom winterpaw orbit/default_MasculineCanine.v1.5.fbx", Ultipaw = "Assets/my custom winterpaw orbit/ulti paw v2.8.fbx";
+
+        // The custom bases' default shapes as MCB sets them up (declared before the cases made from them).
+        private static readonly Dictionary<string, float> UltipawDefaults = new Dictionary<string, float>
+            { { "orbit muscles", 100 }, { "orbit face", 100 }, { "orbit paws", 100 }, { "jawline", 50 }, { "goatee", 50 } };
+        private static readonly Dictionary<string, float> UltinovaDefaults = new Dictionary<string, float>
+            { { "orbit muscles 9", 100 }, { "handsome", 100 }, { "round ears", 100 }, { "goatee", 100 }, { "beard", 100 }, { "hideCollar", 100 }, { "hide blush", 100 } };
+
+        public static readonly Case[] CustomBaseCases = CustomBase("ultipaw", Canine, Ultipaw, false, UltipawDefaults, "orbit muscles")
+            .Concat(CustomBase("ultinova", NovabeastPath, Ultinova, false, UltinovaDefaults, "orbit muscles 9", "bodybuilder"))
             .Concat(CustomBase("ultirex", "Assets/MCB/Authoring/Ultirex/Originals/RexouiumRig1.5_V264_FthrOptions.fbx",
                 "Assets/MCB/Authoring/Ultirex/Ultirex V5.1 custom model.prefab", true,
                 new Dictionary<string, float> { { "MuscleOrbit", 100 }, { "bodybuilder", 15 }, { "orbit canine", 100 }, { "jawline", 15 },
@@ -224,6 +226,9 @@ namespace Orbiters.ReFit.Editor.Tests
                 FashionOnUltipaw("Jacket", new List<string> { "FashionSuitVest" }, "orbit muscles", "orbit face", "jawline"),
                 FashionOnUltipaw("Pants", new List<string>(), "orbit muscles", "orbit face", "orbit paws"),
                 FashionOnUltipaw("Vest", new List<string>(), "orbit muscles", "orbit face", "jawline"),
+                Legwear("ultipaw", Canine, Ultipaw, UltipawDefaults, "LatexPants", "orbit muscles", "orbit paws"),
+                Legwear("ultipaw", Canine, Ultipaw, UltipawDefaults, "LatexThighHighs", "orbit muscles", "orbit paws"),
+                Legwear("ultinova", NovabeastPath, Ultinova, UltinovaDefaults, "LatexPants", "orbit muscles 9", "bodybuilder"),
             })
             .ToArray();
 
@@ -233,10 +238,25 @@ namespace Orbiters.ReFit.Editor.Tests
         /// </summary>
         private static Case FashionOnUltipaw(string piece, List<string> layers, params string[] shapes) => new Case
         {
-            name = "fashion-ultipaw-" + piece.ToLowerInvariant(), sourcePath = "Assets/my custom winterpaw orbit/default_MasculineCanine.v1.5.fbx",
-            targetPath = "Assets/my custom winterpaw orbit/ulti paw v2.8.fbx", clothingPath = FashionSuit, clothingName = "FashionSuit" + piece,
-            targetWeights = new Dictionary<string, float> { { "orbit muscles", 100 }, { "orbit face", 100 }, { "orbit paws", 100 }, { "jawline", 50 }, { "goatee", 50 } },
+            name = "fashion-ultipaw-" + piece.ToLowerInvariant(), sourcePath = Canine, targetPath = Ultipaw, clothingPath = FashionSuit,
+            clothingName = "FashionSuit" + piece, targetWeights = new Dictionary<string, float>(UltipawDefaults),
             shapes = shapes.ToList(), placed = true, fullBody = true, layers = layers,
+        };
+
+        private const string LatexSet = "Assets/Lamiho/RexiLatexClothes/FBX/LatexSet.fbx";
+
+        /// <summary>
+        /// Tight legwear made for the Rexouium (Lamiho's latex set, 3.5 mm off its legs and over its feet) put on by My Avatar
+        /// like the FishingOutfit: resized onto the Ultipaw or the Ultinova (made for another body: coverage after the cloth fit).
+        /// The pants (leggings) get coverage as My Avatar asks for it; the thigh highs, a name My Avatar does not take for
+        /// clothing, as the window's "Placed by hand" asks. They must stay close to the legs and get no leg room over the feet.
+        /// </summary>
+        private static Case Legwear(string name, string sourcePath, string targetPath, Dictionary<string, float> defaults, string piece,
+            params string[] shapes) => new Case
+        {
+            name = "lamiho-" + name + "-" + piece.Substring("Latex".Length).ToLowerInvariant(), sourcePath = sourcePath, targetPath = targetPath,
+            clothingPath = LatexSet, clothingName = piece, targetWeights = new Dictionary<string, float>(defaults), shapes = shapes.ToList(),
+            placed = true, fullBody = true, coverDifferentBaseBody = piece == "LatexThighHighs",
         };
 
         /// <summary>Every replayable case, in the order the regression suite runs them.</summary>

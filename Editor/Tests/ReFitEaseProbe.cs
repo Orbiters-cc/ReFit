@@ -8,7 +8,7 @@ namespace Orbiters.ReFit.Editor.Tests
     /// How much room clothing leaves over the skin, by body region (what "bulky" means): for each clothing vertex with skin
     /// under it within <see cref="Reach"/>, the gap along the skin's normal over the target as fitted, and for the same vertex
     /// the gap it had as authored over the source. The region is the skin's main bone (neck, chest, torso, shoulder, upper
-    /// arm, forearm, hips, legs); "armpit" is the skin below and within 8 cm of either upper arm's joint.
+    /// arm, forearm, hips, thigh, shin, foot); "armpit" is the skin below and within 8 cm of either upper arm's joint.
     /// </summary>
     internal static class ReFitEaseProbe
     {
@@ -38,7 +38,7 @@ namespace Orbiters.ReFit.Editor.Tests
                 if (!float.IsNaN(authored) && authored >= 0) { lists.authored.Add(authored); lists.added.Add(now - authored); }
             }
             string P(List<float> values, float at) => values.Count == 0 ? "-" : (values.OrderBy(x => x).ElementAt((int)((values.Count - 1) * at)) * 1000).ToString("F1");
-            var order = new[] { "neck", "chest", "armpit", "shoulder", "upper arm", "forearm", "hand", "torso", "hips", "thigh", "shin", "other" };
+            var order = new[] { "neck", "chest", "armpit", "shoulder", "upper arm", "forearm", "hand", "torso", "hips", "thigh", "shin", "foot", "other" };
             return "ease mm (gap over the skin now p50/p90 | authored p50/p90 | added p50/p90, n): " + string.Join("; ", order.Where(gaps.ContainsKey)
                 .Select(r => $"{r} {P(gaps[r].now, .5f)}/{P(gaps[r].now, .9f)} | {P(gaps[r].authored, .5f)}/{P(gaps[r].authored, .9f)} | " +
                              $"{P(gaps[r].added, .5f)}/{P(gaps[r].added, .9f)} n={gaps[r].now.Count}"));
@@ -67,7 +67,7 @@ namespace Orbiters.ReFit.Editor.Tests
                 gaps[region] = entry;
             }
             string P(List<float> values, float at) => values.Count == 0 ? "-" : (values.OrderBy(x => x).ElementAt((int)((values.Count - 1) * at)) * 1000).ToString("F1");
-            var order = new[] { "neck", "chest", "armpit", "shoulder", "upper arm", "forearm", "hand", "torso", "hips", "thigh", "shin", "other" };
+            var order = new[] { "neck", "chest", "armpit", "shoulder", "upper arm", "forearm", "hand", "torso", "hips", "thigh", "shin", "foot", "other" };
             return string.Join("; ", order.Where(gaps.ContainsKey).Select(r => $"{r} {P(gaps[r].over, .5f)}/{P(gaps[r].over, .9f)} under {gaps[r].under}"));
         }
 
@@ -95,8 +95,11 @@ namespace Orbiters.ReFit.Editor.Tests
             if (n.Contains("chest") || n.Contains("pec") || n.Contains("breast")) return "chest";
             if (n.Contains("spine") || n.Contains("belly") || n.Contains("stomach") || n.Contains("abdomen")) return "torso";
             if (n.Contains("hip") || n.Contains("pelvis") || n.Contains("butt")) return "hips";
-            if (n.Contains("thigh") || n.Contains("upperleg")) return "thigh";
-            if (n.Contains("shin") || n.Contains("calf") || n.Contains("knee") || n.Contains("lowerleg") || n.Contains("foot") || n.Contains("toe")) return "shin";
+            // The feet apart from the shins: shoes and socks keep no leg room over them.
+            if (n.Contains("foot") || n.Contains("toe") || n.Contains("ankle")) return "foot";
+            if (n.Contains("shin") || n.Contains("calf") || n.Contains("knee") || n.Contains("lowerleg")) return "shin";
+            // The Rexouium's and the Ultipaw's thighs are "Left leg" and "Right leg".
+            if (n.Contains("thigh") || n.Contains("upperleg") || n.EndsWith("leg")) return "thigh";
             return "other";
         }
     }

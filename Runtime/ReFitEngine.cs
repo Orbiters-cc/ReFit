@@ -335,7 +335,7 @@ namespace Orbiters.ReFit
             /// <summary>The source's triangle regions with the shoulders in the torso: the limbs a sleeve or a leg lies over.</summary>
             public BodyRegion[] sourceLimbRegions;
             public BodyRegion[] targetTriRegions;
-            // Per target vertex, how much of its skinning is the legs' (LegShares).
+            // Per target vertex, how much of its skinning is the legs', the feet not (LegShares).
             public float[] targetLegShares;
             // Every region of each triangle (SurfaceBindingSolver.RegionMask bits), for binding across transition bands.
             public int[] sourceTriRegionMasks;
@@ -581,7 +581,7 @@ namespace Orbiters.ReFit
                 var sourceRegions = HumanoidBoneMapper.ClassifyBones(stage.sourceRoot, stage.sourceHumanMap);
                 var targetRegions = stage.sourceIsTarget ? sourceRegions : HumanoidBoneMapper.ClassifyBones(stage.targetRoot, stage.targetHumanMap);
                 state.targetTriRegions = TriangleRegions(state.targetBasis, targetRegions);
-                state.targetLegShares = LegShares(state.targetBasis, targetRegions);
+                state.targetLegShares = LegShares(state.targetBasis, targetRegions, stage.targetHumanMap);
                 state.targetTriRegionMasks = TriangleRegionMasks(state.targetBasis, targetRegions);
                 state.targetTriCrossMasks = LimbsAcceptTorso(state.targetTriRegionMasks);
                 state.sourceTriRegionMasks = state.wantMesh && state.sourceBody != state.targetBasis
@@ -3191,16 +3191,21 @@ namespace Orbiters.ReFit
         // ------------------------------------------------------------------
 
         /// <summary>
-        /// How much of each body vertex's skinning is the legs' (0 the torso and arms, 1 the thighs and shins, in between
-        /// across the hips), from its weights. Null for a body without skin weights.
+        /// How much of each body vertex's skinning is the legs' (0 the torso, arms and feet, 1 the thighs and shins, in between
+        /// across the hips and ankles), from its weights. The feet and the bones under them are not the legs: a shoe's sole or a
+        /// sock keeps no leg room over them (the foot floated in the shoe, the sole sank below the floor). Null for a body
+        /// without skin weights.
         /// </summary>
-        private static float[] LegShares(MeshSnapshot body, Dictionary<Transform, BodyRegion> boneRegions)
+        internal static float[] LegShares(MeshSnapshot body, Dictionary<Transform, BodyRegion> boneRegions, Dictionary<HumanBodyBones, Transform> humanMap)
         {
             var weights = body.boneWeights;
             if (weights == null || weights.Length != body.worldVertices.Length || body.bones == null) return null;
+            var feet = new[] { HumanBodyBones.LeftFoot, HumanBodyBones.RightFoot, HumanBodyBones.LeftToes, HumanBodyBones.RightToes }
+                .Select(bone => humanMap != null && humanMap.TryGetValue(bone, out var t) ? t : null).Where(t => t != null).ToArray();
             var leg = new bool[body.bones.Length];
             for (int k = 0; k < leg.Length; k++)
-                leg[k] = body.bones[k] != null && boneRegions.TryGetValue(body.bones[k], out var r) && (r == BodyRegion.LeftLeg || r == BodyRegion.RightLeg);
+                leg[k] = body.bones[k] != null && boneRegions.TryGetValue(body.bones[k], out var r) && (r == BodyRegion.LeftLeg || r == BodyRegion.RightLeg) &&
+                         !feet.Any(body.bones[k].IsChildOf);
             float Leg(int bone, float weight) => bone >= 0 && bone < leg.Length && leg[bone] ? weight : 0f;
             var shares = new float[weights.Length];
             for (int v = 0; v < weights.Length; v++)

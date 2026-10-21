@@ -1,6 +1,6 @@
 # ReFit
 
-## 0.7.2 — 2026-10-20
+## 0.7.2 — 2026-10-21
 
 - Clothing made for another body and resized onto this one (the FashionSuit on the Ultipaw) fits close again instead
   of bulky. After the cloth fit, which lays it on the body as it was made, the coverage now pushes out only what clips,

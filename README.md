@@ -1,5 +1,23 @@
 # ReFit
 
+## 0.7.3 — 2026-10-22
+
+- **Follow body blendshapes** on clothing made over a shape the body shows (a custom base's muscles at 100, a costume
+  made for its bigger chest) no longer adds the shape a second time. Where the shape moves the skin under the clothing,
+  ReFit looks at which body the clothing does not go into, or else lies nearer. Made over the shape, the clothing's new
+  shape takes it away (draped over the body without it) and the clothing's own mesh gives it back: at the body's weight
+  the clothing is exactly as authored, and turning the shape down brings it down with the body. Made before the body was
+  shaped (it clips into the shaped body, or stands off a body the shape shrinks), the shape adds it from zero as before.
+  The report says which, shape by shape. Tools can say it themselves with `ReFitRequest.madeWithShapes` (a costume made
+  for a bigger chest worn on a flat body: 100). Shapes an earlier refit of the clothing already follows are left as that
+  refit made them. The FishingOutfit shirt fitted over the Ultipaw's muscles, then given the muscles alone, is now the
+  authored shirt at 100 (it was 22 mm off on average, the chest bulging out twice) and within 4 mm of a fit made without
+  them at 0.
+- The refit and the shapes keep the clothing's own normals and tangents: each turns as the surface around it turns,
+  instead of becoming the smooth normal of the moved surface at full weight. Hard edges, custom normals and the tangents
+  normal maps use keep their look. Where a shape does not turn the surface its normals do not change, so shapes given
+  to clothing alone no longer store a normal change for every vertex. Earlier fits are refitted once (cache revision 14).
+
 ## 0.7.2 — 2026-10-21
 
 - Clothing made for another body and resized onto this one (the FashionSuit on the Ultipaw) fits close again instead

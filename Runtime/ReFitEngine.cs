@@ -281,6 +281,7 @@ namespace Orbiters.ReFit
             public Vector3[] rawLocalDeltas;
             public Vector3[] localDeltas;
             public Vector3[] normalDeltas;
+            public Vector3[] tangentDeltas;
             public readonly List<Vector3[]> layerDeltas = new List<Vector3[]>();
         }
 
@@ -356,6 +357,8 @@ namespace Orbiters.ReFit
             public Vector3[] primaryRawLocalDeltas;
             public Vector3[] primaryLocalDeltas;
             public Vector3[] primaryNormalDeltas;
+            public Vector3[] primaryTangentDeltas;
+            public Vector3[] restLocalDeltas, restNormalDeltas, restTangentDeltas;
             public Vector3[] targetSpaceBaseLocalDeltas;
             public Vector3[] targetSpaceBaseGroupDeltas;
             public string[] targetSpaceBaseShapeNames;
@@ -481,19 +484,27 @@ namespace Orbiters.ReFit
                     }
                 }
                 // Clothing fitted from another body is fitted on the target as it shows, the followed shapes it shows included:
-                // their clothing shapes take them away from that fit. The others are fitted at zero.
-                var zeroed = ReFitWornShapes.FittedAtZero(stage.targetBody, request.wornBodyShapes, requestedNames,
-                    state.wantMesh && stage.sourceBody != stage.targetBody);
+                // their clothing shapes take them away from that fit. Clothing given shapes alone made with followed shapes
+                // the target shows gets them taken away the same way, and its rest gives them back (see MadeWithShownShapes).
+                // The others are fitted at zero.
+                bool targetSpace = ShouldUseTargetSpaceBaseBlendshape(request, stage);
+                var metadata = targetSpace ? CopyGeneratedMetadata(stage.assetRenderer) : null;
+                var made = state.wantMesh ? null : request.madeWithShapes;
+                var zeroed = state.wantMesh
+                    ? ReFitWornShapes.FittedAtZero(stage.targetBody, request.wornBodyShapes, requestedNames, stage.sourceBody != stage.targetBody)
+                    : ShapesOnlyFittedAtZero(request, stage, requestedNames, metadata, report);
                 var followedShown = new List<string>();
                 foreach (var shape in state.shapes)
                 {
                     if (zeroed.Contains(shape.sourceName)) continue;
-                    shape.shown = ReFitWornShapes.Shown(stage.targetBody, shape.sourceName, request.wornBodyShapes);
-                    followedShown.Add(shape.sourceName + " " + shape.mirrorWeight.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture));
+                    shape.shown = ReFitWornShapes.Shown(stage.targetBody, shape.sourceName, request.wornBodyShapes, made);
+                    float weight = made != null && made.TryGetValue(shape.sourceName, out float madeWeight) ? madeWeight : shape.mirrorWeight;
+                    followedShown.Add(shape.sourceName + " " + weight.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture));
                 }
                 if (followedShown.Count > 0)
-                    report.Info("followed-shapes-shown", "Fitted with the shapes it follows as the target shows them (" + string.Join(", ", followedShown) +
-                                                         "): their clothing shapes take them away from the fit.");
+                    report.Info("followed-shapes-shown", state.wantMesh
+                        ? "Fitted with the shapes it follows as the target shows them (" + string.Join(", ", followedShown) + "): their clothing shapes take them away from the fit."
+                        : "Made with the shapes it follows (" + string.Join(", ", followedShown) + "): their clothing shapes take them away, and its rest gives them back.");
 
                 // Snapshots
                 progress?.Invoke(0.08f, "Capturing meshes");
@@ -504,8 +515,6 @@ namespace Orbiters.ReFit
                     var originalTransform = ReFitUtility.ResolvePath(request.targetAvatar.transform, path);
                     originalTarget = originalTransform != null ? originalTransform.GetComponent<SkinnedMeshRenderer>() : null;
                 }
-                bool targetSpace = ShouldUseTargetSpaceBaseBlendshape(request, stage);
-                var metadata = targetSpace ? CopyGeneratedMetadata(stage.assetRenderer) : null;
                 // Shapes added to clothing fitted across bases are covered and draped as the fit's own were, whoever asks.
                 if (metadata != null && metadata.coverDifferentBaseBody && !state.settings.coverDifferentBaseBody)
                 {
@@ -523,7 +532,7 @@ namespace Orbiters.ReFit
                     state.targetIdentity += "|worn:" + worn;
                     report.Info("worn-body-shapes", "Fitted on the bodies as the clothing is worn: " + worn + ".");
                 }
-                string shown = ReFitWornShapes.DescribeShown(stage.targetBody, request.wornBodyShapes, zeroed);
+                string shown = ReFitWornShapes.DescribeShown(stage.targetBody, request.wornBodyShapes, zeroed, made);
                 if (shown.Length > 0)
                 {
                     state.targetIdentity += "|shown:" + shown;
@@ -565,7 +574,7 @@ namespace Orbiters.ReFit
                         state.targetSpaceBaseLocalDeltas,
                         state.targetSpaceMetadata);
                 state.targetBasis = MeshSnapshot.Capture(stage.targetBody, false,
-                    ReFitWornShapes.AsShown(stage.targetBody, request.wornBodyShapes, zeroed), report);
+                    ReFitWornShapes.AsShown(stage.targetBody, request.wornBodyShapes, zeroed, made), report);
                 if (followedShown.Count > 0)
                     state.targetBare = MeshSnapshot.Capture(stage.targetBody, false,
                         ReFitWornShapes.AsShown(stage.targetBody, request.wornBodyShapes, requestedNames), report);
@@ -630,6 +639,52 @@ namespace Orbiters.ReFit
         {
             if (state?.ownedTemplateMesh != null) UnityEngine.Object.DestroyImmediate(state.ownedTemplateMesh);
             if (state != null) state.ownedTemplateMesh = null;
+        }
+
+        /// <summary>
+        /// The followed shapes clothing given shapes alone is fitted at zero for: those the target does not show, those a refit
+        /// of it already follows (its refit shape gives them back), and those it was not made with. What it was made with is
+        /// what the request says (<see cref="ReFitRequest.madeWithShapes"/>), else which body it lies over
+        /// (<see cref="ReFitWornShapes.MadeWithShown"/>): made on the base before the body was shaped, it follows the shape
+        /// from zero; made over the shape, it is taken away and given back.
+        /// </summary>
+        private static List<string> ShapesOnlyFittedAtZero(ReFitRequest request, NormalizedStage stage, List<string> followed,
+            ReFitGeneratedAssetMetadataData metadata, ReFitReport report)
+        {
+            var body = stage.targetBody;
+            var made = request.madeWithShapes;
+            var zeroed = ReFitWornShapes.FittedAtZero(body, request.wornBodyShapes, followed, true, made);
+            var refitted = new HashSet<string>(metadata?.transferredShapes?.Select(shape => shape.sourceName) ?? Enumerable.Empty<string>());
+            var unknown = new List<string>();
+            foreach (var name in followed)
+            {
+                if (zeroed.Contains(name)) continue;
+                if (refitted.Contains(name)) zeroed.Add(name);
+                else if (made == null || !made.ContainsKey(name)) unknown.Add(name);
+            }
+            if (unknown.Count == 0) return zeroed;
+
+            // The clothing as it is worn over the body as it shows those shapes.
+            var shownBody = MeshSnapshot.Capture(body, false, ReFitWornShapes.AsShown(body, request.wornBodyShapes, zeroed, made), null);
+            var index = SurfaceBvh.Build(shownBody);
+            var cloth = MeshSnapshot.Capture(stage.assetRenderer, false, null, null).worldVertices;
+            var mesh = body.sharedMesh;
+            var frame = new Vector3[mesh.vertexCount];
+            foreach (var name in unknown)
+            {
+                float shown = ReFitWornShapes.Shown(body, name, request.wornBodyShapes);
+                mesh.GetBlendShapeFrameVertices(mesh.GetBlendShapeIndex(name), 0, frame, null, null);
+                var motion = new Vector3[frame.Length];
+                for (int i = 0; i < frame.Length; i++) motion[i] = shownBody.skinMatrices[i].MultiplyVector(frame[i]) * shown;
+                bool? with = ReFitWornShapes.MadeWithShown(cloth, shownBody, index, motion);
+                if (with != true) zeroed.Add(name);
+                report.Info("made-with-shape", with == null
+                    ? $"'{name}' moves too little of the body under the clothing to tell what it was made with: it follows the shape from zero."
+                    : with.Value
+                        ? $"The clothing lies over the body with '{name}' as it shows: made with it, the shape is taken away and its rest gives it back."
+                        : $"The clothing lies over the body without '{name}': made before it was shown, it follows the shape from zero.");
+            }
+            return zeroed;
         }
 
         private static bool ShouldUseTargetSpaceBaseBlendshape(ReFitRequest request, NormalizedStage stage)
@@ -1337,7 +1392,7 @@ namespace Orbiters.ReFit
                 state.primaryRawLocalDeltas = ToLocalDeltas(state, primaryGroupDeltas, true);
                 state.primaryLocalDeltas = state.primaryRawLocalDeltas;
                 if (settings.recalculateNormalDeltas)
-                    state.primaryNormalDeltas = NormalDeltas(asset, state.primaryLocalDeltas, null);
+                    (state.primaryNormalDeltas, state.primaryTangentDeltas) = SurfaceDeltas(asset, state.primaryLocalDeltas, null);
                 transferBindings = BindRefittedAssetToTarget(state, bvhTarget, primaryGroupDeltas, targetBindings);
                 if (state.shapes.Count > 0)
                 {
@@ -1416,7 +1471,7 @@ namespace Orbiters.ReFit
                 CoverLayers(state, primaryGroupDeltas);
                 state.primaryLocalDeltas = ToLocalDeltas(state, primaryGroupDeltas, true);
                 if (settings.recalculateNormalDeltas)
-                    state.primaryNormalDeltas = NormalDeltas(asset, state.primaryLocalDeltas, null);
+                    (state.primaryNormalDeltas, state.primaryTangentDeltas) = SurfaceDeltas(asset, state.primaryLocalDeltas, null);
 
                 transferBindings = BindRefittedAssetToTarget(state, bvhTarget, primaryGroupDeltas, targetBindings);
             }
@@ -1505,7 +1560,7 @@ namespace Orbiters.ReFit
                             frame.rawLocalDeltas = PerFrame(ToLocalDeltas(worker, draped, false), motion);
                             frame.localDeltas = frame.rawLocalDeltas;
                             if (settings.recalculateNormalDeltas)
-                                frame.normalDeltas = NormalDeltas(asset, frame.localDeltas, FrameBase(worker.primaryLocalDeltas, frame.localDeltas, shape.shown));
+                                (frame.normalDeltas, frame.tangentDeltas) = SurfaceDeltas(asset, frame.localDeltas, FrameBase(worker.primaryLocalDeltas, frame.localDeltas, shape.shown));
                             frame.deltas = null;
                             return;
                         }
@@ -1541,7 +1596,7 @@ namespace Orbiters.ReFit
                             worker.Report.Info("target-space-cached-transferred-shape",
                                 $"Reused the previously generated tightness-corrected transfer for '{shape.sourceName}'.");
                             if (settings.recalculateNormalDeltas)
-                                frame.normalDeltas = NormalDeltas(asset, frame.localDeltas, worker.primaryLocalDeltas);
+                                (frame.normalDeltas, frame.tangentDeltas) = SurfaceDeltas(asset, frame.localDeltas, FrameBase(worker.primaryLocalDeltas, frame.localDeltas, shape.shown));
                             frame.deltas = null;
                             return;
                         }
@@ -1579,7 +1634,7 @@ namespace Orbiters.ReFit
 
                         frame.localDeltas = PerFrame(ToLocalDeltas(worker, groupDeltas, false), motion);
                         if (settings.recalculateNormalDeltas)
-                            frame.normalDeltas = NormalDeltas(asset, frame.localDeltas, FrameBase(worker.primaryLocalDeltas, frame.localDeltas, shape.shown));
+                            (frame.normalDeltas, frame.tangentDeltas) = SurfaceDeltas(asset, frame.localDeltas, FrameBase(worker.primaryLocalDeltas, frame.localDeltas, shape.shown));
                         frame.deltas = null; // free
                     }
                 });
@@ -1597,6 +1652,7 @@ namespace Orbiters.ReFit
                         state.comp.transferredIslandPropagationDebug = output.transferredIslandPropagationDebug;
                 }
                 GiveBackShown(state);
+                GiveBackShownToRest(state);
             }
 
             // ---- Skin weights --------------------------------------------------------------
@@ -3055,12 +3111,13 @@ namespace Orbiters.ReFit
             return deltas;
         }
 
-        // The clothing a frame's normals turn from: the fit, without what a shape the target shows adds to it.
+        // The clothing a frame's normals turn from: the fit (or the clothing given shapes alone), without what a shape the
+        // target shows adds to it.
         private static Vector3[] FrameBase(Vector3[] primary, Vector3[] frame, float shown)
         {
-            if (primary == null || shown <= 0f) return primary;
-            var result = new Vector3[primary.Length];
-            for (int i = 0; i < result.Length; i++) result[i] = primary[i] - frame[i] * shown;
+            if (shown <= 0f) return primary;
+            var result = new Vector3[frame.Length];
+            for (int i = 0; i < result.Length; i++) result[i] = (primary != null ? primary[i] : Vector3.zero) - frame[i] * shown;
             return result;
         }
 
@@ -3086,7 +3143,26 @@ namespace Orbiters.ReFit
             state.primaryLocalDeltas = primary;
             state.primaryRawLocalDeltas = raw;
             if (state.settings.recalculateNormalDeltas)
-                state.primaryNormalDeltas = NormalDeltas(state.asset, primary, null);
+                (state.primaryNormalDeltas, state.primaryTangentDeltas) = SurfaceDeltas(state.asset, primary, null);
+        }
+
+        /// <summary>
+        /// Clothing given shapes alone, made with followed shapes the target shows (or the request says): with no refit shape to
+        /// give them back, its rest does. Each such shape's clothing frame takes it away, so the rest becomes the clothing
+        /// without them and, at the weights it was made with, the clothing is as authored.
+        /// </summary>
+        private static void GiveBackShownToRest(State state)
+        {
+            if (state.wantMesh || !state.shapes.Any(shape => shape.shown > 0f)) return;
+            var rest = new Vector3[state.asset.localVertices.Length];
+            foreach (var shape in state.shapes)
+            {
+                if (shape.shown <= 0f) continue;
+                var frame = shape.frames[0];
+                for (int i = 0; i < rest.Length; i++) rest[i] -= frame.localDeltas[i] * shape.shown;
+            }
+            state.restLocalDeltas = rest;
+            (state.restNormalDeltas, state.restTangentDeltas) = SurfaceDeltas(state.asset, rest, null);
         }
 
         /// <summary>Converts per-group world deltas into per-vertex mesh-space blendshape deltas.</summary>
@@ -3133,7 +3209,7 @@ namespace Orbiters.ReFit
             if (state.primaryLocalDeltas != null)
             {
                 comp.primaryShapeName = UniqueShapeName(newMesh, settings.blendshapeName);
-                newMesh.AddBlendShapeFrame(comp.primaryShapeName, 100f, state.primaryLocalDeltas, state.primaryNormalDeltas, null);
+                newMesh.AddBlendShapeFrame(comp.primaryShapeName, 100f, state.primaryLocalDeltas, state.primaryNormalDeltas, state.primaryTangentDeltas);
                 comp.debugPrimaryRawLocalDeltas = state.primaryRawLocalDeltas;
                 if (comp.generatedMetadata != null)
                     comp.generatedMetadata.primaryShapeName = comp.primaryShapeName;
@@ -3156,7 +3232,7 @@ namespace Orbiters.ReFit
                     // Same frame weights as the body shape: the mirrored slider value then interpolates identically.
                     foreach (var frame in shape.frames)
                     {
-                        newMesh.AddBlendShapeFrame(name, frame.weight, frame.localDeltas, frame.normalDeltas, null);
+                        newMesh.AddBlendShapeFrame(name, frame.weight, frame.localDeltas, frame.normalDeltas, frame.tangentDeltas);
                         transferredShapes.Add(new ReFitGeneratedTransferredShapeMetadata
                         {
                             frameIdentity = frame.identity,
@@ -3181,9 +3257,35 @@ namespace Orbiters.ReFit
                 newMesh.boneWeights = state.newWeights;
                 newMesh.bindposes = state.newBindposes;
             }
+            if (state.restLocalDeltas != null) MoveRest(newMesh, state);
 
             comp.mesh = newMesh;
             comp.success = !comp.report.HasErrors;
+        }
+
+        // The clothing's rest moved by GiveBackShownToRest: its positions, and its normals and tangents turned with them.
+        private static void MoveRest(Mesh mesh, State state)
+        {
+            var vertices = mesh.vertices;
+            for (int i = 0; i < vertices.Length; i++) vertices[i] += state.restLocalDeltas[i];
+            mesh.vertices = vertices;
+            var normals = mesh.normals;
+            if (normals.Length == vertices.Length)
+            {
+                for (int i = 0; i < normals.Length; i++) normals[i] += state.restNormalDeltas[i];
+                mesh.normals = normals;
+            }
+            var tangents = mesh.tangents;
+            if (state.restTangentDeltas != null && tangents.Length == vertices.Length)
+            {
+                for (int i = 0; i < tangents.Length; i++)
+                {
+                    var t = state.restTangentDeltas[i];
+                    tangents[i] = new Vector4(tangents[i].x + t.x, tangents[i].y + t.y, tangents[i].z + t.z, tangents[i].w);
+                }
+                mesh.tangents = tangents;
+            }
+            mesh.RecalculateBounds();
         }
 
         // ------------------------------------------------------------------
@@ -3361,11 +3463,13 @@ namespace Orbiters.ReFit
         }
 
         /// <summary>
-        /// Per-vertex normal deltas so the shape lights correctly at full weight:
-        /// delta = normals(displaced) - reference normals, with welding-group averaging.
-        /// <paramref name="baseDeltas"/> is the already-applied previous frame (for stacked shapes), may be null.
+        /// Per-vertex normal and tangent deltas so the shape lights as authored at full weight: each authored normal (and
+        /// tangent) turns as the surface around it turns, from the welded smooth normal before the frame to the one after it.
+        /// Hard edges and custom normals keep their look, and a vertex whose surface does not turn gets no delta (the
+        /// shapes stay sparse). <paramref name="baseDeltas"/> is what lies under the frame already (the refit, for stacked
+        /// shapes), may be null: the authored normal is first turned by it.
         /// </summary>
-        private static Vector3[] NormalDeltas(MeshSnapshot asset, Vector3[] frameDeltas, Vector3[] baseDeltas)
+        internal static (Vector3[] normals, Vector3[] tangents) SurfaceDeltas(MeshSnapshot asset, Vector3[] frameDeltas, Vector3[] baseDeltas)
         {
             int n = asset.localVertices.Length;
             var before = new Vector3[n];
@@ -3377,13 +3481,24 @@ namespace Orbiters.ReFit
                 before[i] = b;
                 after[i] = b + frameDeltas[i];
             }
-            var afterNormals = WeldedNormals(after, asset);
-            Vector3[] reference = baseDeltas == null ? asset.baseNormals : WeldedNormals(before, asset);
-
-            var deltas = new Vector3[n];
+            var weldedBefore = WeldedNormals(before, asset);
+            var weldedAfter = WeldedNormals(after, asset);
+            var weldedRest = baseDeltas == null ? weldedBefore : WeldedNormals(asset.localVertices, asset);
+            var tangentsIn = asset.baseTangents;
+            var normals = new Vector3[n];
+            var tangents = tangentsIn != null ? new Vector3[n] : null;
             for (int i = 0; i < n; i++)
-                deltas[i] = afterNormals[i] - reference[i];
-            return deltas;
+            {
+                if (weldedBefore[i] == weldedAfter[i]) continue;
+                var under = baseDeltas == null ? Quaternion.identity : Quaternion.FromToRotation(weldedRest[i], weldedBefore[i]);
+                var turn = Quaternion.FromToRotation(weldedBefore[i], weldedAfter[i]);
+                var normal = under * asset.baseNormals[i];
+                normals[i] = turn * normal - normal;
+                if (tangents == null) continue;
+                var tangent = under * new Vector3(tangentsIn[i].x, tangentsIn[i].y, tangentsIn[i].z);
+                tangents[i] = turn * tangent - tangent;
+            }
+            return (normals, tangents);
         }
 
         private static Vector3[] WeldedNormals(Vector3[] verts, MeshSnapshot asset)

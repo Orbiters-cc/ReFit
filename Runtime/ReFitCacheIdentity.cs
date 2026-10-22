@@ -17,7 +17,7 @@ namespace Orbiters.ReFit
         /// above; coverage supports on millimetre triangles; 12: after the cloth fit the legs keep the centimetre of room, by
         /// their share of the skin's skinning; 13: that room up to the garment's own over the legs, none over the feet).
         /// </summary>
-        public const int Revision = 13;
+        public const int Revision = 14;
 
         public static string Renderer(SkinnedMeshRenderer renderer, bool includeShapes)
         {

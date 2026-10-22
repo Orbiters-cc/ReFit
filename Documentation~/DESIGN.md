@@ -109,10 +109,9 @@ clearance, coverage and drape passes below:
 shows (an MCB custom base's muscles, at 100 by default), so what shows by default is the fit itself, not a fit at zero
 plus each shape's drape (one drape of 48 passes, often stopped with fabric still under the muscles). A shape counts as
 shown from 10 % of its frame (`ReFitWornShapes.Shown`, as Unity applies it at the body's weight); below that, for shapes
-of several frames (each frame is draped on its own), shapes the clothing sets while worn, clothing on its own body (its
-source is the target, without the shapes) and shapes-only transfers (there is no refit shape to give them back), the
-shape is fitted at zero as before. The target is captured both ways (as shown, and without the shown shapes, its own
-enclosed skin left out).
+of several frames (each frame is draped on its own), shapes the clothing sets while worn and clothing on its own body (its
+source is the target, without the shapes), the shape is fitted at zero as before (clothing given shapes alone: below).
+The target is captured both ways (as shown, and without the shown shapes, its own enclosed skin left out).
 - The source is laid onto the target without the shown shapes, the bodies alike, then carried by them: each registered
   point moves as the skin nearest to it (`ReFitBodyRegistration.Carried`). Laid straight onto the Ultinova's muscles, it
   reached too little of them, and the Classy pants gave way to the projection passes (44 s instead of 12).
@@ -133,6 +132,35 @@ enclosed skin left out).
 - The thighs are spread for the coverage by how they meet without the shapes: spread for the muscled Ultipaw and Ultinova,
   the FishingOutfit shorts (skinned to the hips down the thighs) stayed where the spread thighs were and they came back
   through them (Ultipaw: 197 vertices under the body instead of 22).
+
+**Clothing given shapes alone** (no refit shape) was made either over a followed shape the target shows (a custom base's
+muscles at 100) or before the body was shaped (made on the base, a slider moved afterwards). Fitted at zero, the first
+got the shape a second time; fitted as shown, the second would keep clipping. ReFit tells them apart
+(`ReFitWornShapes.MadeWithShown`) on the clothing points within 5 cm of the skin whose skin the shape moves by 1 mm or
+more along its normal (8 at least), from each point's gap over the body as shown and over the body without the shape:
+- Clothing is not made into the body it was made on: when more than 5 % more of those points lie over 2 mm in one body
+  than in the other, it was made on the other.
+- Otherwise (loose clothing, or clipping as much either way) it was made on the body it lies nearer (median gap). A
+  wrong guess there is the mild one: taken for made with the shape, the clothing stays as authored at the body's weight.
+- A per-point vote against the clothing's gap where the shape moves nothing was tried first: on the FishingOutfit shirt
+  fitted over the Ultipaw's muscles (17 mm over them), that gap came from 41 points at the collar and hems 35 mm off,
+  and the shirt was taken for made without the muscles.
+
+`ReFitRequest.madeWithShapes` says it instead (Haï's Starmesh calls it Inverse: a costume made for a bigger chest worn on
+a flat body), and shapes its ReFit metadata says a refit already follows are fitted at zero (that refit shape gives them
+back).
+- Made with a shape, the clothing is bound to the target as it shows, and the shape's clothing frame is the drape taking
+  it away, as above. With no refit shape to give it back, the clothing's own mesh does (`GiveBackShownToRest`): its
+  vertices move by minus the shown share of that frame and its normals and tangents turn with them, so at the body's
+  weight the clothing is the authored mesh exactly and at zero it is the drape without the shape.
+- Made without it, or moved too little to tell, the shape is fitted at zero and added from there, as before.
+
+**Normals and tangents.** The refit and each shape turn the clothing's authored normals and tangents with the surface
+(`SurfaceDeltas`): per vertex, the rotation from the position-welded smooth normal before the frame to the one after it,
+a stacked frame first turning the authored normal by what lies under it. Hard edges, custom normals and normal-mapped
+tangents keep their look, and a vertex whose welded normal does not change gets no delta, so shapes stay sparse. Until
+0.7.3 every normal became the welded smooth normal at full weight (hard edges rounded, a normal delta on every vertex of
+a shape given to clothing alone) and tangents were left as authored.
 
 On the replayed outfits it runs in 5 to 15 s with their shapes, with up to nine times fewer spikes and no torn panels
 with all shapes on (see VALIDATION.md).

@@ -1,5 +1,32 @@
 # Validation Records
 
+## 2026-10-22: Shapes Made With What the Body Shows, Authored Normals (0.7.3)
+
+Taken from Haï's Starmesh Transfer Blendshape (MCB Test's `reports/ReFit and Starmesh Transfer Blendshape.md`): its
+Inverse for shapes given to clothing alone, and normals that keep the authored ones.
+
+- `ReFitShapeSurfaceTests` (5, new): clothing made over a shown bump is as authored at the body's weight (positions
+  within 0.01 mm, normals and tangents within 0.5°) and its rest lies 1 to 12 mm over the body without the bump (the
+  top of the bump was 25 mm out); clothing made flat before the body was flexed follows from zero, its rest and normals
+  untouched; a shape that dents the body is told apart both ways; `madeWithShapes` wins both ways; a flat-shaded tent a
+  shape moves keeps each face's normal within 3° at full weight (the welded smooth normal at its ridge is 27° off both
+  faces).
+- The FishingOutfit shirt fitted onto the Ultipaw with its muscles (`fishing-ultipaw-shirt`), baked into a plain shirt
+  made over them, then given `orbit muscles` alone: taken for made with them (its points 17 mm over the muscled body,
+  37 mm over the body without them, neither in the body). At 100 it is the authored shirt (0.0 mm; fitted at zero as
+  before: 22 mm off on average, 50.5 at most, the chest bulging out twice and the forearm through it at the hip, 78
+  points under the body instead of 50); at 0 it is within 4.2 mm on average of the same fit made without the muscles
+  (23 mm before) and 47 points under the body instead of 74. Baked without the muscles instead, it lies in the muscled
+  body (1155 points) and is taken for made before them: it follows from zero exactly as before (36 points under the
+  body at 100). Renders: `Library/ReFitTests/cases/srf-*.png`.
+- A per-point vote against the gap the clothing keeps where the shape moves nothing took that shirt for made without the
+  muscles: the shape moves nearly all of the skin under it, and the 41 points left (collar, hems) stood 35 mm off.
+- Deterministic suite: 90 of 92, the same two failing at 0.7.2 (dense peaks' coverage stance, the window run's log
+  scope). The NUnit fixtures: 29 of 29.
+- Regression `r13` (0.7.2) → `srf1`, 14 cases: no case worse, engine time 291 → 292 s. Geometry is identical except the
+  FashionSuit jacket fitted over the vest, which now wears its authored normals: 37 points under the bare body instead
+  of 39, motion 3455 instead of 3463.
+
 ## 2026-10-19: The FashionSuit on the Ultipaw through My Avatar (0.7.0)
 
 Reported (screenshot): the FashionSuit made for the Vulper, put on the Ultipaw by My Avatar ("made for another body:

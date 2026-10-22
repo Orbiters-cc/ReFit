@@ -219,6 +219,15 @@ namespace Orbiters.ReFit
         /// (VRCFury toggles, Modular Avatar Shape Changers). Shapes a body lacks are left out.
         /// </summary>
         public Dictionary<string, float> wornBodyShapes;
+        /// <summary>
+        /// Shapes-only transfers (<see cref="ReFitMode.Blendshape"/>): the body shapes the asset was made with, by name,
+        /// 0..100 (a costume made for a bigger chest worn on a flat body: 100; clothing made on the base before the body
+        /// was shaped: 0). For a followed shape the target shows that this leaves out, ReFit looks at which body the asset
+        /// lies over (<see cref="ReFitWornShapes.MadeWithShown"/>). A shape it was made with is taken away from it: its
+        /// clothing shape is the drape taking it away, and the clothing's rest gives it back, so the clothing at that weight
+        /// is as authored and at the body's weight it follows the body.
+        /// </summary>
+        public Dictionary<string, float> madeWithShapes;
         /// <summary>Name of the blendshape on the target body to transfer (Blendshape / MeshAndBlendshape modes).</summary>
         public string targetBlendshape;
         /// <summary>
@@ -240,6 +249,7 @@ namespace Orbiters.ReFit
             copy.targetBlendshapes = targetBlendshapes != null ? new List<string>(targetBlendshapes) : null;
             copy.coverageLayers = coverageLayers != null ? new List<SkinnedMeshRenderer>(coverageLayers) : new List<SkinnedMeshRenderer>();
             copy.wornBodyShapes = wornBodyShapes != null ? new Dictionary<string, float>(wornBodyShapes) : null;
+            copy.madeWithShapes = madeWithShapes != null ? new Dictionary<string, float>(madeWithShapes) : null;
             return copy;
         }
     }

@@ -23,6 +23,8 @@ namespace Orbiters.ReFit
         public Vector3[] worldNormals;
         /// <summary>Mesh-local base normals (authored, or recomputed when absent). Thread-safe to read off the main thread.</summary>
         public Vector3[] baseNormals;
+        /// <summary>Mesh-local authored tangents, or null when the mesh has none.</summary>
+        public Vector4[] baseTangents;
         /// <summary>Per-vertex world skinning matrix M(v): world = M(v) * local.</summary>
         public Matrix4x4[] skinMatrices;
         /// <summary>All submesh triangles concatenated.</summary>
@@ -119,6 +121,8 @@ namespace Orbiters.ReFit
             if (baseNormals == null || baseNormals.Length != vertexCount)
                 baseNormals = ComputeVertexNormals(localVerts, GetAllTriangles(mesh));
             snap.baseNormals = baseNormals;
+            var tangents = mesh.tangents;
+            snap.baseTangents = tangents != null && tangents.Length == vertexCount ? tangents : null;
 
             Parallel.For(0, vertexCount, i =>
             {

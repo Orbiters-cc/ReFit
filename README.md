@@ -1,6 +1,6 @@
 # ReFit
 
-## 0.7.3 — 2026-10-22
+## 0.7.3 — 2026-10-23
 
 - **Made for: I don't know.** ReFit then takes the clothing as My Avatar takes clothing made for another body. Placed by
   My Avatar, it is first fitted to the avatar's armature as on a drop (resized and aligned, onto the original base's

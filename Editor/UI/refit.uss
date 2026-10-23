@@ -143,6 +143,11 @@
 .refit-setup__switch { margin-left: 0; }
 .refit-setup__caption { margin: 4px 0 0 104px; padding: 0; color: #858585; font-size: 10px; white-space: normal; }
 .refit-setup__picker { margin-left: 104px; }
+/* Made for: four choices need the card's width, the label above them; its picker, suggestions and caption follow. */
+.refit-setup__row--stacked { flex-direction: column; align-items: stretch; }
+.refit-setup__row--stacked > .refit-setup__label { width: auto; margin-bottom: 6px; }
+.refit-setup__row--stacked > .refit-setup__control { flex-grow: 0; }
+.refit-setup__caption.refit-setup--full, .refit-setup__picker.refit-setup--full, .refit-suggestions.refit-setup--full { margin-left: 0; }
 .refit-shapes { flex-direction: row; flex-wrap: wrap; flex-grow: 1; flex-shrink: 1; min-width: 0; }
 .refit-suggestions { flex-direction: row; flex-wrap: wrap; align-items: center; margin: 4px 0 0 104px; }
 .refit-suggestions__label { margin: 0 6px 0 0; padding: 0; color: #767676; font-size: 10px; -unity-font-style: bold; }

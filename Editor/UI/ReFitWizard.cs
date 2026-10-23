@@ -51,7 +51,13 @@ namespace Orbiters.ReFit.Editor
             /// <summary>The original base of the target's custom base, as an Orbiters tool (MCB) knows it.</summary>
             OriginalBase,
             /// <summary>Another avatar picked by the user (or the one it is worn on, when fitting it to another).</summary>
-            Other
+            Other,
+            /// <summary>
+            /// Not known: taken as My Avatar takes clothing made for another body. Placed by My Avatar, it is fitted to the
+            /// avatar's armature first (the original base's on a custom base); then refitted from the original base when the
+            /// custom base gives one, else from where it is on the avatar; the skin under it is covered either way.
+            /// </summary>
+            Unknown
         }
 
         /// <summary>
@@ -513,6 +519,21 @@ namespace Orbiters.ReFit.Editor
                 targetBlendshapes = run.mode == ReFitMode.MeshToMesh ? null : new List<string>(run.blendshapes),
                 settings = requestSettings
             };
+            if (run.madeFor == MadeFor.Unknown)
+            {
+                // Made for another body, as My Avatar takes it: from the original base (opened for the run), else from where
+                // it is on this body, with the outfit's other parts as its layers.
+                requestSettings.coverDifferentBaseBody = true;
+                requestSettings.madeForAnotherBody = true;
+                if (run.sourceAvatar == null)
+                {
+                    request.sourceAvatar = run.targetAvatar;
+                    request.sourceBodyRenderer = request.targetBodyRenderer;
+                    requestSettings.coverageKeepsLayerOrder = true;
+                    request.coverageLayers = OutfitParts(run, part).Where(p => p != part).ToList();
+                }
+                return request;
+            }
             if (run.madeForAvatar || !PlacedByHandApplies(run, part)) return request;
             // Not made for it: the coverage pass made for clothing from another avatar base.
             requestSettings.coverDifferentBaseBody = true;
@@ -607,10 +628,12 @@ namespace Orbiters.ReFit.Editor
                 {
                     // Read now it is held (the window's copy follows the scene a moment late): the base the fit is made for.
                     var customBase = CustomBases.Describe(run.targetAvatar.transform);
-                    if (run.madeFor == MadeFor.OriginalBase) run.originalBase = customBase != null && customBase.CanFit ? customBase : null;
+                    if (run.madeFor == MadeFor.OriginalBase || run.madeFor == MadeFor.Unknown)
+                        run.originalBase = customBase != null && customBase.CanFit ? customBase : null;
                     run.baseKey = customBase?.Key;
                     run.baseName = customBase?.Name;
-                    if (run.madeFor == MadeFor.OriginalBase)
+                    if (run.madeFor == MadeFor.Unknown) FitToArmature(run);
+                    if (FromOriginal(run))
                     {
                         executionStep = "Opening " + (run.originalBase?.BaseName ?? "the original base") + "…";
                         yield return null;
@@ -624,7 +647,7 @@ namespace Orbiters.ReFit.Editor
                         }
                     }
                     lastSourceName = run.mode == ReFitMode.Blendshape ? null : run.sourceAvatar != null ? run.sourceAvatar.name : null;
-                    if (run.madeFor == MadeFor.OriginalBase && run.originalBase != null) lastSourceName = run.originalBase.BaseName ?? lastSourceName;
+                    if (FromOriginal(run)) lastSourceName = run.originalBase.BaseName ?? lastSourceName;
 
                     // A fit starts again from each part's original mesh, never on top of an earlier refit (which would also
                     // become the "original" every tool's reset gives back); shapes added to a refit keep it. Every part first:
@@ -811,6 +834,23 @@ namespace Orbiters.ReFit.Editor
         }
 
         // The original base comes from the tool that knows the custom base (it may import a file): only for the run.
+        // Fitted from the original base the custom base gives: picked as such, or not known on a custom base.
+        private static bool FromOriginal(Inputs run) =>
+            run.madeFor == MadeFor.OriginalBase || run.madeFor == MadeFor.Unknown && run.originalBase != null;
+
+        /// <summary>
+        /// Clothing made for an unknown body, placed by My Avatar: fitted to the avatar's armature as My Avatar fits it when
+        /// dropped (resized and aligned when it needs it, onto the original base's armature on a custom base), with Undo.
+        /// </summary>
+        private static void FitToArmature(Inputs run)
+        {
+#if REFIT_VRCHAT_AVATARS
+            var attachment = run.asset != null ? run.asset.GetComponentInParent<Orbiters.Toolkit.VRChat.OrbitersAttachment>(true) : null;
+            if (attachment != null && run.targetAvatar != null && attachment.transform.IsChildOf(run.targetAvatar.transform))
+                Orbiters.Toolkit.Editor.VRChat.Attachments.AttachmentFit.Fit(attachment, run.targetAvatar.transform);
+#endif
+        }
+
         private static bool ResolveOriginal(Inputs run)
         {
             ReleaseOriginal(run);

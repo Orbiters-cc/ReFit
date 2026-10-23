@@ -395,6 +395,7 @@ namespace Orbiters.ReFit.Editor
 
             // Made for
             var madeRow = SetupRow(card, "Made for");
+            madeRow.AddToClassList("refit-setup__row--stacked");
             string target = targetAvatar != null ? targetAvatar.name : "the avatar";
             var options = new List<(MadeFor choice, string label, string tip)>
             {
@@ -406,6 +407,7 @@ namespace Orbiters.ReFit.Editor
                     ": ReFit fits it to " + (originalBase.Name ?? target) + "."));
             options.Add((MadeFor.Other, madeFor == MadeFor.Other && sourceAvatar != null ? sourceAvatar.name : "Other…",
                 "Made for another avatar: pick it."));
+            options.Add((MadeFor.Unknown, "I don't know", "ReFit takes it as My Avatar takes clothing made for another body."));
             var made = new SegmentedControl(options.Select(o => new SegmentedControl.Option(o.label, null, o.tip)), index =>
             {
                 if (isExecuting) return;
@@ -423,6 +425,7 @@ namespace Orbiters.ReFit.Editor
                 var pick = new ObjectField { objectType = typeof(GameObject), allowSceneObjects = true, value = sourceAvatar, tooltip = "The avatar or base model it was made for" };
                 pick.AddToClassList("refit-field");
                 pick.AddToClassList("refit-setup__picker");
+                pick.AddToClassList("refit-setup--full");
                 pick.RegisterValueChangedCallback(e =>
                 {
                     if (isExecuting) return;
@@ -437,7 +440,7 @@ namespace Orbiters.ReFit.Editor
                 var others = ReFitAutoSetup.SceneAvatars().Where(other => other != targetAvatar).Take(4).ToList();
                 if (others.Count > 0)
                 {
-                    var line = Box(card, "refit-suggestions");
+                    var line = Box(card, "refit-suggestions", "refit-setup--full");
                     Text(line, "In the scene", "refit-suggestions__label");
                     foreach (var other in others)
                     {
@@ -461,7 +464,7 @@ namespace Orbiters.ReFit.Editor
                     }
                 }
             }
-            Text(card, MadeForCaption(), "refit-setup__caption");
+            Text(card, MadeForCaption(), "refit-setup__caption").AddToClassList("refit-setup--full");
 
             // Body shapes
             BuildShapes(card);
@@ -487,9 +490,10 @@ namespace Orbiters.ReFit.Editor
             fitRow.Add(fit);
             fitCaption = Text(card, FitCaption(), "refit-setup__caption");
 
-            // Placed by hand: only where ReFit has a body to fit it from (another one, or the avatar it is placed on).
+            // Placed by hand: only where ReFit has a body to fit it from (another one, or the avatar it is placed on). Not
+            // knowing what it was made for already fits it out of the body.
             var inputs = Current();
-            if (PlacedByHandApplies(inputs, asset))
+            if (madeFor != MadeFor.Unknown && PlacedByHandApplies(inputs, asset))
             {
                 var handRow = SetupRow(card, "Placed by hand");
                 var hand = new ToggleSwitch(!madeForAvatar, value =>
@@ -569,6 +573,10 @@ namespace Orbiters.ReFit.Editor
                 case MadeFor.Other:
                     return sourceAvatar != null ? "Made for " + sourceAvatar.name + ": ReFit fits it to " + target + "."
                         : "Pick the avatar or base model it was made for.";
+                case MadeFor.Unknown:
+                    return "As My Avatar takes clothing made for another body: lined up with " +
+                           (originalBase != null ? (originalBase.BaseName ?? "the original base") + ", fitted to " + (originalBase.Name ?? target) : target + "'s armature, fitted where it is") +
+                           ", pushed out wherever it covers the skin.";
                 default:
                     return "It already fits " + target + ": ReFit makes it follow the body shapes below.";
             }
@@ -658,6 +666,9 @@ namespace Orbiters.ReFit.Editor
         // Checks (dry run), debounced after the last change
         // ------------------------------------------------------------------
 
+        // The refit opens the original base (checked then, not before).
+        private bool OpensOriginal() => madeFor == MadeFor.OriginalBase || madeFor == MadeFor.Unknown && originalBase != null;
+
         private void InvalidateChecks()
         {
             validateReport = null;
@@ -672,7 +683,7 @@ namespace Orbiters.ReFit.Editor
         private void ScheduleChecks()
         {
             checkUpdate?.Pause();
-            if (MissingChoice() != null || madeFor == MadeFor.OriginalBase || validateKey == ChecksKey()) return;
+            if (MissingChoice() != null || OpensOriginal() || validateKey == ChecksKey()) return;
             checkUpdate = rootVisualElement.schedule.Execute(() =>
             {
                 if (isExecuting || page != Page.Studio || MissingChoice() != null) return;
@@ -690,7 +701,7 @@ namespace Orbiters.ReFit.Editor
             checksBox.Clear();
             string missing = MissingChoice();
             if (missing != null) { Text(checksBox, missing, "refit-checks__hint"); return; }
-            if (madeFor == MadeFor.OriginalBase)
+            if (OpensOriginal())
             {
                 Text(checksBox, "Ready. " + (originalBase?.BaseName ?? "The original base") + " is opened for the refit only.", "refit-checks__ready");
                 return;

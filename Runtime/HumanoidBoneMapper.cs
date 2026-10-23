@@ -59,15 +59,15 @@ namespace Orbiters.ReFit
         }
 
         /// <summary>
-        /// Builds a normalized-name (<see cref="BoneNames.Normalize"/>) -> Transform index of every transform under
-        /// <paramref name="root"/>. Ambiguous names keep the first occurrence. Equivalent humanoid names ("Left arm",
-        /// "upper_arm.L") are resolved through <see cref="BuildHumanoidBoneIndex"/>.
+        /// Builds a normalized-name (<see cref="BoneNames.Normalize"/>) -> Transform index of the skeleton transforms
+        /// under <paramref name="root"/> (<see cref="SkeletonTransforms"/>). Ambiguous names keep the first occurrence.
+        /// Equivalent humanoid names ("Left arm", "upper_arm.L") are resolved through <see cref="BuildHumanoidBoneIndex"/>.
         /// </summary>
         public static Dictionary<string, Transform> BuildNameIndex(Transform root, Transform excludedRoot = null)
         {
             var index = new Dictionary<string, Transform>();
             if (root == null) return index;
-            foreach (var t in root.GetComponentsInChildren<Transform>(true))
+            foreach (var t in SkeletonTransforms(root, excludedRoot))
             {
                 if (IsExcluded(t, excludedRoot)) continue;
                 var key = BoneNames.Normalize(t.name);
@@ -88,7 +88,7 @@ namespace Orbiters.ReFit
             }
 
             if (root == null) return index;
-            foreach (var t in root.GetComponentsInChildren<Transform>(true))
+            foreach (var t in SkeletonTransforms(root, excludedRoot))
             {
                 if (IsExcluded(t, excludedRoot)) continue;
                 if (BoneNames.TryInferHumanoid(t.name, out var bone) && !index.ContainsKey(bone))
@@ -232,6 +232,39 @@ namespace Orbiters.ReFit
                     yield return HumanBodyBones.RightFoot;
                     break;
             }
+        }
+
+        /// <summary>
+        /// The transforms under <paramref name="root"/>, in hierarchy order, that belong to a skeleton: the bones and root
+        /// bones of its skinned meshes, their ancestors, and everything under a bone (end bones, PhysBone chains, props).
+        /// An object beside the armature is no bone whatever its name: a tail mesh object "Tail1" is not an outfit's tail
+        /// bone "Tail1". Every transform when no skinned mesh there has bones.
+        /// </summary>
+        public static List<Transform> SkeletonTransforms(Transform root, Transform excludedRoot = null)
+        {
+            var all = root.GetComponentsInChildren<Transform>(true);
+            var bones = new HashSet<Transform>();
+            foreach (var skinned in root.GetComponentsInChildren<SkinnedMeshRenderer>(true))
+            {
+                if (IsExcluded(skinned.transform, excludedRoot)) continue;
+                if (skinned.rootBone != null) bones.Add(skinned.rootBone);
+                var list = skinned.bones;
+                if (list == null) continue;
+                foreach (var bone in list)
+                    if (bone != null) bones.Add(bone);
+            }
+            if (bones.Count == 0) return new List<Transform>(all);
+            var ancestors = new HashSet<Transform>();
+            foreach (var bone in bones)
+                for (var parent = bone.parent; parent != null && ancestors.Add(parent); parent = parent.parent) { }
+            var skeleton = new List<Transform>();
+            foreach (var t in all)
+            {
+                bool inSkeleton = ancestors.Contains(t);
+                for (var at = t; at != null && !inSkeleton; at = at.parent) inSkeleton = bones.Contains(at);
+                if (inSkeleton) skeleton.Add(t);
+            }
+            return skeleton;
         }
 
         private static bool IsExcluded(Transform transform, Transform excludedRoot)

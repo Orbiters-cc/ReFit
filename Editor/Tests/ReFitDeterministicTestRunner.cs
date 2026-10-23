@@ -227,6 +227,12 @@ namespace Orbiters.ReFit.Editor.Tests
                 "Armature replacement reset restores removed bones, references and removes the rebuilt rig",
                 ArmatureReplacement_ResetRestoresRemovedRigAndReferences);
             RunCase(failures,
+                "A failed armature replacement leaves the renderer as it was",
+                ArmatureReplacement_FailedApplyLeavesTheRendererAsItWas);
+            RunCase(failures,
+                "Objects beside the target's armature are never clothing bones' counterparts",
+                ArmatureReplacement_ObjectsBesideTheArmatureAreNoBones);
+            RunCase(failures,
                 "Generated metadata is editor-only for the VRChat SDK",
                 GeneratedMetadata_IsEditorOnlyForVRChat);
             RunCase(failures,

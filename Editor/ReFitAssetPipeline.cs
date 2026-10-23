@@ -199,21 +199,24 @@ namespace Orbiters.ReFit.Editor
                 EditorUtility.SetDirty(transform);
             }
 
-            Undo.RecordObject(renderer, undoName);
-            renderer.sharedMesh = mesh;
-
+            // Resolved before the renderer is recorded: resolving may restore objects (undo operations of their own),
+            // and the renderer's changes after those would not be recorded.
+            Transform[] restoredBones = null;
             if (bonePaths != null)
             {
-                var restoredBones = new Transform[bonePaths.Length];
+                restoredBones = new Transform[bonePaths.Length];
                 for (int i = 0; i < restoredBones.Length; i++)
                 {
                     restoredBones[i] = Resolve(bones != null && i < bones.Length ? bones[i] : null, bonePaths[i],
                         root, statesByPath, restored, undoName);
                 }
-                renderer.bones = restoredBones;
             }
+            var restoredRootBone = Resolve(rootBone, rootBonePath, root, statesByPath, restored, undoName);
 
-            renderer.rootBone = Resolve(rootBone, rootBonePath, root, statesByPath, restored, undoName);
+            Undo.RecordObject(renderer, undoName);
+            renderer.sharedMesh = mesh;
+            if (restoredBones != null) renderer.bones = restoredBones;
+            renderer.rootBone = restoredRootBone;
             renderer.updateWhenOffscreen = updateWhenOffscreen;
             renderer.localBounds = localBounds;
             RestoreBlendShapeWeights(renderer);
@@ -745,7 +748,9 @@ namespace Orbiters.ReFit.Editor
                 var renderer = ResolveAssetInstance(request, comp, targetInstance, report, out var assetInstanceRoot);
                 if (renderer == null) return null;
 
-                Undo.RecordObject(renderer, "ReFit");
+                // The whole renderer now: RecordObject would keep only the changes made before the next undo operation
+                // (the rebuilt armature's), and a rollback once left the bones pointing into the deleted rig.
+                Undo.RegisterCompleteObjectUndo(renderer, "ReFit");
                 comp.appliedOriginalMesh = renderer.sharedMesh;
                 originalState = ReFitRendererState.Capture(renderer);
                 resetJournal = originalState;

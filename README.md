@@ -2,6 +2,18 @@
 
 ## 0.7.3 — 2026-10-22
 
+- **Made for: I don't know.** ReFit then takes the clothing as My Avatar takes clothing made for another body. Placed by
+  My Avatar, it is first fitted to the avatar's armature as on a drop (resized and aligned, onto the original base's
+  armature on a custom base); then it is refitted from the original base when the custom base gives one, else from where
+  it is on the avatar, and pushed out wherever it covers the skin. Made for has a line of its own, so its four choices
+  read in full.
+- **A refit whose application fails is undone whole.** After a failed refit the clothing kept bones that pointed into the
+  rebuilt armature Undo had just deleted (Undo gave back its mesh, not its bones), and it showed at the avatar's feet. The
+  renderer is now recorded whole before anything changes; Reset finds the original bones before it records the renderer.
+- **Clothing bones find their counterparts in the avatar's skeleton only** (the bones its meshes use, their parents and
+  what hangs under them), never in another object of the avatar. The FishingOutfit's tail bones "Tail1" and "Tail2" went
+  onto the Masculine Canine's tail mesh objects of the same names, beside its armature: the rebuilt armature got three
+  roots and the refit failed.
 - **Follow body blendshapes** on clothing made over a shape the body shows (a custom base's muscles at 100, a costume
   made for its bigger chest) no longer adds the shape a second time. Where the shape moves the skin under the clothing,
   ReFit looks at which body the clothing does not go into, or else lies nearer. Made over the shape, the clothing's new

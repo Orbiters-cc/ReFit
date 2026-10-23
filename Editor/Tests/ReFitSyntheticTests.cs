@@ -702,6 +702,19 @@ namespace Orbiters.ReFit.Editor.Tests
                 var placed = (ReFitRequest)type.GetMethod("BuildRequest", flags).Invoke(window, new object[] { shirt });
                 AssertTrue(placed.mode == ReFitMode.MeshToMesh && placed.sourceAvatar == first && placed.settings.coverDifferentBaseBody,
                     $"Placed by hand without shapes built a {placed.mode} request.");
+
+                // Not known what it was made for: taken as My Avatar takes clothing made for another body. Without a custom
+                // base it is fitted from where it is on its avatar, the skin under it covered.
+                type.GetField("madeForAvatar", flags).SetValue(window, true);
+                type.GetField("madeFor", flags).SetValue(window, Enum.Parse(type.GetNestedType("MadeFor", BindingFlags.NonPublic), "Unknown"));
+                type.GetMethod("UpdateMode", flags).Invoke(window, null);
+                type.GetMethod("Render", flags).Invoke(window, null);
+                AssertTrue(content.Query<Label>().ToList().Any(l => l.text == "I don't know"), "Made for has no \"I don't know\".");
+                AssertTrue(type.GetMethod("MissingChoice", flags, null, Type.EmptyTypes, null).Invoke(window, null) == null,
+                    "Not knowing what it was made for could not run.");
+                var unknown = (ReFitRequest)type.GetMethod("BuildRequest", flags).Invoke(window, new object[] { shirt });
+                AssertTrue(unknown.mode == ReFitMode.MeshToMesh && unknown.sourceAvatar == first && unknown.settings.coverDifferentBaseBody &&
+                           unknown.settings.madeForAnotherBody, $"Not knowing what it was made for built a {unknown.mode} request from '{unknown.sourceAvatar?.name}'.");
             }
             finally
             {

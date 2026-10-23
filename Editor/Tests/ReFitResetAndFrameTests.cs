@@ -15,10 +15,12 @@ namespace Orbiters.ReFit.Editor.Tests
         {
             GeneratedMetadata_IsEditorOnlyForVRChat();
             ArmatureReplacement_ResetRestoresRemovedRigAndReferences();
+            ArmatureReplacement_FailedApplyLeavesTheRendererAsItWas();
+            ArmatureReplacement_ObjectsBesideTheArmatureAreNoBones();
             BlendShapeFrames_SnapshotMatchesUnity();
             TransferredBlendshape_KeepsBodyFrames();
             SavePrefab_NeverSavesTheAvatar();
-            Debug.Log("[ReFit Tests] Five focused audit regression checks passed.");
+            Debug.Log("[ReFit Tests] Seven focused audit regression checks passed.");
         }
 
         // The VRChat SDK only accepts unknown components on an avatar when they are IEditorOnly.
@@ -110,6 +112,83 @@ namespace Orbiters.ReFit.Editor.Tests
                 finally
                 {
                     originalState?.DiscardRemoved();
+                    Undo.RevertAllDownToGroup(undoGroup);
+                    DestroyComputationMesh(comp);
+                }
+            }
+        }
+
+        // A refit whose application fails is rolled back whole: the renderer keeps its mesh, bones and root bone, and no
+        // rebuilt rig stays behind (a failed refit once left the bones pointing into the deleted rig: the clothing at the
+        // avatar's feet).
+        private static void ArmatureReplacement_FailedApplyLeavesTheRendererAsItWas()
+        {
+            using (var fixture = ReFitTestFixture.Create())
+            {
+                Undo.IncrementCurrentGroup();
+                int undoGroup = Undo.GetCurrentGroup();
+                var accessory = fixture.sourceSpaceAccessory;
+                var renderer = accessory.renderer;
+                var mesh = renderer.sharedMesh;
+                var bones = renderer.bones;
+                var rootBone = renderer.rootBone;
+                var childNames = ChildNames(accessory.root.transform);
+                var request = BuildMeshAndBlendshapeRequest(fixture, renderer, true);
+                var comp = new ReFitEngine().Run(request);
+                try
+                {
+                    AssertComputationSucceeded(comp);
+                    var report = new ReFitReport();
+                    report.Error("test-failure", "The test makes the application fail.");
+                    AssertTrue(ReFitAssetPipeline.ApplyToScene(request, comp, report) == null, "A failed application returned a renderer.");
+                    AssertSame(renderer.sharedMesh, mesh, "The rollback left the refitted mesh.");
+                    AssertSame(renderer.rootBone, rootBone, "The rollback left the root bone in the rebuilt rig.");
+                    var after = renderer.bones;
+                    AssertTrue(after.Length == bones.Length, "The rollback changed the bone count.");
+                    for (int i = 0; i < bones.Length; i++)
+                        AssertSame(after[i], bones[i], $"The rollback left bone {i} in the rebuilt rig.");
+                    AssertTrue(ChildNames(accessory.root.transform) == childNames,
+                        $"The rollback left a different hierarchy under the clothing: {ChildNames(accessory.root.transform)}.");
+                }
+                finally
+                {
+                    Undo.RevertAllDownToGroup(undoGroup);
+                    DestroyComputationMesh(comp);
+                }
+            }
+        }
+
+        // Clothing bones find their counterparts in the avatar's skeleton only, never in another object of the avatar: an
+        // outfit's tail bone "Tail1" once went onto the avatar's tail mesh object "Tail1" beside the armature, and the
+        // rebuilt armature got a second root (the refit failed).
+        private static void ArmatureReplacement_ObjectsBesideTheArmatureAreNoBones()
+        {
+            using (var fixture = ReFitTestFixture.Create())
+            {
+                Undo.IncrementCurrentGroup();
+                int undoGroup = Undo.GetCurrentGroup();
+                var accessory = fixture.sourceSpaceAccessory;
+                var tail = NewChild(accessory.hips, "Tail1");
+                tail.localPosition = new Vector3(0f, -0.05f, -0.12f);
+                AppendRendererBone(accessory, tail);
+                var tailMesh = NewChild(fixture.target.root.transform, "Tail1");
+                tailMesh.gameObject.AddComponent<MeshFilter>();
+                tailMesh.gameObject.AddComponent<MeshRenderer>();
+                var request = BuildMeshAndBlendshapeRequest(fixture, accessory.renderer, true);
+                var comp = new ReFitEngine().Run(request);
+                try
+                {
+                    AssertComputationSucceeded(comp);
+                    var applied = ReFitAssetPipeline.ApplyToScene(request, comp, comp.report);
+                    AssertReportDoesNotContain(comp.report, "armature-multiple-root-branches",
+                        "The avatar's mesh object named like a clothing bone became a root of the rebuilt armature.");
+                    AssertTrue(applied != null, "ApplyToScene returned no renderer.");
+                    var rebuiltTail = FindRendererBone(applied, "Tail1");
+                    AssertTrue(rebuiltTail != null && rebuiltTail != tailMesh && rebuiltTail.parent == FindRendererBone(applied, "Hips"),
+                        $"The clothing's Tail1 bone is not under its rebuilt hips but at '{PathOf(rebuiltTail)}'.");
+                }
+                finally
+                {
                     Undo.RevertAllDownToGroup(undoGroup);
                     DestroyComputationMesh(comp);
                 }

@@ -1,4 +1,4 @@
-/* ReFit in the Orbiters tools' look (My Avatar, Logger, the photoshoot): the 3D stage on the left, the page on the
+/* ReFit in the Orbiters tools' look (My Avatar, Mixer console, the photoshoot): the 3D stage on the left, the page on the
    right (stacked when narrow); dark frames with 16 px corners, 12 px rows, pill chips, the #00DA6D accent, flat surfaces
    without stray borders. Everything presses in on pointer down (.refit-pressed). */
 

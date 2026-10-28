@@ -71,7 +71,7 @@ namespace Orbiters.ReFit
             public float Weight => Mathf.Max(0f, distanceWeight * receiverWeight);
         }
 
-        private struct IslandTargetCorrectionField
+        internal struct IslandTargetCorrectionField
         {
             public Vector3[] corrections;
             public float[] receiverWeights;
@@ -1201,7 +1201,14 @@ namespace Orbiters.ReFit
             return localIndex;
         }
 
-        private static void FillIslandTargetCorrectionField(
+        /// <summary>
+        /// Spreads the sampled corrections over the island, a ring of groups per round: each round, every group next to a
+        /// valid one takes the weighted average of its valid neighbours as they stood before the round. Only the groups
+        /// next to the previous round's (the frontier) are visited, and rounds go on until nothing is left to reach, so
+        /// a densely tessellated garment gets the same field as a coarse one. Groups no sample connects to take the
+        /// island's average.
+        /// </summary>
+        internal static void FillIslandTargetCorrectionField(
             List<int> groups,
             int[] localIndex,
             List<int>[] adjacency,
@@ -1212,33 +1219,66 @@ namespace Orbiters.ReFit
             if (groups == null || localIndex == null || field.corrections == null || valid == null)
                 return;
 
+            int count = groups.Count;
             var fill = new Vector3[field.corrections.Length];
             var fillWeight = new float[field.corrections.Length];
             var fillSupportComponent = new int[field.corrections.Length];
             var fillSupportGroup = new int[field.corrections.Length];
             var fillSupportDistance = new float[field.corrections.Length];
-            var fillValid = new bool[field.corrections.Length];
-            for (int iteration = 0; iteration < 48; iteration++)
+
+            // Who reads whom: a group's own neighbour list decides what it averages, so the frontier follows the
+            // reverse of those lists (they need not be symmetric).
+            var readers = new List<int>[count];
+            if (adjacency != null)
             {
-                bool changed = false;
-                Array.Clear(fillValid, 0, fillValid.Length);
-                for (int i = 0; i < groups.Count; i++)
+                for (int i = 0; i < count; i++)
                 {
-                    if (valid[i])
-                        continue;
-
                     int g = groups[i];
-                    if (adjacency == null || g < 0 || g >= adjacency.Length || adjacency[g] == null)
+                    if (g < 0 || g >= adjacency.Length || adjacency[g] == null)
                         continue;
+                    var neighbors = adjacency[g];
+                    for (int n = 0; n < neighbors.Count; n++)
+                    {
+                        int nb = neighbors[n];
+                        int local = nb >= 0 && nb < localIndex.Length ? localIndex[nb] : -1;
+                        if (local < 0 || local >= count)
+                            continue;
+                        (readers[local] ??= new List<int>()).Add(i);
+                    }
+                }
+            }
 
+            var queued = new bool[count];
+            var candidates = new List<int>();
+            for (int i = 0; i < count; i++)
+            {
+                if (!valid[i] || readers[i] == null)
+                    continue;
+                foreach (int r in readers[i])
+                {
+                    if (valid[r] || queued[r])
+                        continue;
+                    queued[r] = true;
+                    candidates.Add(r);
+                }
+            }
+
+            var reached = new List<int>();
+            while (candidates.Count > 0)
+            {
+                reached.Clear();
+                foreach (int i in candidates)
+                {
+                    queued[i] = false;
+                    int g = groups[i];
+                    var neighbors = adjacency[g];
                     Vector3 total = Vector3.zero;
                     float weightTotal = 0f;
-                    int count = 0;
+                    int neighborCount = 0;
                     int bestSupportComponent = field.dominantSupportComponent;
                     int bestSupportGroup = field.dominantSupportGroup;
                     float bestWeight = -1f;
                     float maxDistance = 0f;
-                    var neighbors = adjacency[g];
                     for (int n = 0; n < neighbors.Count; n++)
                     {
                         int nb = neighbors[n];
@@ -1252,7 +1292,7 @@ namespace Orbiters.ReFit
                         float weight = Mathf.Max(0.05f, field.receiverWeights[local]);
                         total += field.corrections[local] * weight;
                         weightTotal += weight;
-                        count++;
+                        neighborCount++;
                         maxDistance = Mathf.Max(maxDistance, field.supportDistances[local]);
                         if (weight > bestWeight)
                         {
@@ -1262,32 +1302,40 @@ namespace Orbiters.ReFit
                         }
                     }
 
-                    if (count <= 0 || weightTotal <= 1e-6f)
+                    if (neighborCount <= 0 || weightTotal <= 1e-6f)
                         continue;
 
                     fill[i] = total / weightTotal;
-                    fillWeight[i] = Mathf.Clamp01(weightTotal / count);
+                    fillWeight[i] = Mathf.Clamp01(weightTotal / neighborCount);
                     fillSupportComponent[i] = bestSupportComponent;
                     fillSupportGroup[i] = bestSupportGroup;
                     fillSupportDistance[i] = maxDistance;
-                    fillValid[i] = true;
-                    changed = true;
+                    reached.Add(i);
                 }
 
-                if (!changed)
-                    break;
-
-                for (int i = 0; i < fillValid.Length; i++)
+                // The round's results land together: within a round every group read the state before it.
+                foreach (int i in reached)
                 {
-                    if (!fillValid[i])
-                        continue;
-
                     field.corrections[i] = fill[i];
                     field.receiverWeights[i] = fillWeight[i];
                     field.supportComponents[i] = fillSupportComponent[i];
                     field.supportGroups[i] = fillSupportGroup[i];
                     field.supportDistances[i] = fillSupportDistance[i];
                     valid[i] = true;
+                }
+
+                candidates.Clear();
+                foreach (int i in reached)
+                {
+                    if (readers[i] == null)
+                        continue;
+                    foreach (int r in readers[i])
+                    {
+                        if (valid[r] || queued[r])
+                            continue;
+                        queued[r] = true;
+                        candidates.Add(r);
+                    }
                 }
             }
 

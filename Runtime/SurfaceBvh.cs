@@ -393,6 +393,9 @@ namespace Orbiters.ReFit
         {
             var ab = b - a;
             var ac = c - a;
+            // A triangle without area (two corners on one point, or all three on a line) is its longest segments: the
+            // region tests below would divide zero by zero there.
+            if (!(Vector3.Cross(ab, ac).sqrMagnitude > 0f)) return ClosestPointOnCollapsedTriangle(p, a, b, c, out bary);
             var ap = p - a;
             float d1 = Vector3.Dot(ab, ap);
             float d2 = Vector3.Dot(ac, ap);
@@ -437,6 +440,27 @@ namespace Orbiters.ReFit
             float w = vc * denom;
             bary = new Vector3(1f - v - w, v, w);
             return a + ab * v + ac * w;
+        }
+
+        private static Vector3 ClosestPointOnCollapsedTriangle(Vector3 p, Vector3 a, Vector3 b, Vector3 c, out Vector3 bary)
+        {
+            float tab = SegmentParameter(p, a, b), tbc = SegmentParameter(p, b, c), tca = SegmentParameter(p, c, a);
+            var onAb = a + (b - a) * tab;
+            var onBc = b + (c - b) * tbc;
+            var onCa = c + (a - c) * tca;
+            float dab = (p - onAb).sqrMagnitude, dbc = (p - onBc).sqrMagnitude, dca = (p - onCa).sqrMagnitude;
+            if (dab <= dbc && dab <= dca) { bary = new Vector3(1f - tab, tab, 0f); return onAb; }
+            if (dbc <= dca) { bary = new Vector3(0f, 1f - tbc, tbc); return onBc; }
+            bary = new Vector3(tca, 0f, 1f - tca);
+            return onCa;
+        }
+
+        // Where the closest point of segment from-to lies (0 at from, 1 at to); 0 for a segment without length.
+        private static float SegmentParameter(Vector3 p, Vector3 from, Vector3 to)
+        {
+            var d = to - from;
+            float length = d.sqrMagnitude;
+            return length > 0f ? Mathf.Clamp01(Vector3.Dot(p - from, d) / length) : 0f;
         }
     }
 }

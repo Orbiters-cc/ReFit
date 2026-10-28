@@ -1,5 +1,23 @@
 # ReFit
 
+## Unreleased
+
+- **Clearance corrections reach every ring of a garment.** A correction spread from its samples one ring of neighbours
+  at a time and stopped after 48 rings: on a densely tessellated garment the rest took the island's average, so the
+  same garment fitted differently at a higher resolution. The fill now runs until nothing connected is left, and visits
+  only the rings it reaches (the same field as before wherever 48 rings sufficed).
+- **Shown shapes turn the captured normals.** The surfaces ReFit measures took the shapes a body or garment shows into
+  their positions but not their normals, so facing and clearance tests used the unshaped normals on the shaped surface.
+  Their normal deltas are now added as Unity skins them (the authored normals stay the rest of transferred shapes).
+- **Collapsed triangles give finite closest points.** A triangle with two corners on one point (or all three on a line)
+  divided zero by zero and answered NaN; it is now measured as its segments.
+- **Staging copies stay inert.** The hidden copies of the avatars and the clothing are made under an inactive holder and
+  their behaviours disabled before they become active, so no editor-executing script's OnEnable, Start or Update runs on
+  them (Awake still runs once: the copy must be active for its Animator).
+- **Clothing with more than four bone influences per vertex** is told so when the refitted mesh keeps the four largest
+  of each (ReFit skins with four, as Unity and VRChat render by default).
+- Shape frames un-skin through inverse skin matrices computed once per refit instead of once per vertex and frame.
+
 ## 0.7.3 — 2026-10-23
 
 - **Made for: I don't know.** ReFit then takes the clothing as My Avatar takes clothing made for another body. Placed by

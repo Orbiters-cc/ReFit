@@ -27,6 +27,24 @@ namespace Orbiters.ReFit
         public Vector4[] baseTangents;
         /// <summary>Per-vertex world skinning matrix M(v): world = M(v) * local.</summary>
         public Matrix4x4[] skinMatrices;
+        private Matrix4x4[] inverseSkinMatrices;
+        private readonly object inverseLock = new object();
+
+        /// <summary>
+        /// The inverses of <see cref="skinMatrices"/>, computed once per snapshot (each transferred shape frame un-skins
+        /// through them). Thread-safe.
+        /// </summary>
+        public Matrix4x4[] InverseSkinMatrices()
+        {
+            lock (inverseLock)
+            {
+                if (inverseSkinMatrices != null && inverseSkinMatrices.Length == skinMatrices.Length) return inverseSkinMatrices;
+                var matrices = skinMatrices;
+                var inverse = new Matrix4x4[matrices.Length];
+                Parallel.For(0, matrices.Length, i => inverse[i] = matrices[i].inverse);
+                return inverseSkinMatrices = inverse;
+            }
+        }
         /// <summary>All submesh triangles concatenated.</summary>
         public int[] triangles;
         public BoneWeight[] boneWeights;
@@ -76,6 +94,10 @@ namespace Orbiters.ReFit
             // --- local positions with blendshapes applied -------------------------------------
             snap.localVertices = mesh.vertices;
             var baseNormals = mesh.normals;
+            bool authoredNormals = baseNormals != null && baseNormals.Length == vertexCount;
+            // The normals the shown shapes give (their normal deltas added, as Unity skins them); the authored ones
+            // stay in baseNormals, the rest pose transferred shapes are measured against.
+            Vector3[] shownNormals = null;
             BlendShapeEvaluation.Scratch scratch = null;
             bool clamp = BlendShapeEvaluation.ClampWeights;
             for (int s = 0; s < mesh.blendShapeCount; s++)
@@ -84,7 +106,8 @@ namespace Orbiters.ReFit
                 if (shapeWeightOverrides01 != null && shapeWeightOverrides01.TryGetValue(s, out var o)) w = o * 100f;
                 if (Mathf.Abs(w) < 1e-2f) continue;
                 scratch ??= new BlendShapeEvaluation.Scratch(vertexCount);
-                BlendShapeEvaluation.Add(mesh, s, w, clamp, snap.localVertices, null, scratch);
+                if (authoredNormals) shownNormals ??= (Vector3[])baseNormals.Clone();
+                BlendShapeEvaluation.Add(mesh, s, w, clamp, snap.localVertices, shownNormals, scratch);
             }
 
             // --- per-vertex skinning matrices --------------------------------------------------
@@ -118,9 +141,11 @@ namespace Orbiters.ReFit
             var localVerts = snap.localVertices;
             var weights = snap.boneWeights;
 
-            if (baseNormals == null || baseNormals.Length != vertexCount)
+            // Without authored normals both come from the shown positions.
+            if (!authoredNormals)
                 baseNormals = ComputeVertexNormals(localVerts, GetAllTriangles(mesh));
             snap.baseNormals = baseNormals;
+            var skinnedNormals = shownNormals ?? baseNormals;
             var tangents = mesh.tangents;
             snap.baseTangents = tangents != null && tangents.Length == vertexCount ? tangents : null;
 
@@ -146,7 +171,7 @@ namespace Orbiters.ReFit
                 snap.skinMatrices[i] = m;
                 snap.worldVertices[i] = m.MultiplyPoint3x4(localVerts[i]);
                 var nm = m.inverse.transpose;
-                var n = nm.MultiplyVector(baseNormals[i]);
+                var n = nm.MultiplyVector(skinnedNormals[i]);
                 snap.worldNormals[i] = n.sqrMagnitude > 1e-12f ? n.normalized : Vector3.up;
             });
 
@@ -155,6 +180,16 @@ namespace Orbiters.ReFit
 
             if (buildTopology) snap.BuildTopology();
             return snap;
+        }
+
+        /// <summary>The most bone influences any vertex of <paramref name="mesh"/> has (0 without skin weights).</summary>
+        internal static int MaxBonesPerVertex(Mesh mesh)
+        {
+            var counts = mesh.GetBonesPerVertex();
+            int max = 0;
+            for (int i = 0; i < counts.Length; i++)
+                if (counts[i] > max) max = counts[i];
+            return max;
         }
 
         private static void AccumulateBone(ref Matrix4x4 m, ref float total, Matrix4x4[] mats, bool[] ok, int index, float w)

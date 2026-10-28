@@ -3175,6 +3175,7 @@ namespace Orbiters.ReFit
                 ? state.targetSpaceMetadata.deltaWorldToLocal
                 : asset.rendererWorldToLocal;
             bool rendererLocalDeltas = state.replace || state.targetSpaceMetadata != null;
+            var inverseSkin = rendererLocalDeltas ? null : asset.InverseSkinMatrices();
             Parallel.For(0, vertexCount, i =>
             {
                 var dWorld = groupDeltas[asset.groupOfVertex[i]];
@@ -3188,7 +3189,7 @@ namespace Orbiters.ReFit
                 else
                 {
                     // Original skinning kept: un-skin the world delta through the inverse skinning matrix.
-                    result[i] = asset.skinMatrices[i].inverse.MultiplyVector(dWorld);
+                    result[i] = inverseSkin[i].MultiplyVector(dWorld);
                 }
             });
             return result;
@@ -3258,9 +3259,26 @@ namespace Orbiters.ReFit
                 newMesh.bindposes = state.newBindposes;
             }
             if (state.restLocalDeltas != null) MoveRest(newMesh, state);
+            ReportReducedInfluences(state.request?.assetRenderer != null ? state.request.assetRenderer.sharedMesh : null, newMesh, comp.report);
 
             comp.mesh = newMesh;
             comp.success = !comp.report.HasErrors;
+        }
+
+        /// <summary>
+        /// ReFit skins with the four largest influences of each vertex and writes four when it writes skin weights (a
+        /// replaced armature, or a staged pose baked into the rest): says so when the clothing had more.
+        /// </summary>
+        internal static void ReportReducedInfluences(Mesh original, Mesh refitted, ReFitReport report)
+        {
+            if (original == null || refitted == null || report == null) return;
+            int before = MeshSnapshot.MaxBonesPerVertex(original);
+            if (before <= 4) return;
+            int after = MeshSnapshot.MaxBonesPerVertex(refitted);
+            if (after >= before) return;
+            report.Warn("skin-influences-reduced",
+                $"'{original.name}' has up to {before} bone influences per vertex; the refitted mesh keeps the {after} largest of each " +
+                "(as Unity and VRChat render with four by default).");
         }
 
         // The clothing's rest moved by GiveBackShownToRest: its positions, and its normals and tangents turned with them.

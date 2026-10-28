@@ -335,26 +335,41 @@ namespace Orbiters.ReFit
             return metadata != null && metadata.data != null;
         }
 
-        private static GameObject Clone(GameObject original, Transform parent)
+        /// <summary>
+        /// A hidden, inert copy of <paramref name="original"/> under <paramref name="parent"/>. The copy is made under an
+        /// inactive holder and its behaviours are disabled before it becomes active, so no OnEnable, Start or Update of
+        /// an editor-executing script runs on it. Their Awake still runs once on activation (Unity calls it for disabled
+        /// scripts too): the copy has to be active for its Animator to map the humanoid bones.
+        /// </summary>
+        internal static GameObject Clone(GameObject original, Transform parent)
         {
-            var clone = UnityEngine.Object.Instantiate(original);
-            clone.name = original.name;
-            clone.hideFlags = HideFlags.HideAndDontSave;
-            // A copy of a nested object starts with its local transform as a world transform. Put it where the
-            // original is, so clothing nested under an avatar away from the world origin stays on that avatar.
-            var source = original.transform;
-            clone.transform.SetPositionAndRotation(source.position, source.rotation);
-            clone.transform.localScale = source.lossyScale;
-            clone.transform.SetParent(parent, true);
-            clone.SetActive(true);
-
-            // Make the clone inert: nothing should animate or react while it is staged.
-            foreach (var behaviour in clone.GetComponentsInChildren<Behaviour>(true))
+            var holder = new GameObject("__ReFit_Clone__") { hideFlags = HideFlags.HideAndDontSave };
+            holder.SetActive(false);
+            try
             {
-                try { behaviour.enabled = false; }
-                catch { /* some behaviours refuse; harmless */ }
+                var clone = UnityEngine.Object.Instantiate(original, holder.transform, false);
+                clone.name = original.name;
+                clone.hideFlags = HideFlags.HideAndDontSave;
+                // Put it where the original is, so clothing nested under an avatar away from the world origin stays
+                // on that avatar (the holder sits at the origin, unscaled).
+                var source = original.transform;
+                clone.transform.SetPositionAndRotation(source.position, source.rotation);
+                clone.transform.localScale = source.lossyScale;
+
+                // Make the clone inert: nothing should animate or react while it is staged.
+                foreach (var behaviour in clone.GetComponentsInChildren<Behaviour>(true))
+                {
+                    try { behaviour.enabled = false; }
+                    catch { /* some behaviours refuse; harmless */ }
+                }
+                clone.SetActive(true);
+                clone.transform.SetParent(parent, true);
+                return clone;
             }
-            return clone;
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(holder);
+            }
         }
 
         /// <summary>

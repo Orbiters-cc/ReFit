@@ -1,6 +1,6 @@
 # ReFit
 
-## Unreleased
+## 0.7.4 — 2026-10-29
 
 - **Clearance corrections reach every ring of a garment.** A correction spread from its samples one ring of neighbours
   at a time and stopped after 48 rings: on a densely tessellated garment the rest took the island's average, so the

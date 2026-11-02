@@ -1,5 +1,25 @@
 # ReFit
 
+## Unreleased
+
+- **Fix clipping after the fit** (`ReFitSettings.declipAfterFit`, room `declipRoomMm`, 1 mm; off by default until the
+  regression suite has compared it on and off, see VALIDATION.md). Fabric a mesh refit leaves inside the target's body,
+  or closer to it than the room, is pushed out along the body's distance field (`ReFitBodyField`, inside and outside from
+  the air around the body), then the correction is smoothed over the fabric three times: a point never moves less than it
+  needs, fabric with its room never moves, and the field is read again after each pass (stopping once nothing lacks
+  room). Small pieces (a chain's links, a button) move as one; a point whose push would stretch an edge past twice its
+  authored length moves with its neighbours instead (counted in the report's `declip` line). Clothing made for the body it
+  is fitted from keeps what lay under that body as made (a strap pressing in): only what the fit added is fixed; clothing
+  made for another body gets the room everywhere. Both fits (the cloth fit and the different-base passes) run it after
+  the garments worn under it are covered, before the result becomes mesh deltas, so the body shapes drape from the fixed
+  fit; the shapes themselves are not fixed again yet. The wizard's Settings page has a "Fix clipping" switch and its room
+  in the clearance section; Orbiters Toolkit's `RefitJob.FixClipping` asks for it (My Avatar's fit card, MCB).
+- **One push for the brush and the fit.** `ReFitDeclip` holds the push-out brush's push (`Need`) and its sharing with the
+  neighbours (`Share`, now: never less than its own push along it); the brush calls it with its falloff.
+- The case harness prints the `declip` report line and its `step declip` (`ReFitEngine.CoverStepCaptured`); the
+  regression suite takes `declipAfterFit=…;declipRoomMm=…` like any setting.
+- Cache revision 15: fits and transfers cached before are made again.
+
 ## 0.7.4 — 2026-10-29
 
 - **Clearance corrections reach every ring of a garment.** A correction spread from its samples one ring of neighbours

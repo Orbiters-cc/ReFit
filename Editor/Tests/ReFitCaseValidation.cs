@@ -509,7 +509,7 @@ namespace Orbiters.ReFit.Editor.Tests
                               $"tightness={request.settings.clearanceTightnessFactor:F3}, engineMs={watch.ElapsedMilliseconds}");
                     lines.AddRange(comp.report.messages.Where(m => m.severity != ReFitSeverity.Info || m.code.Contains("spread") ||
                         m.code.Contains("star") || m.code.Contains("weights") || m.code.Contains("enclosed") || m.code.Contains("drape") || m.code.StartsWith("cloth-fit") || m.code == "surface-coverage" ||
-                        m.code.Contains("registration") || m.code.Contains("retarget") || m.code.Contains("armature-kept")).Select(m => m.ToString()));
+                        m.code.Contains("registration") || m.code.Contains("retarget") || m.code.Contains("armature-kept") || m.code == "declip").Select(m => m.ToString()));
 
                     var outputBones = OutputBones(comp, fixture);
                     lines.Add(Bindings(comp, fixture.clothing));

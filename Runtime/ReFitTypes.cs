@@ -132,6 +132,17 @@ namespace Orbiters.ReFit
         public int maxProjectionDebugGroups = 5000;
         /// <summary>Preserve clothing/body signed clearance after mesh refit and transferred body blendshapes.</summary>
         public bool enableClearanceCorrection = true;
+        /// <summary>
+        /// "Fix clipping": after the fit (mesh refits, both the cloth fit and the different-base passes), fabric left inside
+        /// the target's body or closer to it than <see cref="declipRoomMm"/> is pushed out along the body's distance field,
+        /// smoothed over the fabric (<see cref="ReFitDeclip"/>). Clothing made for the body it is fitted from keeps what it
+        /// had under that body as made. At rest; body shapes then drape from the fixed fit.
+        /// </summary>
+        public bool declipAfterFit = DefaultDeclipAfterFit;
+        public const bool DefaultDeclipAfterFit = false;
+        /// <summary>The room <see cref="declipAfterFit"/> leaves between the skin and the fabric, in millimetres.</summary>
+        public float declipRoomMm = DefaultDeclipRoomMm;
+        public const float DefaultDeclipRoomMm = ReFitDeclip.DefaultRoom * 1000f;
         /// <summary>Small body clearance kept even when the adaptive target clearance is compressed by muscle expansion.</summary>
         public float clearanceMinimumSafetyDistance = 0.003f;
         /// <summary>Source clearance multiplier retained on strongly expanded body areas; lower values make clothing fit tighter there.</summary>

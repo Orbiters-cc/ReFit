@@ -223,6 +223,21 @@ one leg of the FishingOutfit shorts into the other thigh, and pushed out over th
 shoulders (clavicles) belong to the torso and the arms start at the upper arms, where a sleeve does: fabric over a
 shoulder is a strap or a sleeve's cap.
 
+**Fix clipping** (`declipAfterFit`, off by default until measured; `ReFitDeclip`). After either fit, once the garments worn
+under it are covered and before the deltas become mesh-local, fabric inside the target's body or closer to it than its
+room (`declipRoomMm`, 1 mm) moves out along the body's signed distance field (`ReFitBodyField`, unsealed, 2.5 mm cells at
+most 4 million, over the fabric within 5 mm of the skin or inside it and 4 cm around), by what it lacks (at most 3 cm:
+deeper, the field's band only knows inside). The correction is then smoothed over the welded groups three times, each
+group halfway to its neighbours' mean but never less than its own need along its way out, and fabric with its room never
+moving; the field is read again after each pass, pushing on what still lacks room, and the pass stops when nothing does.
+Pieces smaller than 3 cm move as one, by the push of their point lacking most and on until none lacks room. A group whose
+push stretches an edge past twice its authored length (or under half), more than the fit had, takes its neighbours' mean
+move instead (the seam guard, reported). Clothing made for the body it is fitted from keeps the gap it had over that body
+where it is less than the room (negative: a strap pressing in), as the cloth fit keeps it; clothing made for another body
+gets the room everywhere. The shapes drape from the fixed fit; their frames are not fixed again. The push-out brush uses
+the same push and sharing (`ReFitDeclip.Need`, `Share`), with its falloff. The idea (push outwards, Laplacian smoothing,
+optional body SDF) follows the MIT VRCloth-Declipper (dev.omelette_ak.vrcloth-declipper); none of its code is used.
+
 World-space deformation becomes mesh-local pre-skin deltas. Keeping the original rig requires inverse skin
 conversion; replacing it uses planned bindposes and a target-space basis. This is not an exact surface-fitting
 guarantee: sparse garment polygons, ambiguous projections and correction caps remain observable limitations.
@@ -270,7 +285,7 @@ The ReFit window's result page checks each refitted piece in motion, offers a bo
   fabric in another pose is tried at half its length in the next round. Kept, it is recorded with the refit
   (`OrbitersRefit.bodyShrinkVertices`, mesh-space offsets) and Orbiters Toolkit's build adds it to the body as a
   blendshape that every animation showing or hiding the clothing sets too (`RefitShrinkBuild`). A new fit drops it.
-- **Push out** (`ReFitClipFixTool`). A Scene view brush: fabric under it lying inside the body or closer than the room
+- **Push out** (`ReFitClipFixTool`, on `ReFitDeclip`'s push and sharing). A Scene view brush: fabric under it lying inside the body or closer than the room
   asked moves out along the body's distance field, most at the brush's centre, shared with its neighbours so no spike is
   made, into the piece's rest shape through each vertex's skinning, with Undo. The field (`ReFitBodyField`) is a signed
   distance grid over the piece (4 million cells at most) whose inside and outside come from a flood of the air from the

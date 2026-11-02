@@ -1,5 +1,29 @@
 # Validation Records
 
+## 2026-11-02: Fix Clipping After the Fit (unreleased, revision 15)
+
+`ReFitDeclip` after both fits (`declipAfterFit`, room `declipRoomMm` = 1 mm), and the push-out brush on its core.
+
+- `ReFitDeclipTests` (6, new), on a UV sphere body of 10 cm (48 × 96) under 2.5 mm field cells: a whole shell sunk 3 mm
+  comes out with every point at least 0.7 mm out (room 1 mm less the field's 0.3 mm interpolation slack), within 0.5 mm
+  of one radius, no edge past 2× its length, nothing held by the seam guard; a shell sunk on one side only moves that
+  side (fabric with its room stays exactly where it was); fabric made 4 mm under its body keeps it 3 mm under this one
+  (clothing made for another body gets the full room instead); a 1 cm bead 3 mm under the skin on a garment standing
+  2 cm off moves out as one piece and the garment does not move; fabric 2 cm off builds no field; the two settings change
+  the cache identity and parse as harness overrides. The five geometry fixtures passed outside Unity (Unity's Mono on the
+  type-checked assemblies, with the one native call on the path, `Bounds.Contains`, replaced in a scratch copy): 1.2 s,
+  0.6 s, 0.8 s, 64 ms, 28 ms. Not yet run in the editor (no MCB Test editor or MCP bridge was available): those six and
+  the existing `ReFitPushOutTests` (the brush on the shared core).
+- **Default: off until measured.** The regression suite on every case with it off and on decides it:
+  `ReFitRegressionSuite.Start("declip-off", null, "declipAfterFit=false")`, then
+  `ReFitRegressionSuite.Start("declip-on", null, "declipAfterFit=true")`, then `Compare("declip-off", "declip-on")`.
+  On by default when `rest3mm`/`restWorstMm` improve and `restStretched`, `restSpikes` and `shape3mm` do not get worse
+  beyond the suite's noise (a tenth and 2). Not run yet; with it off the fit is as before (the pass is skipped whole).
+- Shape frames are not fixed again (rest only): each frame would need its own field over the shaped body (about 1 to 3 s
+  each on a garment, several shapes per refit). The shapes drape from the fixed fit.
+- Revision 15 (was 14); the settings' JSON is in the transfer identity, so `declipAfterFit`/`declipRoomMm` key cached
+  transfers, and Orbiters Toolkit's refit cache keys `RefitJob.FixClipping`.
+
 ## 2026-10-22: Shapes Made With What the Body Shows, Authored Normals (0.7.3)
 
 Taken from Haï's Starmesh Transfer Blendshape (MCB Test's `reports/ReFit and Starmesh Transfer Blendshape.md`): its

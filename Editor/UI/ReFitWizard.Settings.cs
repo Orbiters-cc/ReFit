@@ -57,6 +57,25 @@ namespace Orbiters.ReFit.Editor
             clearance.RegisterValueChangedCallback(e => settings.enableClearanceCorrection = e.newValue);
             parent.Add(clearance);
 
+            var declip = new Toggle("Fix clipping")
+            {
+                value = settings.declipAfterFit,
+                tooltip = "After the fit, fabric left inside the body is pushed out of it, smoothly. Clothing made for the body it " +
+                          "is fitted from keeps what it had under that body as made."
+            };
+            declip.AddToClassList("refit-field");
+            parent.Add(declip);
+            var declipRoom = new VisualElement();
+            parent.Add(declipRoom);
+            AddFloatFieldWithReset(declipRoom, "Room it leaves (mm)", 0f, 10f, settings.declipRoomMm, ReFitSettings.DefaultDeclipRoomMm,
+                value => settings.declipRoomMm = value);
+            declipRoom.SetEnabled(settings.declipAfterFit);
+            declip.RegisterValueChangedCallback(e =>
+            {
+                settings.declipAfterFit = e.newValue;
+                declipRoom.SetEnabled(e.newValue);
+            });
+
             var advanced = new Toggle("Advanced") { value = clearanceAdvanced };
             advanced.AddToClassList("refit-field");
             parent.Add(advanced);

@@ -33,9 +33,6 @@ namespace Orbiters.ReFit.Editor
     {
         private const string RadiusPreference = "Orbiters.ReFit.PushOut.Radius", RoomPreference = "Orbiters.ReFit.PushOut.Room";
         public const float MinRadius = .005f, MaxRadius = .15f, MaxRoom = .01f;
-        // The field: a cell this size (grown to stay under MaxCells) over the piece and this margin around it.
-        private const float FieldCell = .0025f, FieldMargin = .04f;
-        private const int FieldCells = 4000000;
         // Each step of a stroke moves the fabric this share of the way out; the brush acts at most this often (seconds).
         private const float StepShare = .5f;
         private const double StepInterval = .03;
@@ -144,7 +141,6 @@ namespace Orbiters.ReFit.Editor
                 Weld(s, world, triangles);
                 var bounds = new Bounds(s.position[0], Vector3.zero);
                 foreach (var p in s.position) bounds.Encapsulate(p);
-                bounds.Expand(2f * FieldMargin);
                 s.toMesh = InverseSkinning(s.clothing, s.mesh);
                 s.meshVertices = s.mesh.vertices;
                 // The body's field takes seconds: the brush shows at once and pushes once the field is there.
@@ -153,7 +149,7 @@ namespace Orbiters.ReFit.Editor
                 s.building = Task.Run(() =>
                 {
                     var body = MeshSnapshot.FromWorld(bodyWorld, bodyTriangles, false);
-                    return ReFitBodyField.Build(body, SurfaceBvh.Build(body), bounds, FieldCell, FieldCells, token, 0);
+                    return ReFitDeclip.Field(body, SurfaceBvh.Build(body), bounds, token);
                 }, token);
                 EditorApplication.update += WaitForField;
             }
@@ -475,7 +471,8 @@ namespace Orbiters.ReFit.Editor
             return points;
         }
 
-        // One step of a stroke: the fabric under the brush moves out of the body (or to the room), shared with its neighbours.
+        // One step of a stroke: the fabric under the brush moves out of the body (or to the room), shared with its neighbours,
+        // by the push of the fit's "Fix clipping" (ReFitDeclip), scaled by the brush's falloff.
         private static void Step(Session s)
         {
             if (s.field == null) return;
@@ -488,12 +485,11 @@ namespace Orbiters.ReFit.Editor
             var move = new Dictionary<int, Vector3>(touched.Count * 2);
             foreach (int g in touched)
             {
-                float d = s.field.Sample(s.position[g], out var gradient);
-                float need = room - d;
-                if (need <= 0f || gradient.sqrMagnitude < 1e-8f) continue;
+                var outward = ReFitDeclip.Need(s.field, s.position[g], room, out float need);
+                if (need <= 0f || outward == Vector3.zero) continue;
                 float t = (s.position[g] - s.hitPoint).magnitude / radius;
                 float falloff = (1f - t * t) * (1f - t * t);
-                move[g] = gradient.normalized * (need * falloff * StepShare);
+                move[g] = outward * (need * falloff * StepShare);
             }
             if (move.Count == 0) return;
             // Shared with the neighbours: each moved group and the ring around it take the mean of their own and their
@@ -512,8 +508,7 @@ namespace Orbiters.ReFit.Editor
                 foreach (int n in s.neighbours[g]) mean += move.TryGetValue(n, out var o) ? o : Vector3.zero;
                 if (s.neighbours[g].Count > 0) mean /= s.neighbours[g].Count;
                 // Never less than its own move outwards: a point in the body still leaves it.
-                var blended = Vector3.Lerp(own, mean, .5f);
-                shared[g] = own.sqrMagnitude > blended.sqrMagnitude ? own : blended;
+                shared[g] = ReFitDeclip.Share(own, mean, .5f, own.normalized, own.magnitude);
             }
             foreach (var pair in shared)
             {

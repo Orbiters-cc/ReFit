@@ -55,7 +55,7 @@ namespace Orbiters.ReFit
         /// <summary>Debug: the target vertices the fit found covered and without a source counterpart (tests only).</summary>
         internal static Action<CoverageDebug> CoverageCaptured;
         // Pieces this small (a button, a stud) move as one.
-        private const float DetailExtent = .03f;
+        internal const float DetailExtent = .03f;
 
         private readonly MeshSnapshot asset;
         private readonly int groupCount;
@@ -688,37 +688,7 @@ namespace Orbiters.ReFit
         }
 
         // Pieces of the clothing (connected groups) small enough to move as one.
-        private void Details(out int[] of, out List<int>[] pieces)
-        {
-            of = new int[groupCount];
-            for (int g = 0; g < groupCount; g++) of[g] = -1;
-            var list = new List<List<int>>();
-            var seen = new bool[groupCount];
-            var stack = new Stack<int>();
-            for (int g = 0; g < groupCount; g++)
-            {
-                if (seen[g]) continue;
-                var piece = new List<int>();
-                seen[g] = true;
-                stack.Push(g);
-                var min = asset.worldVertices[asset.groupRep[g]];
-                var max = min;
-                while (stack.Count > 0)
-                {
-                    int x = stack.Pop();
-                    piece.Add(x);
-                    var p = asset.worldVertices[asset.groupRep[x]];
-                    min = Vector3.Min(min, p);
-                    max = Vector3.Max(max, p);
-                    foreach (int y in adjacency[x])
-                        if (!seen[y]) { seen[y] = true; stack.Push(y); }
-                }
-                if ((max - min).magnitude > DetailExtent || piece.Count == groupCount) continue;
-                foreach (int x in piece) of[x] = list.Count;
-                list.Add(piece);
-            }
-            pieces = list.ToArray();
-        }
+        private void Details(out int[] of, out List<int>[] pieces) => pieces = RigidFit.Pieces(asset, DetailExtent, out of);
 
         private static Vector3[] Normals(Vector3[] positions, int[] triangles, int count, Vector3[] into = null)
         {

@@ -44,6 +44,44 @@ namespace Orbiters.ReFit
             foreach (int i in piece) move[i] = to + rotation * (basis[i] - from) - basis[i];
         }
 
+        /// <summary>
+        /// The pieces of <paramref name="asset"/> (welded groups connected by its edges) whose authored extent is at most
+        /// <paramref name="extent"/>, the whole asset excepted; <paramref name="of"/>: each group's piece, or -1.
+        /// </summary>
+        public static List<int>[] Pieces(MeshSnapshot asset, float extent, out int[] of)
+        {
+            int groupCount = asset.GroupCount;
+            var adjacency = asset.groupAdjacency;
+            of = new int[groupCount];
+            for (int g = 0; g < groupCount; g++) of[g] = -1;
+            var list = new List<List<int>>();
+            var seen = new bool[groupCount];
+            var stack = new Stack<int>();
+            for (int g = 0; g < groupCount; g++)
+            {
+                if (seen[g]) continue;
+                var piece = new List<int>();
+                seen[g] = true;
+                stack.Push(g);
+                var min = asset.worldVertices[asset.groupRep[g]];
+                var max = min;
+                while (stack.Count > 0)
+                {
+                    int x = stack.Pop();
+                    piece.Add(x);
+                    var p = asset.worldVertices[asset.groupRep[x]];
+                    min = Vector3.Min(min, p);
+                    max = Vector3.Max(max, p);
+                    foreach (int y in adjacency[x])
+                        if (!seen[y]) { seen[y] = true; stack.Push(y); }
+                }
+                if ((max - min).magnitude > extent || piece.Count == groupCount) continue;
+                foreach (int x in piece) of[x] = list.Count;
+                list.Add(piece);
+            }
+            return list.ToArray();
+        }
+
         // Horn: the cross-covariance of the centred point sets gives a symmetric 4x4 matrix whose eigenvector of the largest
         // eigenvalue is the best unit quaternion.
         private static bool Turn(List<int> piece, Vector3[] basis, Vector3[] move, Vector3 from, Vector3 to, out Quaternion rotation)

@@ -1,6 +1,50 @@
 # Validation Records
 
-## 2026-11-02: Fix Clipping After the Fit (unreleased, revision 15)
+## 2026-11-02: Fix Clipping Measured: Stays Off by Default
+
+The regression suite on all 38 cases, `declip-off` (`declipAfterFit=false`) against `declip-on` (`=true`), at 0.7.5:
+
+| over the 38 cases | off | on |
+|---|---|---|
+| rest3mm (clothing over 3 mm in the body at rest, authored clipping excepted) | 8866 | 4695 (-47 %) |
+| restUnder3mm (however authored) | 8713 | 4245 (-51 %) |
+| shape3mm / shapeUnder3mm | 7378 / 6685 | 4168 / 3269 |
+| spread3mm / crouch3mm / crouchShape3mm | 13761 / 23641 / 9280 | 9714 / 19689 / 6092 |
+| restStretched | 25029 | 24918 |
+| restSpikes (a vertex moved 5 mm unlike its neighbours) | 7964 | 8351 (+4.9 %) |
+| restReversed | 6013 | 6695 (+11 %) |
+| weightTears / motionAdded | 877 / 86746 | 877 / 87376 |
+| engine time | 537 s | 661 s (+3.3 s a case: the field) |
+
+rest3mm is lower in 28 cases and equal in 9 (the suit's pieces, clothing that did not clip); restWorstMm is lower in 9,
+higher in 5 by 0.1 to 0.7 mm. The chain gains most (4313 → 1241). Worse beyond the suite's noise (a tenth and 2):
+restSpikes in latex-catsuit 45 → 65, latex-legs 0 → 19, latex-panties 0 → 5, latex-sleevetop 18 → 25, comfy-sweater
+238 → 282, comfy-tanktop 139 → 158, fishing-ultinova-jacket 288 → 337; shape3mm in latex-corset 219 → 293 and jockstrap
+25 → 33; restReversed in the onesie (1217 → 1746), the tank top, the panties and the turtleneck. The plan's rule (on when
+rest3mm/restWorstMm improve without restStretched, restSpikes or shape3mm worse beyond noise) is not met: **the default
+stays off** (`ReFitSettings.DefaultDeclipAfterFit`, Orbiters Toolkit's `RefitPreferences.DefaultFixClipping`).
+
+Where the spikes come from (per-vertex outputs, `Library/ReFitTests/cases/*-vertices.csv`): the comfy sweater is 3596
+vertices; 231 move, 55 by over 5 mm (up to 16.5 mm), lone vertices at the armpits and upper arms sunk 10 to 16 mm while
+their neighbours, centimetres away, lie outside. Pushed out, each stands out of its neighbours by more than the 5 mm the
+harness counts. Tried on the 13 cases concerned (labels `t-*` in `Library/ReFitTests/regression/`), none within noise on
+spikes:
+- the push shared with 3 or 6 rings of fabric around it (`t-r3p3`, `t-r6p6`): spikes 2567 → 2495 / 2501 (off 2298), a
+  little less clipping; the tank top's stretched and reversed triangles worse;
+- a cone (the push lifting the fabric around it 0.1 to 0.3 m less per metre, as the drape does: `t-c20`, `t-c30r3`):
+  2531 to 2588;
+- only pushes up to 6 or 4 mm, deeper points left as fitted (`t-d6r3`, `t-d4r3`): 2503 / 2517; latex-legs still 0 → 14;
+- the nearest skin's exact distance within two field cells (`t-x`, `t-xr3`): the large garments' fields have 3.9 to
+  4.4 mm cells (the 4 million cell cap), whose trilinear distances let latex legs needing at most 4 mm move up to 8.3 mm;
+  measured exactly, the pass found deeper lone points and spikes rose (latex-catsuit 96, latex-legs 27).
+The released pass is kept unchanged (the trials are not in it). A better push needs the fabric between vertices (the
+harness samples triangle centres too) or a finer field over the clipping parts only; to be done with renders.
+
+Tests in the editor (MCB Test, 2026-11-02): `ReFitDeclipTests` 6/6 (the cache identity included), `ReFitPushOutTests`
+4/4 (the brush on the shared core). Deterministic suite: 90 of 94, the 2 known failures (the window run's log scope,
+the dense peaks' coverage stance) and the 2 explicit VRCFury/scene checks skipped.
+
+## 2026-11-02: Fix Clipping After the Fit (0.7.5, revision 15)
 
 `ReFitDeclip` after both fits (`declipAfterFit`, room `declipRoomMm` = 1 mm), and the push-out brush on its core.
 
@@ -13,12 +57,13 @@
   the cache identity and parse as harness overrides. The five geometry fixtures passed outside Unity (Unity's Mono on the
   type-checked assemblies, with the one native call on the path, `Bounds.Contains`, replaced in a scratch copy): 1.2 s,
   0.6 s, 0.8 s, 64 ms, 28 ms. Not yet run in the editor (no MCB Test editor or MCP bridge was available): those six and
-  the existing `ReFitPushOutTests` (the brush on the shared core).
+  the existing `ReFitPushOutTests` (the brush on the shared core); since run, see above.
 - **Default: off until measured.** The regression suite on every case with it off and on decides it:
   `ReFitRegressionSuite.Start("declip-off", null, "declipAfterFit=false")`, then
   `ReFitRegressionSuite.Start("declip-on", null, "declipAfterFit=true")`, then `Compare("declip-off", "declip-on")`.
   On by default when `rest3mm`/`restWorstMm` improve and `restStretched`, `restSpikes` and `shape3mm` do not get worse
-  beyond the suite's noise (a tenth and 2). Not run yet; with it off the fit is as before (the pass is skipped whole).
+  beyond the suite's noise (a tenth and 2). Run since: it stays off (above); with it off the fit is as before (the pass is
+  skipped whole).
 - Shape frames are not fixed again (rest only): each frame would need its own field over the shaped body (about 1 to 3 s
   each on a garment, several shapes per refit). The shapes drape from the fixed fit.
 - Revision 15 (was 14); the settings' JSON is in the transfer identity, so `declipAfterFit`/`declipRoomMm` key cached

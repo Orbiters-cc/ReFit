@@ -1,5 +1,15 @@
 # ReFit
 
+## Unreleased
+
+- **Fix clipping measured: it stays off by default.** Over the regression suite's 38 cases it halves the clothing left
+  in the body (3 mm deep at rest 8866 → 4695, with shapes 7378 → 4168; the Classy chain 4313 → 1241, the latex corset 469
+  → 262) without stretching more, but it adds spikes (7964 → 8351; latex legs 0 → 19, Comfy sweater 238 → 282, the
+  Ultinova FishingOutfit jacket 288 → 337) and, on the latex corset, clipping under its shapes (219 → 293): lone vertices
+  of low-poly clothing sunk 10 to 16 mm stand out of their neighbours once pushed out. Sharing the push over the fabric
+  around it, a cone, smaller pushes and exact distances near the skin were tried and did not remove them. Numbers in
+  VALIDATION.md; turn it on per refit (the wizard's Settings, My Avatar's fit card) where clipping matters more.
+
 ## 0.7.5 — 2026-11-02
 
 - **Fix clipping after the fit** (`ReFitSettings.declipAfterFit`, room `declipRoomMm`, 1 mm; off by default until the

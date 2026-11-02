@@ -1,6 +1,6 @@
 # ReFit
 
-## Unreleased
+## 0.7.5 — 2026-11-02
 
 - **Fix clipping after the fit** (`ReFitSettings.declipAfterFit`, room `declipRoomMm`, 1 mm; off by default until the
   regression suite has compared it on and off, see VALIDATION.md). Fabric a mesh refit leaves inside the target's body,

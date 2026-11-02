@@ -1,6 +1,6 @@
 # ReFit
 
-## Unreleased
+## 0.7.6 — 2026-11-02
 
 - **Fix clipping measured: it stays off by default.** Over the regression suite's 38 cases it halves the clothing left
   in the body (3 mm deep at rest 8866 → 4695, with shapes 7378 → 4168; the Classy chain 4313 → 1241, the latex corset 469

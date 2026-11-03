@@ -1,5 +1,73 @@
 # Validation Records
 
+## 2026-11-03: The Spatial Index Burst-Compiled, Bit for Bit (unreleased)
+
+Measured first, in the editor (Unity 2022.3.22f1, batch mode, a project copy with Orbiters Toolkit 0.4.16 and VRChat SDK
+3.10.3; 8 cases: hoodie, jockstrap, onesie, latex-catsuit, fishing-ultipaw-jacket, lamiho-ultipaw-pants,
+fashion-ultipaw-jacket, fbx; each cold, the kept registrations forgotten). CPU time from per-thread cycle counts inside
+every `SurfaceBvh` call against the process's cycles, per phase (lab instrumentation, not in the package):
+
+| 8 cases, 0.7.6 managed | Debug | Release |
+|---|---:|---:|
+| engine wall time | 196 s | 154 s |
+| process CPU time | 1407 s | 1039 s |
+| CPU inside the queries | 75 % | 78 % |
+| wall time in builds (one thread each) | 51 s (26 %) | 43 s (28 %) |
+
+Of the query time: closest points by facing 67 %, unfiltered closest points 12 %, rays by facing 8 %, ReFitDrape's
+untangling rays 4 %, delegates 6 %. The cloth fit's facing closest points (`ReFitClothFit`'s two fabric/skin queries)
+alone were 45 % of all CPU, 20 to 30 µs a query on the editor's Mono; a 100 000 triangle body took 0.37 s to build.
+
+**The change.** `SurfaceBvhBurst` builds and refits the hierarchy and answers queries without a filter or with a
+`FacingFilter`, an `ExceptTriangle` (`MeshSnapshot.HideEnclosedSkin`, before a delegate) or a `NotTouchingGroups` (the
+drape's untangling rays), called directly per query from the callers' loops on the hierarchy's own arrays (pinned, each
+leaf's corners packed). ReFitDrape's counterpart delegate becomes the equivalent `FacingFilter` on a Burst-built index.
+Isolated, one thread, the Ultipaw body (99 642 triangles): build 370 → 20 ms, closest point 40 → 4.5 µs, by facing 70 →
+7.5 µs, rays 11 to 21 → 1.2 to 2.6 µs.
+
+**The same result, bit for bit.** A first version in plain single precision moved refitted vertices by up to 60 mm (the
+FBX fixture 436 of 1856 vertices, the FashionSuit jacket p99 22 mm), the managed code itself being deterministic (run to
+run, Debug against Release). Bisected: the Burst-built tree with every query managed moved them as much (433): its
+centroid sums, rounded otherwise, ordered the median split otherwise, and the layout decides which of two equidistant
+triangles a query meets (Performance Policy); the arithmetic alone on the managed tree moved 26; a needle triangle (a
+sphere's pole ring) gave a triangle 0.7 mm farther in single precision. The editor's Mono evaluates float expressions in
+double and rounds when a value is stored (ECMA-335 III.1.1.1; measured: (2^24 + 1) - 2^24 is 1 inline, 0 through a
+returned value); written the same way, Burst builds the same tree and returns the same hits:
+- `ReFitBurstQueryTests` (8): the tree node for node, every hit's triangle, distance, position and barycentric bits over
+  a soup, a closed lumpy sphere (shared corners and edges, needle and collapsed triangles) and the fixture's body, every
+  filter, subsets, hidden triangles, refitted trees; out-of-range inputs throw as before; Burst off keeps the managed code.
+- The 8 cases refitted with Burst off and on, the output meshes compared bit for bit (vertices, normals, tangents,
+  triangles, every blendshape frame's deltas, bone weights, bindposes) and the reports message for message: identical,
+  Debug and Release, on 0.7.6 and on 0.7.7.
+- Regression suite, both arms in one editor: every metric identical in every run (7 runs, the motion check in one);
+  offscreen renders (the refit at rest, spread, crouched, with shapes, bare, the outfit; close-ups and full views, 480
+  per arm) byte-identical. Visible in both, as before: the Hoodie on the Ultipaw shows skin through both sleeves at rest.
+- NUnit (this assembly, on 0.7.7): 54 of 55 with Burst (the VRCFury test skipped, not installed), with Burst compilation
+  disabled 46 and the 8 Burst tests ignored. Deterministic suite: the same with Burst on and off, 87 passed, 5 skipped
+  (VRCFury and scene checks), the 2 known failures (the window run's log scope, the dense peaks' coverage stance).
+
+**Time.** Engine time over the 8 cases (Burst off, on, off, on… in one editor after a warm-up of both; n = 3, mean ± SD;
+another editor's refits loaded the machine during the Debug runs, the managed arm most):
+
+| case | Debug, managed | Debug, Burst | Release, managed | Release, Burst |
+|---|---:|---:|---:|---:|
+| hoodie | 13482 ± 4028 | 2471 ± 14 | 7797 ± 58 | 1654 ± 87 (4.7×) |
+| latex-catsuit | 11041 ± 5127 | 2509 ± 99 | 5922 ± 83 | 1662 ± 64 (3.6×) |
+| lamiho-ultipaw-pants | 21273 ± 7342 | 4980 ± 28 | 12064 ± 55 | 3017 ± 31 (4.0×) |
+| fashion-ultipaw-jacket | 39513 ± 5099 | 12185 ± 429 | 21142 ± 160 | 6066 ± 72 (3.5×) |
+| jockstrap | 5813 ± 239 | 1976 ± 108 | 4400 ± 20 | 1280 ± 96 (3.4×) |
+| fishing-ultipaw-jacket | 22739 ± 2682 | 9148 ± 142 | 14473 ± 190 | 4713 ± 80 (3.1×) |
+| onesie | 41628 ± 9297 | 17666 ± 231 | 19969 ± 97 | 9496 ± 134 (2.1×) |
+| fbx | 648 ± 320 | 348 ± 18 | 296 ± 9 | 220 ± 40 (1.3×) |
+| **8 cases** | **156138 ± 14550** | **51284 ± 395** (3.0×) | **86062 ± 447** | **28109 ± 406** (3.1×) |
+
+Measured on 0.7.6; on 0.7.7 one more Release pair: 85.3 s → 28.0 s (3.05×), every metric and vertex identical.
+By phase (Release, ms over the 8 cases): building the spatial indices 6971 → 532, draping 33049 → 9271, blendshapes
+19687 → 6641, laying the bodies 10834 → 3561, preparing the shapes 4002 → 867, the deformation 4206 → 2808, staging
+2894 → 1870. With Burst, queries are still 56 to 62 % of the CPU (closest points 3 to 4 µs, rays 2 to 3 µs, called one by
+one from managed loops); the rest is the managed code around them. The first Burst call of an editor session takes 0.75
+to 1.4 s, 3 s after ReFit's code changed (Burst compiles once and caches).
+
 ## 2026-11-03: Fix Clipping Without Spikes (unreleased)
 
 The 0.7.6 pass halved the clipping but added spikes (lone vertices of low-poly clothing sunk 10 to 16 mm, pushed out

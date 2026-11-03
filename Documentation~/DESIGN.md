@@ -357,8 +357,14 @@ integrity checking.
   shared mutable query state.
 - Share bindings, captured body data and staging across a multi-shape request. Keep verified arithmetic and
   projection order; a bounds-only BVH-refit experiment was rejected after measurable output drift.
-- Emit phase timings and compare geometry against an independently recorded baseline. Native/GPU backends
-  are not included: redundant work was removable without platform binaries or numeric changes.
+- Emit phase timings and compare geometry against an independently recorded baseline. The spatial index (build,
+  refit, closest points and rays unfiltered or with the struct filters `FacingFilter`, `ExceptTriangle`,
+  `NotTouchingGroups`) is Burst-compiled in the editor (`SurfaceBvhBurst`), statement for statement as the editor's Mono
+  rounds the managed code (float expressions in double, rounded where a value is stored): the same tree and the same hits
+  bit for bit, so every output stays identical (see the ties below: a tree rounded otherwise, or plain single precision,
+  moved refitted vertices by up to 60 mm). Its queries are called one by one from the callers' `Parallel.For` loops: a
+  refit computes on a worker thread, where Unity's jobs cannot be scheduled. No platform binaries; other native or GPU
+  backends are not included.
 - Filter BVH queries with structs over cached face normals (`FacingFilter`, `MeshSnapshot.FaceNormals`): no delegate,
   closure or cross product per triangle tested. Build hierarchies with a median quickselect. Query a hierarchy of only
   the triangles that may be found when few are left (`SurfaceBvh.Build(snapshot, include)`), not the whole surface with

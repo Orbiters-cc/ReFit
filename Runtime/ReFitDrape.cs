@@ -214,12 +214,21 @@ namespace Orbiters.ReFit
             // Whether the source's counterpart of target skin (at point, turned normal) was covered, null without one.
             bool? CounterpartCovered(Vector3 point, Vector3 normal, BodyRegion region)
             {
+                // Source skin turned like the target's. FaceNormal reads the cached normals when there are: the same test as a
+                // FacingFilter, which a Burst-built index evaluates itself (the managed code keeps the delegate as it was).
+                var sourceNormals = sourceIndex.UsesBurst ? source.FaceNormals : null;
                 Func<int, bool> same = t => Vector3.Dot(source.FaceNormal(t), normal) >= .5f;
-                var counterpart = sourceIndex.ClosestPoint(point, Overlap, same);
+                SurfaceBvh.Hit Closest(Vector3 from, float reach) => sourceNormals != null
+                    ? sourceIndex.ClosestPoint(from, reach, new FacingFilter(sourceNormals, normal, .5f))
+                    : sourceIndex.ClosestPoint(from, reach, same);
+                SurfaceBvh.Hit Ray(Vector3 from, Vector3 along, float reach) => sourceNormals != null
+                    ? sourceIndex.Raycast(from, along, reach, new FacingFilter(sourceNormals, normal, .5f))
+                    : sourceIndex.Raycast(from, along, reach, same);
+                var counterpart = Closest(point, Overlap);
                 if (counterpart.found) return Covered(counterpart.position, source.FaceNormal(counterpart.triangle), region);
                 // The target is smaller here: the source skin just outside it.
-                var outward = sourceIndex.Raycast(point, normal, Shrink, same);
-                var inward = sourceIndex.Raycast(point, -normal, CounterpartReach, same);
+                var outward = Ray(point, normal, Shrink);
+                var inward = Ray(point, -normal, CounterpartReach);
                 if (outward.found && (!inward.found || outward.distance < inward.distance))
                     return Covered(outward.position, source.FaceNormal(outward.triangle), region);
                 if (!inward.found)
@@ -235,7 +244,7 @@ namespace Orbiters.ReFit
                     // buttocks) has no counterpart on the target: look past it.
                     if (covers || targetIndex.ClosestPoint(inward.position, Unmatched).found) return covers;
                     float travelled = (inward.position - point).magnitude + .001f;
-                    inward = sourceIndex.Raycast(point - normal * travelled, -normal, CounterpartReach - travelled, same);
+                    inward = Ray(point - normal * travelled, -normal, CounterpartReach - travelled);
                 }
                 return null;
             }
@@ -591,7 +600,7 @@ namespace Orbiters.ReFit
                     var a = positions[ga]; var direction = positions[gb] - a;
                     float length = direction.magnitude;
                     if (length < 1e-6f) return;
-                    var hit = index.Raycast(a, direction / length, length, new NotTouching(asset, ga, gb));
+                    var hit = index.Raycast(a, direction / length, length, new NotTouchingGroups(asset, ga, gb));
                     if (!hit.found) return;
                     int t3 = hit.triangle * 3;
                     int x = asset.groupOfVertex[asset.triangles[t3]], y = asset.groupOfVertex[asset.triangles[t3 + 1]], z = asset.groupOfVertex[asset.triangles[t3 + 2]];
@@ -699,32 +708,6 @@ namespace Orbiters.ReFit
         }
 
         private Vector3 Authored(int group) => asset.worldVertices[asset.groupRep[group]];
-
-        // Triangles not touching either end of an edge.
-        private readonly struct NotTouching : ITriangleFilter
-        {
-            private readonly int[] triangles, groupOf;
-            private readonly int a, b;
-
-            public NotTouching(MeshSnapshot asset, int a, int b)
-            {
-                triangles = asset.triangles;
-                groupOf = asset.groupOfVertex;
-                this.a = a;
-                this.b = b;
-            }
-
-            public bool Accept(int triangle)
-            {
-                int t3 = triangle * 3;
-                for (int k = 0; k < 3; k++)
-                {
-                    int g = groupOf[triangles[t3 + k]];
-                    if (g == a || g == b) return false;
-                }
-                return true;
-            }
-        }
 
         // The segment p-q passes through the triangle a-b-c (Moller-Trumbore).
         private static bool SegmentCrosses(Vector3 p, Vector3 q, Vector3 a, Vector3 b, Vector3 c)

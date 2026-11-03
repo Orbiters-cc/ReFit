@@ -1,6 +1,9 @@
 using System;
 using System.Collections.Generic;
 using UnityEngine;
+#if UNITY_EDITOR && REFIT_BURST
+using Unity.Collections.LowLevel.Unsafe;
+#endif
 
 namespace Orbiters.ReFit
 {
@@ -19,13 +22,13 @@ namespace Orbiters.ReFit
     /// </summary>
     public readonly struct FacingFilter : ITriangleFilter
     {
-        private readonly Vector3[] faceNormals;
-        private readonly Vector3 direction;
-        private readonly float minimum;
-        private readonly int mask;
-        private readonly int[] triangleMasks;
-        private readonly bool[] allowed;
-        private readonly bool strict;
+        internal readonly Vector3[] faceNormals;
+        internal readonly Vector3 direction;
+        internal readonly float minimum;
+        internal readonly int mask;
+        internal readonly int[] triangleMasks;
+        internal readonly bool[] allowed;
+        internal readonly bool strict;
 
         /// <param name="faceNormals">Unit face normals by triangle (<see cref="MeshSnapshot.FaceNormals"/>).</param>
         /// <param name="minimum">The least dot product of a face normal with <paramref name="direction"/> accepted.</param>
@@ -57,11 +60,58 @@ namespace Orbiters.ReFit
         }
     }
 
+    /// <summary>Every triangle but one: a ray leaving a triangle must not find the triangle itself.</summary>
+    public readonly struct ExceptTriangle : ITriangleFilter
+    {
+        internal readonly int triangle;
+
+        public ExceptTriangle(int triangle) => this.triangle = triangle;
+
+        public bool Accept(int t) => t != triangle;
+    }
+
+    /// <summary>
+    /// Triangles touching neither of two vertex groups (<see cref="MeshSnapshot.groupOfVertex"/>): an edge's own fabric is not
+    /// in its way.
+    /// </summary>
+    internal readonly struct NotTouchingGroups : ITriangleFilter
+    {
+        internal readonly int[] triangles, groupOf;
+        internal readonly int a, b;
+
+        public NotTouchingGroups(MeshSnapshot asset, int a, int b)
+        {
+            triangles = asset.triangles;
+            groupOf = asset.groupOfVertex;
+            this.a = a;
+            this.b = b;
+        }
+
+        public bool Accept(int triangle)
+        {
+            int t3 = triangle * 3;
+            for (int k = 0; k < 3; k++)
+            {
+                int g = groupOf[triangles[t3 + k]];
+                if (g == a || g == b) return false;
+            }
+            return true;
+        }
+    }
+
     /// <summary>
     /// Bounding volume hierarchy over a triangle soup for fast closest-point-on-surface queries,
     /// optionally restricted by a per-triangle predicate (used for normal / body-region filtering).
     /// Thread-safe for queries once built.
     /// </summary>
+    /// <remarks>
+    /// In the editor with Burst enabled, building, refitting and the queries without a filter or with a
+    /// <see cref="FacingFilter"/>, <see cref="ExceptTriangle"/> or <see cref="NotTouchingGroups"/> (nearly all of a refit's)
+    /// run Burst-compiled (<see cref="SurfaceBvhBurst"/>): the same tree and the same hits as the managed code below, bit for
+    /// bit, in a fraction of the time (a refit 2 to 5 times faster over the regression cases). Other filters (a delegate),
+    /// Burst turned off (Jobs > Burst > Enable Compilation) and players keep the managed code. A hierarchy keeps the path it
+    /// was built with.
+    /// </remarks>
     public class SurfaceBvh
     {
         private struct Node
@@ -89,6 +139,36 @@ namespace Orbiters.ReFit
         private int nodeCount;
         private int[] triOrder;
         private Vector3[] a, b, c;       // triangle corners
+#if UNITY_EDITOR && REFIT_BURST
+        // Nine floats by slot of triOrder (the triangle's corners, leaf order) when Burst built the hierarchy, else null.
+        private float[] corners;
+
+        /// <summary>Hierarchies built from now on use Burst when it is compiled (tests compare it with the managed code).</summary>
+        internal static bool BurstEnabled = true;
+
+        /// <summary>Whether a hierarchy built now would use Burst: enabled here, and its code compiled (not run managed).</summary>
+        internal static bool BurstActive
+        {
+            get
+            {
+                if (!BurstEnabled) return false;
+                SurfaceBvhBurst.Probe(out int compiled);
+                return compiled != 0;
+            }
+        }
+
+#endif
+
+        /// <summary>
+        /// Whether this hierarchy's queries run Burst-compiled: a caller may then hand them a filter Burst evaluates instead of
+        /// a delegate (and keeps the delegate, the managed code as it was, otherwise).
+        /// </summary>
+#if UNITY_EDITOR && REFIT_BURST
+        internal bool UsesBurst => corners != null;
+#else
+        internal bool UsesBurst => false;
+#endif
+
         // Triangle centroids by axis, while building.
         private float[] cx, cy, cz;
 
@@ -111,6 +191,13 @@ namespace Orbiters.ReFit
         /// </summary>
         public static SurfaceBvh Build(MeshSnapshot snapshot, bool[] include = null)
         {
+#if UNITY_EDITOR && REFIT_BURST
+            if (BurstActive)
+            {
+                var built = BuildBurst(snapshot, include);
+                if (built != null) return built;
+            }
+#endif
             var bvh = new SurfaceBvh();
             int triCount = snapshot.triangles.Length / 3;
             bvh.a = new Vector3[triCount];
@@ -141,6 +228,43 @@ namespace Orbiters.ReFit
             return bvh;
         }
 
+#if UNITY_EDITOR && REFIT_BURST
+        // Build by Burst, or null where the managed build would index past an array (it then builds managed and throws as before).
+        private static unsafe SurfaceBvh BuildBurst(MeshSnapshot snapshot, bool[] include)
+        {
+            var vertices = snapshot.worldVertices;
+            var triangles = snapshot.triangles;
+            var hidden = snapshot.hiddenTriangles;
+            int triCount = triangles.Length / 3;
+            if (vertices == null || (hidden != null && hidden.Length < triCount) || (include != null && include.Length < triCount)) return null;
+            int kept = 0;
+            for (int t = 0; t < triCount; t++) if ((hidden == null || !hidden[t]) && (include == null || include[t])) kept++;
+            var bvh = new SurfaceBvh
+            {
+                a = new Vector3[triCount], b = new Vector3[triCount], c = new Vector3[triCount], triOrder = new int[kept],
+                nodes = new Node[Mathf.Max(1, kept * 2)], corners = new float[9 * kept],
+            };
+            var keys = new float[3 * triCount];
+            int nodeCount;
+            fixed (Vector3* v = vertices)
+            fixed (int* tri = triangles)
+            fixed (bool* h = hidden)
+            fixed (bool* inc = include)
+            fixed (Vector3* pa = bvh.a)
+            fixed (Vector3* pb = bvh.b)
+            fixed (Vector3* pc = bvh.c)
+            fixed (float* k = keys)
+            fixed (int* order = bvh.triOrder)
+            fixed (Node* n = bvh.nodes)
+            fixed (float* packed = bvh.corners)
+                nodeCount = SurfaceBvhBurst.Build((float*)v, vertices.Length, tri, triCount, (byte*)h, (byte*)inc, (float*)pa, (float*)pb, (float*)pc, k, order, kept,
+                    (SurfaceBvhBurst.Node*)n, bvh.nodes.Length, packed);
+            if (nodeCount < 0) return null;
+            bvh.nodeCount = nodeCount;
+            return bvh;
+        }
+#endif
+
         /// <summary>
         /// Moves the hierarchy onto <paramref name="snapshot"/>: the same triangles (the snapshot it was built from, or one with
         /// the same triangles) at new positions. The tree keeps its order and only its bounds follow, in linear time: queries
@@ -150,6 +274,14 @@ namespace Orbiters.ReFit
         {
             int triCount = a.Length;
             if (snapshot.triangles.Length / 3 != triCount) throw new ArgumentException("Refit needs the triangles the hierarchy was built on.", nameof(snapshot));
+#if UNITY_EDITOR && REFIT_BURST
+            if (corners != null)
+            {
+                if (RefitBurst(snapshot)) return;
+                // A triangle names a vertex out of range: the managed refit below throws as it did, and the queries go managed.
+                corners = null;
+            }
+#endif
             for (int t = 0; t < triCount; t++)
             {
                 a[t] = snapshot.worldVertices[snapshot.triangles[t * 3]];
@@ -181,6 +313,140 @@ namespace Orbiters.ReFit
                 nodes[n] = node;
             }
         }
+
+#if UNITY_EDITOR && REFIT_BURST
+        private unsafe bool RefitBurst(MeshSnapshot snapshot)
+        {
+            var vertices = snapshot.worldVertices;
+            if (vertices == null) return false;
+            fixed (Vector3* v = vertices)
+            fixed (int* tri = snapshot.triangles)
+            fixed (Vector3* pa = a)
+            fixed (Vector3* pb = b)
+            fixed (Vector3* pc = c)
+            fixed (int* order = triOrder)
+            fixed (Node* n = nodes)
+            fixed (float* packed = corners)
+                return SurfaceBvhBurst.Refit((float*)v, vertices.Length, tri, a.Length, (float*)pa, (float*)pb, (float*)pc, order, triOrder.Length,
+                    (SurfaceBvhBurst.Node*)n, nodeCount, packed) == 0;
+        }
+
+        // The filters Burst evaluates itself, with the arrays they read.
+        private struct Described
+        {
+            public FacingFilter facing;
+            public bool faces;
+            public int except;
+            public NotTouchingGroups touching;
+        }
+
+        // The filter as Burst reads it; false for another filter, or arrays the managed query would index past (it then runs and
+        // throws as before; NotTouchingGroups' arrays are checked index by index in Burst, which then answers false too).
+        private bool Describe<T>(ref T filter, out Described described) where T : struct, ITriangleFilter
+        {
+            described = default;
+            described.except = -1;
+            if (typeof(T) == typeof(NoFilter)) return true;
+            if (typeof(T) == typeof(FacingFilter))
+            {
+                ref var facing = ref UnsafeUtility.As<T, FacingFilter>(ref filter);
+                int count = a.Length;
+                if (facing.faceNormals == null || facing.faceNormals.Length < count || (facing.allowed != null && facing.allowed.Length < count) ||
+                    (facing.mask != 0 && facing.triangleMasks != null && facing.triangleMasks.Length < count)) return false;
+                described.facing = facing;
+                described.faces = true;
+                return true;
+            }
+            if (typeof(T) == typeof(ExceptTriangle))
+            {
+                described.except = UnsafeUtility.As<T, ExceptTriangle>(ref filter).triangle;
+                return true;
+            }
+            if (typeof(T) == typeof(NotTouchingGroups))
+            {
+                described.touching = UnsafeUtility.As<T, NotTouchingGroups>(ref filter);
+                return described.touching.triangles != null && described.touching.groupOf != null;
+            }
+            return false;
+        }
+
+        private unsafe bool ClosestBurst(Vector3 point, float maxDistance, in Described filter, out Hit result)
+        {
+            SurfaceBvhBurst.Hit hit;
+            var facing = filter.facing;
+            var touching = filter.touching;
+            fixed (Node* n = nodes)
+            fixed (int* order = triOrder)
+            fixed (float* packed = corners)
+            fixed (Vector3* normals = facing.faceNormals)
+            fixed (int* masks = facing.triangleMasks)
+            fixed (bool* allowed = facing.allowed)
+            fixed (int* touchTriangles = touching.triangles)
+            fixed (int* groupOf = touching.groupOf)
+            {
+                var tree = new SurfaceBvhBurst.Tree { nodes = (SurfaceBvhBurst.Node*)n, nodeCount = nodeCount, order = order, corners = packed };
+                var data = Filter(filter, normals, masks, allowed, touchTriangles, groupOf);
+                SurfaceBvhBurst.Closest(in tree, point.x, point.y, point.z, maxDistance, in data, out hit);
+            }
+            result = Managed(hit);
+            return hit.error == 0;
+        }
+
+        private unsafe bool RaycastBurst(Vector3 origin, Vector3 direction, float maxDistance, in Described filter, out Hit result)
+        {
+            SurfaceBvhBurst.Hit hit;
+            var facing = filter.facing;
+            var touching = filter.touching;
+            fixed (Node* n = nodes)
+            fixed (int* order = triOrder)
+            fixed (float* packed = corners)
+            fixed (Vector3* normals = facing.faceNormals)
+            fixed (int* masks = facing.triangleMasks)
+            fixed (bool* allowed = facing.allowed)
+            fixed (int* touchTriangles = touching.triangles)
+            fixed (int* groupOf = touching.groupOf)
+            {
+                var tree = new SurfaceBvhBurst.Tree { nodes = (SurfaceBvhBurst.Node*)n, nodeCount = nodeCount, order = order, corners = packed };
+                var data = Filter(filter, normals, masks, allowed, touchTriangles, groupOf);
+                SurfaceBvhBurst.Raycast(in tree, origin.x, origin.y, origin.z, direction.x, direction.y, direction.z, maxDistance, in data, out hit);
+            }
+            result = Managed(hit);
+            return hit.error == 0;
+        }
+
+        private static unsafe SurfaceBvhBurst.Filter Filter(in Described filter, Vector3* normals, int* masks, bool* allowed, int* touchTriangles,
+            int* groupOf)
+        {
+            var data = new SurfaceBvhBurst.Filter { except = filter.except };
+            if (filter.faces)
+            {
+                var facing = filter.facing;
+                data.normals = (float*)normals;
+                data.x = facing.direction.x; data.y = facing.direction.y; data.z = facing.direction.z;
+                data.minimum = facing.minimum;
+                data.mask = facing.mask;
+                data.strict = facing.strict ? 1 : 0;
+                data.masks = masks;
+                data.allowed = (byte*)allowed;
+            }
+            if (touchTriangles != null)
+            {
+                data.triangles = touchTriangles;
+                data.triangleInts = filter.touching.triangles.Length;
+                data.groupOf = groupOf;
+                data.vertexCount = filter.touching.groupOf.Length;
+                data.groupA = filter.touching.a;
+                data.groupB = filter.touching.b;
+            }
+            return data;
+        }
+
+        private static Hit Managed(in SurfaceBvhBurst.Hit hit) => new Hit
+        {
+            found = hit.found != 0, triangle = hit.triangle, position = new Vector3(hit.x, hit.y, hit.z), bary = new Vector3(hit.u, hit.v, hit.w),
+            distance = hit.distance,
+        };
+#endif
 
         private int BuildNode(int start, int count)
         {
@@ -251,6 +517,10 @@ namespace Orbiters.ReFit
         /// <summary>Closest point, considering only triangles <paramref name="filter"/> accepts (no allocation).</summary>
         public Hit ClosestPoint<T>(Vector3 point, float maxDistance, T filter) where T : struct, ITriangleFilter
         {
+#if UNITY_EDITOR && REFIT_BURST
+            if (corners != null && Describe(ref filter, out var described) && ClosestBurst(point, maxDistance, in described, out var burstHit))
+                return burstHit;
+#endif
             var hit = new Hit { found = false, distance = maxDistance, triangle = -1 };
             if (nodeCount == 0) return hit;
 
@@ -307,6 +577,10 @@ namespace Orbiters.ReFit
         /// <summary>First triangle crossed, considering only triangles <paramref name="filter"/> accepts (no allocation).</summary>
         public Hit Raycast<T>(Vector3 origin, Vector3 direction, float maxDistance, T filter) where T : struct, ITriangleFilter
         {
+#if UNITY_EDITOR && REFIT_BURST
+            if (corners != null && Describe(ref filter, out var described) && RaycastBurst(origin, direction, maxDistance, in described, out var burstHit))
+                return burstHit;
+#endif
             var hit = new Hit { found = false, distance = maxDistance, triangle = -1 };
             if (nodeCount == 0) return hit;
             var inverse = new Vector3(Inverse(direction.x), Inverse(direction.y), Inverse(direction.z));

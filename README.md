@@ -1,5 +1,25 @@
 # ReFit
 
+## Unreleased
+
+- **Refits run about three times faster in the editor, with the very same result.** The spatial index under every step
+  of a refit (`SurfaceBvh`: building and refitting it, its closest-point and ray queries unfiltered, by facing, all but
+  one triangle or not touching an edge) runs Burst-compiled (`SurfaceBvhBurst`), on the callers' threads as before. Its
+  queries took three quarters of a refit's CPU time and its builds, one thread each, a quarter of its wall time. Written
+  statement for statement as the editor's Mono rounds the managed code (float expressions in double, rounded when
+  stored), it builds the same tree and returns the same hits bit for bit, so nothing a refit makes changes: over the
+  regression cases the refitted meshes (vertices, normals, tangents, every blendshape frame, weights, bindposes), the
+  reports, every metric and the offscreen renders are identical with it on and off. Engine time over 8 regression cases
+  (3 interleaved runs, mean ± SD): Release code optimization 86.1 ± 0.4 s → 28.1 ± 0.4 s (3.1×), Debug 156 ± 15 s →
+  51.3 ± 0.4 s (3.0×); a refit 2.1× (the onesie) to 4.7× (the Hoodie) faster, building the spatial indices 13×.
+- **Requires Unity's Burst package** (`com.unity.burst` 1.8.7, which Orbiters Toolkit and the VRChat SDK already depend
+  on: a VRChat project gains no package). Used in the editor only: player and avatar builds compile none of it. With
+  Burst compilation turned off (Jobs › Burst › Enable Compilation), ReFit runs its managed code as before. The first
+  refit of an editor session waits about a second for Burst (three after ReFit's code changed).
+- A plain single precision port had moved refitted vertices by up to 60 mm: which of two practically equidistant
+  triangles a query meets decides a refit's next steps (DESIGN.md, Performance Policy). `ReFitBurstQueryTests` holds the
+  Burst path to the managed code's tree node for node and to every hit's bits.
+
 ## 0.7.7 — 2026-11-03
 
 - **Fix clipping no longer spikes, and moves only the rest mesh** (still off by default). The pass now also lifts faces
@@ -588,6 +608,8 @@ into blendshape space, and skin weights that follow the change of skinning betwe
 
 - Unity 2022.3+
 - Orbiters Toolkit 0.4.0 (shared bone name matching, avatar gizmos)
+- Unity's Burst package (`com.unity.burst` 1.8.7; Orbiters Toolkit and the VRChat SDK depend on it too): the spatial
+  index's code in the editor
 - No dependency on the VRChat SDK (humanoid `Animator` rigs recommended for best results)
 - The projection and welded-group toggles join the Toolkit's Avatar Gizmos toolbar. The Orbiters account and environment come
   from Orbiters Toolkit.

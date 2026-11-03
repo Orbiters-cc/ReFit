@@ -402,7 +402,7 @@ namespace Orbiters.ReFit
                 var normal = Unit(Vector3.Cross(worldVertices[triangles[i + 1]] - a, worldVertices[triangles[i + 2]] - a));
                 if (normal == Vector3.zero) return;
                 var center = (a + worldVertices[triangles[i + 1]] + worldVertices[triangles[i + 2]]) / 3f;
-                var hit = index.Raycast(center + normal * .0005f, normal, EnclosedReach, other => other != t);
+                var hit = index.Raycast(center + normal * .0005f, normal, EnclosedReach, new ExceptTriangle(t));
                 if (!hit.found || hit.distance < EnclosedDepth || Vector3.Dot(FaceNormal(hit.triangle), normal) <= 0) return;
                 hidden[t] = Inside(index, center + normal * (hit.distance * .5f), normal);
             });

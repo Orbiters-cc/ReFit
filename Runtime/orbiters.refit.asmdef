@@ -2,11 +2,12 @@
   "name": "orbiters.refit",
   "rootNamespace": "Orbiters.ReFit",
   "references": [
-    "Orbiters.Toolkit"
+    "Orbiters.Toolkit",
+    "Unity.Burst"
   ],
   "includePlatforms": [],
   "excludePlatforms": [],
-  "allowUnsafeCode": false,
+  "allowUnsafeCode": true,
   "autoReferenced": true,
   "overrideReferences": false,
   "precompiledReferences": [],
@@ -16,6 +17,11 @@
       "name": "com.vrchat.base",
       "expression": "3.1.12",
       "define": "REFIT_VRCHAT"
+    },
+    {
+      "name": "com.unity.burst",
+      "expression": "1.8.0",
+      "define": "REFIT_BURST"
     }
   ],
   "noEngineReferences": false

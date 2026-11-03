@@ -22,7 +22,7 @@ namespace Orbiters.ReFit.Editor.Tests
             var (body, index) = Body();
             var cloth = Shell(Vector3.zero, Radius - .003f, 24, 48);
             var deltas = new Vector3[cloth.GroupCount];
-            var result = ReFitDeclip.Apply(cloth, deltas, body, index, Rooms(cloth, Room), ReFitDeclip.DefaultIterations, CancellationToken.None);
+            var result = ReFitDeclip.Apply(cloth, deltas, body, index, Rooms(cloth, Room), null, ReFitDeclip.DefaultIterations, CancellationToken.None);
 
             Assert.That(result.insideBefore, Is.EqualTo(cloth.GroupCount), result.ToString());
             Assert.That(result.insideAfter, Is.Zero, result.ToString());
@@ -40,7 +40,7 @@ namespace Orbiters.ReFit.Editor.Tests
             // Centred 5 mm aside: its -x side lies 3 mm in the body, its +x side 7 mm out.
             var cloth = Shell(new Vector3(.005f, 0f, 0f), Radius + .002f, 24, 48);
             var deltas = new Vector3[cloth.GroupCount];
-            var result = ReFitDeclip.Apply(cloth, deltas, body, index, Rooms(cloth, Room), ReFitDeclip.DefaultIterations, CancellationToken.None);
+            var result = ReFitDeclip.Apply(cloth, deltas, body, index, Rooms(cloth, Room), null, ReFitDeclip.DefaultIterations, CancellationToken.None);
 
             Assert.That(result.insideBefore, Is.GreaterThan(0), result.ToString());
             Assert.That(result.insideAfter, Is.Zero, result.ToString());
@@ -73,7 +73,7 @@ namespace Orbiters.ReFit.Editor.Tests
             Assert.That(rooms.Max(), Is.LessThan(-.003f), "The room is no more than the authored gap.");
             Assert.That(ReFitDeclip.Rooms(cloth, bindings, body, Room, false).All(r => r == Room), "Made for another body, it gets the room asked.");
             var deltas = new Vector3[cloth.GroupCount];
-            var result = ReFitDeclip.Apply(cloth, deltas, body, index, rooms, ReFitDeclip.DefaultIterations, CancellationToken.None);
+            var result = ReFitDeclip.Apply(cloth, deltas, body, index, rooms, ReFitDeclip.CentreRooms(cloth, body, index, Room, true), ReFitDeclip.DefaultIterations, CancellationToken.None);
             Assert.That(result.moved, Is.Zero, result.ToString());
             Assert.That(deltas.All(d => d == Vector3.zero));
         }
@@ -88,7 +88,7 @@ namespace Orbiters.ReFit.Editor.Tests
             var cloth = MeshSnapshot.FromWorld(garment.vertices.Concat(bead.vertices).ToArray(),
                 garment.triangles.Concat(bead.triangles.Select(i => i + garment.vertices.Length)).ToArray(), true);
             var deltas = new Vector3[cloth.GroupCount];
-            var result = ReFitDeclip.Apply(cloth, deltas, body, index, Rooms(cloth, Room), ReFitDeclip.DefaultIterations, CancellationToken.None);
+            var result = ReFitDeclip.Apply(cloth, deltas, body, index, Rooms(cloth, Room), null, ReFitDeclip.DefaultIterations, CancellationToken.None);
 
             Assert.That(result.pieces, Is.EqualTo(1), result.ToString());
             var beadGroups = Enumerable.Range(0, cloth.GroupCount).Where(g => cloth.groupRep[g] >= garment.vertices.Length).ToList();
@@ -101,12 +101,38 @@ namespace Orbiters.ReFit.Editor.Tests
         }
 
         [Test]
+        public void ALoneSunkVertexNeverBecomesASpike()
+        {
+            var (body, index) = Body();
+            // A coarse shell 3 mm out, one vertex dented 13 mm into the body: pushed out alone, it would stand 11 mm out of its
+            // neighbours (a spike, as the harness counts them from 5 mm).
+            var (vertices, triangles) = Sphere(Vector3.zero, Radius + .003f, 12, 24);
+            int dented = 1 + 5 * 24 + 7;
+            vertices[dented] = vertices[dented].normalized * (Radius - .013f);
+            var cloth = MeshSnapshot.FromWorld(vertices, triangles, true);
+            var deltas = new Vector3[cloth.GroupCount];
+            var result = ReFitDeclip.Apply(cloth, deltas, body, index, Rooms(cloth, Room), null, ReFitDeclip.DefaultIterations, CancellationToken.None);
+
+            Assert.That(result.guarded, Is.GreaterThan(0), result.ToString());
+            int g = cloth.groupOfVertex[dented];
+            Assert.That(deltas[g].magnitude, Is.GreaterThan(.001f), "The dent still comes out as far as the guard allows.");
+            for (int i = 0; i < cloth.GroupCount; i++)
+            {
+                var mean = Vector3.zero;
+                foreach (int n in cloth.groupAdjacency[i]) mean += deltas[n];
+                Assert.That((deltas[i] - mean / cloth.groupAdjacency[i].Count).magnitude, Is.LessThanOrEqualTo(.0045f + 1e-5f),
+                    "No point moves more than the guard's limit unlike its neighbours.");
+            }
+            Assert.That(MaxEdgeRatio(cloth, deltas), Is.LessThan(ReFitDeclip.StretchRatio));
+        }
+
+        [Test]
         public void NothingNearTheBodyIsLeftAsItIs()
         {
             var (body, index) = Body();
             var cloth = Shell(Vector3.zero, Radius + .02f, 12, 24);
             var deltas = new Vector3[cloth.GroupCount];
-            var result = ReFitDeclip.Apply(cloth, deltas, body, index, Rooms(cloth, Room), ReFitDeclip.DefaultIterations, CancellationToken.None);
+            var result = ReFitDeclip.Apply(cloth, deltas, body, index, Rooms(cloth, Room), null, ReFitDeclip.DefaultIterations, CancellationToken.None);
             Assert.That(result.lacking, Is.Zero);
             Assert.That(result.field, Is.Null, "No field is built when nothing is near the skin.");
             Assert.That(deltas.All(d => d == Vector3.zero));

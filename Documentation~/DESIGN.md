@@ -223,20 +223,32 @@ one leg of the FishingOutfit shorts into the other thigh, and pushed out over th
 shoulders (clavicles) belong to the torso and the arms start at the upper arms, where a sleeve does: fabric over a
 shoulder is a strap or a sleeve's cap.
 
-**Fix clipping** (`declipAfterFit`, off by default until measured; `ReFitDeclip`). After either fit, once the garments worn
-under it are covered and before the deltas become mesh-local, fabric inside the target's body or closer to it than its
-room (`declipRoomMm`, 1 mm) moves out along the body's signed distance field (`ReFitBodyField`, unsealed, 2.5 mm cells at
-most 4 million, over the fabric within 5 mm of the skin or inside it and 4 cm around), by what it lacks (at most 3 cm:
-deeper, the field's band only knows inside). The correction is then smoothed over the welded groups three times, each
-group halfway to its neighbours' mean but never less than its own need along its way out, and fabric with its room never
+**Fix clipping** (`declipAfterFit`, off by default; `ReFitDeclip`). After either fit, once the garments worn under it are
+covered and before the deltas become mesh-local, fabric lacking at least half a millimetre of its room (`declipRoomMm`,
+1 mm: inside the target's body or nearer it than that) moves out along the body's signed distance field
+(`ReFitBodyField`, unsealed) by all it lacks, at most 3 cm. Welded groups and the centres of the fabric's triangles both
+count: a centre lacking room moves its three corners, so a face the skin comes through between its vertices is lifted
+whole and a sunk vertex takes its faces along. The field covers only the fabric lacking room: points lacking it by the
+nearest skin, gathered into clusters (6 cm buckets that touch), each split along its longest side until its grid is at
+most 2 million cells of 2.5 mm, with 2 cm around (one field over a whole catsuit grew its cells to 4 mm, whose trilinear
+distances are millimetres off; splitting down to 300 000 cells cut fields through the ThiccWiker's thick, layered body
+and read its inside wrong). A way out turned against the nearest skin's normal is not taken, and a push leaving a point
+deeper by the nearest skin is dropped. The correction is then smoothed over the welded groups three times, each group
+halfway to its neighbours' mean but never less than its own need along its way out, and fabric with its room never
 moving; the field is read again after each pass, pushing on what still lacks room, and the pass stops when nothing does.
-Pieces smaller than 3 cm move as one, by the push of their point lacking most and on until none lacks room. A group whose
-push stretches an edge past twice its authored length (or under half), more than the fit had, takes its neighbours' mean
-move instead (the seam guard, reported). Clothing made for the body it is fitted from keeps the gap it had over that body
-where it is less than the room (negative: a strap pressing in), as the cloth fit keeps it; clothing made for another body
-gets the room everywhere. The shapes drape from the fixed fit; their frames are not fixed again. The push-out brush uses
-the same push and sharing (`ReFitDeclip.Need`, `Share`), with its falloff. The idea (push outwards, Laplacian smoothing,
-optional body SDF) follows the MIT VRCloth-Declipper (dev.omelette_ak.vrcloth-declipper); none of its code is used.
+Pieces smaller than 3 cm move as one, by the push of their point lacking most and on until none lacks room. Last, the
+quality guard keeps the fabric from coming out worse than the fit left it, as the case harness measures it: wherever a
+push makes a vertex move 4.5 mm unlike its neighbours (the harness counts a spike from 5 mm; a spike the fit already made
+may stay), turns a triangle over against the authored clothing, or takes an edge outside half to twice its authored
+length, the pushes around it are halved, six times, then dropped until none is left: no push at all is the fit as it was.
+Clothing made for the body it is fitted from keeps the gap it had over that body where it is less than the room (negative:
+a strap pressing in), its triangle centres too (measured on that body, so a coarse face sagged into it as made keeps the
+sag); clothing made for another body gets the room everywhere. Only the rest mesh takes the fix: the shapes, their
+coverage, the saved binding and the refit's metadata keep the fit as it was, so a shape moves the clothing as without the
+fix, from a rest that only moved out (draped from the fixed fit, the latex corset clipped more under its shapes, 219 ->
+293). The push-out brush uses the same push and sharing (`ReFitDeclip.Need`, `Share`), with its falloff. The idea (push
+outwards, Laplacian smoothing, optional body SDF) follows the MIT VRCloth-Declipper (dev.omelette_ak.vrcloth-declipper);
+none of its code is used.
 
 World-space deformation becomes mesh-local pre-skin deltas. Keeping the original rig requires inverse skin
 conversion; replacing it uses planned bindposes and a target-space basis. This is not an exact surface-fitting

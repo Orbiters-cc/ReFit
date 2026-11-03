@@ -1,5 +1,51 @@
 # Validation Records
 
+## 2026-11-03: Fix Clipping Without Spikes (unreleased)
+
+The 0.7.6 pass halved the clipping but added spikes (lone vertices of low-poly clothing sunk 10 to 16 mm, pushed out
+alone), reversed triangles and clipping under the latex corset's shapes; 24 cells were worse beyond noise. Changed:
+triangle centres count (a centre lacking room moves its corners); the field only around the fabric lacking room, in
+clusters split to at most 2 million cells of 2.5 mm; its way out checked against the nearest skin, and pushes leaving a
+point deeper by the nearest skin dropped; fabric moves only from half a millimetre short of its room; a quality guard
+halving, then dropping, pushes that make a spike (4.5 mm unlike the neighbours), a turned-over triangle or an edge outside
+half to twice its length that the fit did not have; the fixed deltas for the rest mesh only (shapes as without the fix).
+
+Regression suite, 38 cases, `declip-off` (2026-11-02, rerun 2026-11-03 on 3 cases: identical) against `d4-on`:
+
+| over the 38 cases | off | 0.7.6 on | now on |
+|---|---|---|---|
+| rest3mm | 8866 | 4695 | 4657 (-47 %) |
+| restUnder3mm | 8713 | 4245 | 4349 (-50 %) |
+| shape3mm / shapeUnder3mm | 7378 / 6685 | 4168 / 3269 | 3806 / 3099 |
+| spread3mm / crouch3mm / crouchShape3mm | 13761 / 23641 / 9280 | 9714 / 19689 / 6092 | 9632 / 19593 / 5730 |
+| bareUnder3mm | 9082 | 6195 | 8166 |
+| restSpikes | 7964 | 8351 | 7994 |
+| restReversed | 6013 | 6695 | 5961 |
+| restStretched | 25029 | 24918 | 24966 |
+| motionAdded / weightTears | 86746 / 877 | 87376 / 877 | 87166 / 877 |
+| restWorstMm (sum) | 1026 | 1012 | 1008 |
+| engine time | 537 s | 661 s | 715 s |
+| cells worse beyond noise | | 24 | 2 |
+
+Still worse beyond the suite's noise (a tenth and 2): `fashion-ultipaw-jacket` bareUnder3mm 63 → 76 (the jacket under the
+Ultipaw without its muscles: the harness fits the vest under it with the fix too, and the jacket's cover over the fixed
+vest moves 7477 of its 10398 vertices; a dry run of the pass, everything computed but nothing applied, gives the off
+result exactly, and two runs on give the same result) and `latex-arms` motionAdded 27 → 33 (911 → 913 covered skin
+vertices; arms down +3, elbows at the sides +2, elbows forward +1; worst unchanged at 4.8 mm). The motion check leaves out
+skin already through the fabric at rest, so fixing rest clipping can only add to what it counts. By the rule (on only if no
+case is worse), the default stays off.
+
+Trials on the 13 worst cases first (labels in `Library/ReFitTests/regression/`): triangles, clusters and guard together
+(`g-all`) brought spikes from 2567 (0.7.6) to 2307 (off 2298) but took 12 times the engine time (fields over all fabric
+within 5 mm of the skin: 32 million cells on the catsuit); fields only around fabric lacking room (`g3`): 2.3 times;
+clusters split to 300 000 cells (`d2-on`): the onesie 943 → 1613 at rest (small fields cut through the ThiccWiker read its
+inside wrong; fixed by the nearest-skin check, kept at 2 million cells); only fabric inside the skin moving (`g6`): no
+change. Tests: `ReFitDeclipTests` 7 (a lone vertex dented 13 mm into the body never moves more than the guard's 4.5 mm unlike
+its neighbours), 7/7 offline under Mono and in the editor; `ReFitPushOutTests` 4/4 (the brush on the shared core);
+deterministic suite 90 of 94 (the 2 known failures, the window run's log scope and the dense peaks' coverage stance; the 2
+explicit VRCFury/scene checks skipped). The released code was checked against `d4-on` after the trial switches were removed:
+the same rows on 3 cases (`final-check`). Cache revision 16.
+
 ## 2026-11-02: Fix Clipping Measured: Stays Off by Default
 
 The regression suite on all 38 cases, `declip-off` (`declipAfterFit=false`) against `declip-on` (`=true`), at 0.7.5:

@@ -1389,8 +1389,7 @@ namespace Orbiters.ReFit
                     steps.Lap("layers");
                     state.Report.Info("deformation-timing", "Covering the target: " + steps);
                 }
-                Declip(state, primaryGroupDeltas, bindings, firstSnap, bvhTarget);
-                state.primaryRawLocalDeltas = ToLocalDeltas(state, primaryGroupDeltas, true);
+                state.primaryRawLocalDeltas = ToLocalDeltas(state, Declip(state, primaryGroupDeltas, bindings, firstSnap, firstBvh, bvhTarget), true);
                 state.primaryLocalDeltas = state.primaryRawLocalDeltas;
                 if (settings.recalculateNormalDeltas)
                     (state.primaryNormalDeltas, state.primaryTangentDeltas) = SurfaceDeltas(asset, state.primaryLocalDeltas, null);
@@ -1470,8 +1469,7 @@ namespace Orbiters.ReFit
                 CoverBody(state, firstSnap, firstBvh, bvhTarget, primaryGroupDeltas, steps);
                 state.Report.Info("deformation-timing", "The fit: " + steps);
                 CoverLayers(state, primaryGroupDeltas);
-                Declip(state, primaryGroupDeltas, bindings, firstSnap, bvhTarget);
-                state.primaryLocalDeltas = ToLocalDeltas(state, primaryGroupDeltas, true);
+                state.primaryLocalDeltas = ToLocalDeltas(state, Declip(state, primaryGroupDeltas, bindings, firstSnap, firstBvh, bvhTarget), true);
                 if (settings.recalculateNormalDeltas)
                     (state.primaryNormalDeltas, state.primaryTangentDeltas) = SurfaceDeltas(asset, state.primaryLocalDeltas, null);
 
@@ -1748,19 +1746,26 @@ namespace Orbiters.ReFit
 
         // "Fix clipping" (settings.declipAfterFit): what the fit left inside the target's body, or closer to it than the room asked,
         // is pushed out along the body's distance field and smoothed over the fabric (ReFitDeclip). Clothing made for the body it
-        // is fitted from keeps what lay under that body as made (a strap pressing in): only what the fit added is fixed. At rest:
-        // the shapes drape from the fixed fit.
-        private static void Declip(State state, Vector3[] primaryGroupDeltas, SurfaceBinding[] bindings, MeshSnapshot madeOn, SurfaceBvh bvhTarget)
+        // is fitted from keeps what lay under that body as made (a strap pressing in): only what the fit added is fixed. The fixed
+        // deltas are the rest mesh's only: the shapes, their coverage and the saved binding keep the fit as it was, so each shape
+        // moves the clothing as without the fix, from a rest that only moved out (draped from the fixed fit instead, the latex
+        // corset clipped more under its shapes: 219 -> 293). Returns the fixed copy, or the deltas themselves when off.
+        private static Vector3[] Declip(State state, Vector3[] primaryGroupDeltas, SurfaceBinding[] bindings, MeshSnapshot madeOn, SurfaceBvh madeOnIndex,
+            SurfaceBvh bvhTarget)
         {
             var settings = state.settings;
-            if (!settings.declipAfterFit || primaryGroupDeltas == null) return;
+            if (!settings.declipAfterFit || primaryGroupDeltas == null) return primaryGroupDeltas;
+            primaryGroupDeltas = (Vector3[])primaryGroupDeltas.Clone();
             SetBackgroundProgress(state, 0.48f, "Fixing clipping");
-            var rooms = ReFitDeclip.Rooms(state.asset, bindings, madeOn, Mathf.Max(0f, settings.declipRoomMm) * 0.001f,
-                !state.madeForAnother && !settings.madeForAnotherBody);
-            var result = ReFitDeclip.Apply(state.asset, primaryGroupDeltas, state.targetBasis, bvhTarget, rooms, ReFitDeclip.DefaultIterations,
-                state.cancellationToken);
+            float room = Mathf.Max(0f, settings.declipRoomMm) * 0.001f;
+            bool keepAuthored = !state.madeForAnother && !settings.madeForAnotherBody;
+            var rooms = ReFitDeclip.Rooms(state.asset, bindings, madeOn, room, keepAuthored);
+            var centreRooms = ReFitDeclip.CentreRooms(state.asset, madeOn, madeOnIndex, room, keepAuthored);
+            var result = ReFitDeclip.Apply(state.asset, primaryGroupDeltas, state.targetBasis, bvhTarget, rooms, centreRooms,
+                ReFitDeclip.DefaultIterations, state.cancellationToken);
             state.Report.Info("declip", result.ToString());
             CoverStepCaptured?.Invoke("declip", state.asset, state.targetBasis, primaryGroupDeltas);
+            return primaryGroupDeltas;
         }
 
         // Clothing lying under the skin it is fitted from by more than this, over more than this share of it near the skin, was

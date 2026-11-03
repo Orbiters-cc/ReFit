@@ -1,5 +1,19 @@
 # ReFit
 
+## Unreleased
+
+- **Fix clipping no longer spikes, and moves only the rest mesh** (still off by default). The pass now also lifts faces
+  the skin comes through between their vertices (triangle centres move their corners), builds its distance field only
+  around the fabric that lacks room (2.5 mm cells over a whole garment, where one field had grown them to 4 mm), checks its
+  way out against the nearest skin, starts moving fabric only when it lacks half a millimetre of room, and ends with a
+  quality guard that halves, then drops, any push leaving a spike, a turned-over triangle or an over-stretched edge the fit
+  did not have. The fixed deltas are the rest mesh's only: shapes move the clothing as without the fix. Over the regression
+  suite's 38 cases against it off: clothing over 3 mm in the body at rest 8866 → 4657, under shapes 7378 → 3806, spikes
+  7964 → 7994 (0.7.6: 8351), reversed triangles 6013 → 5961 (0.7.6: 6695), stretched 25029 → 24966; 2 cells worse beyond
+  the suite's noise instead of 24 (FashionSuit jacket under the Ultipaw without its muscles 63 → 76, latex arms' skin
+  coming through in motion 27 → 33), so the default stays off. Engine time 537 → 715 s over the 38 cases (about 5 s a
+  piece). VALIDATION.md has every number.
+
 ## 0.7.6 — 2026-11-02
 
 - **Fix clipping measured: it stays off by default.** Over the regression suite's 38 cases it halves the clothing left

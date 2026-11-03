@@ -1,6 +1,6 @@
 # ReFit
 
-## Unreleased
+## 0.7.7 — 2026-11-03
 
 - **Fix clipping no longer spikes, and moves only the rest mesh** (still off by default). The pass now also lifts faces
   the skin comes through between their vertices (triangle centres move their corners), builds its distance field only

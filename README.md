@@ -1,6 +1,6 @@
 # ReFit
 
-## Unreleased
+## 0.7.8 — 2026-11-03
 
 - **Refits run about three times faster in the editor, with the very same result.** The spatial index under every step
   of a refit (`SurfaceBvh`: building and refitting it, its closest-point and ray queries unfiltered, by facing, all but

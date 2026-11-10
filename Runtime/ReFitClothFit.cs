@@ -75,6 +75,9 @@ namespace Orbiters.ReFit
         private float[][] shapeWeights;
         private bool[] shapeCovered;
         private int[] shapeCandidates;
+        // The target's covered skin alone (the triangles all of whose corners are covered), for shapes: each frame refits it
+        // where the frame moves the skin instead of building it again.
+        private SurfaceBvh shapeCoveredIndex;
         // How far the fitted clothing still lets the skin through (per group, per candidate skin vertex): a shape's drape
         // corrects only what the shape adds. Shapes are summed when several are on, so each fixing what the fit left would
         // apply that correction once per shape.
@@ -286,7 +289,17 @@ namespace Orbiters.ReFit
             Samples(fitted, skin, target.Index(), out shapeSamples, out shapeWeights);
             fabricAllowance = new float[groupCount];
             skinAllowance = new float[shapeCandidates.Length];
-            Relax(fitted, target, shapeCovered, null, null, null, shapeCandidates, measure: true);
+            shapeCoveredIndex = SurfaceBvh.Build(target, CoveredTriangles(target, shapeCovered));
+            Relax(fitted, target, shapeCovered, null, null, null, shapeCandidates, measure: true, coveredIndex: shapeCoveredIndex);
+        }
+
+        private static bool[] CoveredTriangles(MeshSnapshot body, bool[] coveredVertex)
+        {
+            int triangleCount = body.triangles.Length / 3;
+            var coveredTriangle = new bool[triangleCount];
+            for (int t = 0; t < triangleCount; t++)
+                coveredTriangle[t] = coveredVertex[body.triangles[t * 3]] && coveredVertex[body.triangles[t * 3 + 1]] && coveredVertex[body.triangles[t * 3 + 2]];
+            return coveredTriangle;
         }
 
         /// <summary>
@@ -313,7 +326,10 @@ namespace Orbiters.ReFit
             for (int i = 0; i < shaped.Length; i++) shaped[i] = target.worldVertices[i] + shapeMotion[i];
             var body = MeshSnapshot.FromWorld(shaped, target.triangles, false);
             body.hiddenTriangles = target.hiddenTriangles;
-            var result = Relax(start, body, shapeCovered, report, "'" + shapeName + "'", null, shapeCandidates, allowed: true);
+            // The covered skin's hierarchy follows the frame where it moves the skin: the same answers as one built anew.
+            var coveredIndex = shapeCoveredIndex.Clone();
+            coveredIndex.RefitTriangles(shaped, target.triangles, MeshSnapshot.MovedTriangles(target.triangles, shapeMotion));
+            var result = Relax(start, body, shapeCovered, report, "'" + shapeName + "'", null, shapeCandidates, allowed: true, coveredIndex: coveredIndex);
             var motionResult = new Vector3[groupCount];
             for (int g = 0; g < groupCount; g++) motionResult[g] = result[g] - fitted[g];
             return motionResult;
@@ -329,17 +345,15 @@ namespace Orbiters.ReFit
         /// </summary>
         /// <param name="measure">Only measure how far the skin comes through <paramref name="start"/> into the allowances.</param>
         /// <param name="allowed">Correct only what goes beyond the allowances (a shape added to the fit).</param>
+        /// <param name="coveredIndex">The hierarchy of <paramref name="body"/>'s covered triangles, or null to build it.</param>
         private Vector3[] Relax(Vector3[] start, MeshSnapshot body, bool[] coveredVertex, ReFitReport report,
-            string label, Action<float> progress, int[] candidates = null, bool measure = false, bool allowed = false)
+            string label, Action<float> progress, int[] candidates = null, bool measure = false, bool allowed = false,
+            SurfaceBvh coveredIndex = null)
         {
-            int triangleCount = body.triangles.Length / 3;
-            var coveredTriangle = new bool[triangleCount];
-            for (int t = 0; t < triangleCount; t++)
-                coveredTriangle[t] = coveredVertex[body.triangles[t * 3]] && coveredVertex[body.triangles[t * 3 + 1]] && coveredVertex[body.triangles[t * 3 + 2]];
             var surface = MeshSnapshot.FromWorld(start, groupTriangles, false);
             var bodyNormals = body.FaceNormals ?? body.CacheFaceNormals();
             // The covered skin alone: a fabric point looks for it among those triangles, not past the rest of the body.
-            var coveredIndex = SurfaceBvh.Build(body, coveredTriangle);
+            coveredIndex ??= SurfaceBvh.Build(body, CoveredTriangles(body, coveredVertex));
             var vertexNormals = new Vector3[groupCount];
             var heap = new ConeHeap(groupCount);
             if (candidates == null)

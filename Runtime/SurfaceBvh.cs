@@ -499,6 +499,23 @@ namespace Orbiters.ReFit
                 if (dirty[n]) Rebound(n);
         }
 
+        /// <summary>
+        /// A copy that can be refitted on its own, for a surface moved from this one (a shape frame on the body):
+        /// <see cref="RefitTriangles"/> along what moved, far cheaper than a build, answers exactly as a build would.
+        /// </summary>
+        public SurfaceBvh Clone() => new SurfaceBvh
+        {
+            nodes = (Node[])nodes.Clone(),
+            nodeCount = nodeCount,
+            slots = (Slot[])slots.Clone(),
+            // The layout's tables never change after the build: shared.
+            slotOfTriangle = slotOfTriangle,
+            parent = parent,
+            leafOfSlot = leafOfSlot,
+            triangleCount = triangleCount,
+            slack = slack,
+        };
+
         private void Rebound(int n)
         {
             ref var node = ref nodes[n];

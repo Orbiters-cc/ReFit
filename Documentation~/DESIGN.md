@@ -353,6 +353,12 @@ integrity checking.
 - Reuse source and target BVHs per operation. Build a shaped-body BVH once per clearance pass, reusing it
   for repeated guards and final measurement. A snapshot keeps its hierarchy (`MeshSnapshot.Index`, rebuilt only when its
   vertex array or hidden triangles change), so every stage reading a body reads the same one.
+- Treat shape frames as sparse. A frame moving no body vertex (nor a vertex of a garment worn under it) within the reach of
+  any stage of the clothing's bounds (35 cm at least: bindings, the clearance guard, the drape, the cloth fit's motion
+  samples) leaves the clothing as fitted, with no delta at all: a viseme on trousers costs nothing. Before, such a frame
+  ran every pass, and the clearance, coverage and drape passes could add, once per shape, a correction of what the fit had
+  left. A body moved by a frame takes its hierarchies from the rest body's, refitted along the triangles the frame moves
+  (`MeshSnapshot.MovedFrom`, `SurfaceBvh.Clone`, `RefitTriangles`), as does the cloth fit's covered skin.
 - Keep what is derived from a body across refits (`ReFitBodyCache`): each run stages and captures its bodies anew, and
   a captured body with the same positions, normals and triangles as one an earlier run read (the outfit's other pieces, a
   refit run again) takes that run's enclosed skin, hierarchies and main surface. Three bodies are kept, six while a batch

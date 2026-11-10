@@ -386,7 +386,8 @@ namespace Orbiters.ReFit
             {
                 var moved = new Vector3[body.worldVertices.Length];
                 for (int i = 0; i < moved.Length; i++) moved[i] = body.worldVertices[i] + bodyDelta[i];
-                skin = new MeshSnapshot { worldVertices = moved, triangles = body.triangles, hiddenTriangles = body.hiddenTriangles };
+                // Its hierarchies are the body's refitted where the frame moves it.
+                skin = MeshSnapshot.MovedFrom(body, moved, bodyDelta);
                 skin.worldNormals = VertexNormals(moved, body.triangles);
             }
             var skinIndex = skin.Index();

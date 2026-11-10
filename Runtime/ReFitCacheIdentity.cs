@@ -18,7 +18,8 @@ namespace Orbiters.ReFit
         /// their share of the skin's skinning; 13: that room up to the garment's own over the legs, none over the feet; 15: "Fix
         /// clipping" after the fit, what is left in the body pushed out along its distance field; 16: Fix clipping by triangle
         /// centres too, over fields around what lacks room, with a quality guard, the rest mesh only; 17: distance ties broken by
-        /// triangle index, neighbours and solver ranges in a fixed order).
+        /// triangle index, neighbours and solver ranges in a fixed order; a shape frame moving no skin within reach of the
+        /// clothing leaves it as fitted).
         /// </summary>
         public const int Revision = 17;
 

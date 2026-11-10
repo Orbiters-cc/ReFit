@@ -1513,6 +1513,9 @@ namespace Orbiters.ReFit
                 var work = state.shapes.SelectMany(shape => shape.frames.Select(frame => (shape, frame))).ToArray();
                 var outputs = new ReFitComputation[work.Length];
                 int completed = 0;
+                // Where the clothing lies (as authored and as fitted), and how far from it any stage looks at the body.
+                GarmentBounds(asset, primaryGroupDeltas, out var garmentMin, out var garmentMax);
+                float frameReach = FrameReach(settings);
                 SetBackgroundProgress(state, 0.5f, $"Transferring blendshapes: 0/{work.Length}");
                 // Frames own their arrays. Shared snapshots, BVHs and coverage supports are read-only.
                 // Bound concurrent frames to avoid multiplying the temporary memory by the shape count.
@@ -1544,6 +1547,23 @@ namespace Orbiters.ReFit
                         var worldShapeDelta = new Vector3[bodyVerts];
                         Parallel.For(0, bodyVerts, i =>
                             worldShapeDelta[i] = TargetShapeDeltaToWorld(worker, targetBasis, i, frame.deltas[i]) * motion);
+                        if (!FrameReaches(targetBasis, worldShapeDelta, worker.coverageLayers, frame.layerDeltas, garmentMin, garmentMax, frameReach))
+                        {
+                            // A viseme under trousers: nothing the frame moves is within reach of any stage, so the clothing stays
+                            // as fitted (exactly: no fabric point takes a motion, and the passes are not asked to re-correct what the
+                            // fit left once per shape).
+                            frame.rawLocalDeltas = new Vector3[vertexCount];
+                            frame.localDeltas = frame.rawLocalDeltas;
+                            if (settings.recalculateNormalDeltas)
+                            {
+                                frame.normalDeltas = new Vector3[vertexCount];
+                                frame.tangentDeltas = asset.baseTangents != null ? new Vector3[vertexCount] : null;
+                            }
+                            frame.deltas = null;
+                            worker.Report.Info("frame-out-of-reach", $"'{shape.sourceName}' (frame at {frame.weight:0.#}) moves no skin within " +
+                                                                     $"{frameReach * 100f:0} cm of the clothing: it stays as fitted.");
+                            return;
+                        }
                         if (worker.clothFit != null)
                         {
                             // Draped over the shaped body from the fitted clothing, like the fit.
@@ -1694,6 +1714,60 @@ namespace Orbiters.ReFit
                 state.comp.projectionDebug = BuildProjectionDebugData(state, bindings, transferBindings, falloff);
 
             SetBackgroundProgress(state, 1f, "Finishing");
+        }
+
+        // How far from the clothing a stage of a shape frame looks at the body (a binding, the clearance guard's range, the
+        // drape's way into the body, a cloth fit's motion samples), with room to spare.
+        private const float FrameReachLeast = .35f;
+
+        private static float FrameReach(ReFitSettings settings) => Mathf.Max(FrameReachLeast,
+            Mathf.Max(settings.maxProjectionDistance * 2f, settings.clearanceMaxInwardCorrection + settings.clearanceMaxOutwardCorrection +
+                                                            settings.clearanceMinimumSafetyDistance + .02f)) + .05f;
+
+        // The bounds of the clothing's welded groups as authored and as fitted.
+        private static void GarmentBounds(MeshSnapshot asset, Vector3[] fit, out Vector3 min, out Vector3 max)
+        {
+            min = new Vector3(float.MaxValue, float.MaxValue, float.MaxValue);
+            max = new Vector3(float.MinValue, float.MinValue, float.MinValue);
+            for (int g = 0; g < asset.GroupCount; g++)
+            {
+                var p = asset.worldVertices[asset.groupRep[g]];
+                min = Vector3.Min(min, p);
+                max = Vector3.Max(max, p);
+                if (fit == null) continue;
+                min = Vector3.Min(min, p + fit[g]);
+                max = Vector3.Max(max, p + fit[g]);
+            }
+        }
+
+        /// <summary>
+        /// Whether a frame moves anything within <paramref name="reach"/> of the clothing's bounds: a body vertex (where it rests
+        /// or where the frame takes it) or a vertex of a garment worn under it by that garment's own version of the frame.
+        /// </summary>
+        internal static bool FrameReaches(MeshSnapshot body, Vector3[] bodyMotion, IReadOnlyList<MeshSnapshot> layers,
+            IReadOnlyList<Vector3[]> layerMotion, Vector3 garmentMin, Vector3 garmentMax, float reach)
+        {
+            var low = garmentMin - new Vector3(reach, reach, reach);
+            var high = garmentMax + new Vector3(reach, reach, reach);
+            if (Reaches(body.worldVertices, bodyMotion, low, high)) return true;
+            if (layers != null && layerMotion != null)
+                for (int layer = 0; layer < layers.Count && layer < layerMotion.Count; layer++)
+                    if (Reaches(layers[layer].worldVertices, layerMotion[layer], low, high)) return true;
+            return false;
+        }
+
+        private static bool Reaches(Vector3[] vertices, Vector3[] motion, Vector3 low, Vector3 high)
+        {
+            if (motion == null) return false;
+            for (int i = 0; i < motion.Length && i < vertices.Length; i++)
+            {
+                var d = motion[i];
+                if (d.x == 0f && d.y == 0f && d.z == 0f) continue;
+                if (Inside(vertices[i], low, high) || Inside(vertices[i] + d, low, high)) return true;
+            }
+            return false;
+
+            bool Inside(Vector3 p, Vector3 a, Vector3 b) => p.x >= a.x && p.y >= a.y && p.z >= a.z && p.x <= b.x && p.y <= b.y && p.z <= b.z;
         }
 
         // Clothing points close to the source skin (within ClothingNearSkin) whose laid counterpart lies farther than

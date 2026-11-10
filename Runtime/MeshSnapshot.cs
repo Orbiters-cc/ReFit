@@ -75,6 +75,9 @@ namespace Orbiters.ReFit
 
         // The body content's shared derived data (ReFitBodyCache.Attach), or null.
         internal ReFitBodyCache.Entry shared;
+        // A surface moved from another one (a shape frame on the body, see MovedFrom): that one and the triangles that moved.
+        private MeshSnapshot movedFrom;
+        private int[] movedTriangles;
         private SurfaceBvh index;
         private Vector3[] indexVertices;
         private bool[] indexHidden;
@@ -90,7 +93,8 @@ namespace Orbiters.ReFit
             lock (indexLock)
             {
                 if (index != null && ReferenceEquals(indexVertices, worldVertices) && ReferenceEquals(indexHidden, hiddenTriangles)) return index;
-                index = shared != null ? shared.Index(this) : SurfaceBvh.Build(this);
+                if (MovesFrom()) index = Moved(movedFrom.Index());
+                else index = shared != null ? shared.Index(this) : SurfaceBvh.Build(this);
                 indexVertices = worldVertices;
                 indexHidden = hiddenTriangles;
                 return index;
@@ -417,8 +421,45 @@ namespace Orbiters.ReFit
         public SurfaceBvh WholeIndex()
         {
             if (hiddenTriangles == null) return Index();
+            if (MovesFrom()) return Moved(movedFrom.WholeIndex());
             if (shared != null) return shared.Index(this, null);
             return SurfaceBvh.Build(worldVertices, triangles);
+        }
+
+        /// <summary>
+        /// The surface of <paramref name="rest"/> moved to <paramref name="vertices"/> (rest positions plus
+        /// <paramref name="deltas"/>, a shape frame): the same triangles and hidden triangles, its hierarchy the rest's refitted
+        /// along the triangles that moved, which answers exactly as one built anew. Normals are the caller's to set.
+        /// </summary>
+        internal static MeshSnapshot MovedFrom(MeshSnapshot rest, Vector3[] vertices, Vector3[] deltas) => new MeshSnapshot
+        {
+            worldVertices = vertices,
+            triangles = rest.triangles,
+            hiddenTriangles = rest.hiddenTriangles,
+            movedFrom = rest,
+            movedTriangles = MovedTriangles(rest.triangles, deltas),
+        };
+
+        /// <summary>The triangles with a corner whose delta is not exactly zero.</summary>
+        internal static int[] MovedTriangles(int[] triangles, Vector3[] deltas)
+        {
+            var moved = new List<int>();
+            for (int t = 0; t + 2 < triangles.Length; t += 3)
+                if (Moves(deltas[triangles[t]]) || Moves(deltas[triangles[t + 1]]) || Moves(deltas[triangles[t + 2]])) moved.Add(t / 3);
+            return moved.ToArray();
+        }
+
+        private static bool Moves(Vector3 delta) => delta.x != 0f || delta.y != 0f || delta.z != 0f;
+
+        // Still the rest's triangles and hidden triangles (nothing replaced them since MovedFrom).
+        private bool MovesFrom() => movedFrom != null && ReferenceEquals(triangles, movedFrom.triangles) &&
+                                    ReferenceEquals(hiddenTriangles, movedFrom.hiddenTriangles);
+
+        private SurfaceBvh Moved(SurfaceBvh rest)
+        {
+            var copy = rest.Clone();
+            copy.RefitTriangles(worldVertices, triangles, movedTriangles);
+            return copy;
         }
 
         /// <summary>

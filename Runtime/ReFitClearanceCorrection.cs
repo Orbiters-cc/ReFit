@@ -2284,13 +2284,10 @@ namespace Orbiters.ReFit
             if (!hasDelta)
                 return body;
 
-            return new MeshSnapshot
-            {
-                worldVertices = vertices,
-                worldNormals = ComputeWorldNormals(vertices, body.triangles),
-                triangles = body.triangles,
-                hiddenTriangles = body.hiddenTriangles
-            };
+            // Its hierarchy is the body's refitted where the frame moves it.
+            var shaped = MeshSnapshot.MovedFrom(body, vertices, bodyWorldDeltas);
+            shaped.worldNormals = ComputeWorldNormals(vertices, body.triangles);
+            return shaped;
         }
 
         private static Vector3[] ComputeWorldNormals(Vector3[] vertices, int[] triangles)

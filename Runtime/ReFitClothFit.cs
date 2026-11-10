@@ -379,6 +379,13 @@ namespace Orbiters.ReFit
             SurfaceBvh index = null;
             int pushedLast = 0, iterations = 0;
             float deepest = 0f;
+            // Each point's answer in the pass before: a point moves at most MaxPush a pass, so its search starts bounded by it
+            // (the answer is the unseeded one, see SurfaceBvh).
+            var skinSeed = new int[groupCount];
+            var fabricSeed = new int[candidates.Length];
+            for (int g = 0; g < groupCount; g++) skinSeed[g] = -1;
+            for (int c = 0; c < candidates.Length; c++) fabricSeed[c] = -1;
+            var previous = new Vector3[groupCount];
             var watch = System.Diagnostics.Stopwatch.StartNew();
             long surfaceMs = 0, queryMs = 0, spreadMs = 0;
             for (int iteration = 0; iteration < Iterations; iteration++)
@@ -403,8 +410,9 @@ namespace Orbiters.ReFit
                     var p = position[g];
                     var n = normals[g];
                     // Covered skin turned the fabric's way (a positive dot: float.Epsilon is the smallest one).
-                    var hit = coveredIndex.ClosestPoint(p, NearReach, new FacingFilter(bodyNormals, n, float.Epsilon));
+                    var hit = coveredIndex.ClosestPoint(p, NearReach, new FacingFilter(bodyNormals, n, float.Epsilon), skinSeed[g]);
                     if (!hit.found) return;
+                    skinSeed[g] = hit.triangle;
                     var skinNormal = body.BaryNormal(hit.triangle, hit.bary);
                     float height = Vector3.Dot(p - hit.position, skinNormal);
                     float need = clearance[g] - height;
@@ -422,8 +430,9 @@ namespace Orbiters.ReFit
                     for (int k = 0; k < 3; k++) skinPushGroup[c * 3 + k] = -1;
                     var p = body.worldVertices[t];
                     var n = body.worldNormals[t];
-                    var hit = index.ClosestPoint(p, NearReach, new FacingFilter(surfaceNormals, n, Facing));
+                    var hit = index.ClosestPoint(p, NearReach, new FacingFilter(surfaceNormals, n, Facing), fabricSeed[c]);
                     if (!hit.found) return;
+                    fabricSeed[c] = hit.triangle;
                     var faceNormal = surfaceNormals[hit.triangle];
                     int i0 = groupTriangles[hit.triangle * 3], i1 = groupTriangles[hit.triangle * 3 + 1], i2 = groupTriangles[hit.triangle * 3 + 2];
                     float room = clearance[i0] * hit.bary.x + clearance[i1] * hit.bary.y + clearance[i2] * hit.bary.z;
@@ -449,11 +458,14 @@ namespace Orbiters.ReFit
 
                 int pushed = 0;
                 float worst = 0f;
+                bool neededGrew = false;
+                Array.Copy(correction, previous, groupCount);
                 for (int g = 0; g < groupCount; g++)
                 {
                     if (pushLength[g] <= 0f) continue;
                     worst = Mathf.Max(worst, pushLength[g]);
-                    needed[g] = Mathf.Max(needed[g], correction[g].magnitude + pushLength[g]);
+                    float need = Mathf.Max(needed[g], correction[g].magnitude + pushLength[g]);
+                    if (need != needed[g]) { needed[g] = need; neededGrew = true; }
                     var moved = correction[g] + push[g] * Mathf.Min(1f, (iteration < Iterations - PushOnly ? MaxPush : LatePush) / pushLength[g]);
                     if (moved.sqrMagnitude > MaxDrape * MaxDrape) moved = moved.normalized * MaxDrape;
                     if ((moved - correction[g]).sqrMagnitude < 1e-10f) continue;
@@ -475,6 +487,9 @@ namespace Orbiters.ReFit
                 spreadMs += watch.ElapsedMilliseconds;
                 progress?.Invoke((iteration + 1f) / Iterations);
                 if (pushed == 0 && iteration >= Iterations - PushOnly) break;
+                // Nothing pushed, no cone grew and the spreading left the fabric where it was: every pass after this one would
+                // ask the same queries of the same fabric and change nothing (the late passes only push and smooth less).
+                if (pushed == 0 && !neededGrew && Same(previous, correction)) break;
             }
 
             MoveAsOne(start, correction);
@@ -482,6 +497,13 @@ namespace Orbiters.ReFit
             report?.Info("cloth-fit-drape", $"Draped {label}: the skin came {deepest * 1000f:0.0} mm through at most; {pushedLast} fabric points were still pushed at the end " +
                                             $"({iterations} passes: surface {surfaceMs} ms, queries {queryMs} ms, spread {spreadMs} ms; {groupCount} fabric points, {candidates.Length} skin points).");
             return position;
+        }
+
+        private static bool Same(Vector3[] a, Vector3[] b)
+        {
+            for (int i = 0; i < a.Length; i++)
+                if (a[i].x != b[i].x || a[i].y != b[i].y || a[i].z != b[i].z) return false;
+            return true;
         }
 
         // Small pieces (a chain's links, a button) move as one: each piece takes the rigid motion (a turn and a move) closest to

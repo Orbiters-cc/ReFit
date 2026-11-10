@@ -497,7 +497,7 @@ namespace Orbiters.ReFit
                     fixed (double* pin = input, pout = output, ppartial = partial)
                     fixed (int* pstart = graph.start, pnext = graph.next)
                     fixed (float* pweights = weights)
-                        ReFitRegistrationKernels.Multiply(pin, pout, pstart, pnext, pweights, Anchor, s, range * span, Math.Min(n, (range + 1) * span),
+                        ReFitRegistrationLoops.Multiply(pin, pout, pstart, pnext, pweights, Anchor, s, range * span, Math.Min(n, (range + 1) * span),
                             dot ? 1 : 0, ppartial + range * 9);
                 });
             }
@@ -518,7 +518,7 @@ namespace Orbiters.ReFit
                 Parallel.For(0, ranges, range =>
                 {
                     fixed (double* pb = b, pq = q, pr = r, pz = z, pp = p, pd = diagonal, ppartial = partial)
-                        ReFitRegistrationKernels.Start(pb, pq, pr, pz, pp, pd, range * span, Math.Min(n, (range + 1) * span), ppartial + range * 9);
+                        ReFitRegistrationLoops.Start(pb, pq, pr, pz, pp, pd, range * span, Math.Min(n, (range + 1) * span), ppartial + range * 9);
                 });
                 var rz = Sum(0);
                 var norm = Sum(1);
@@ -545,7 +545,7 @@ namespace Orbiters.ReFit
                     Parallel.For(0, ranges, range =>
                     {
                         fixed (double* px = x, pr = r, pz = z, pp = p, pq2 = q, pd = diagonal, ppartial = partial)
-                            ReFitRegistrationKernels.Step(px, pr, pz, pp, pq2, pd, alpha[0], alpha[1], alpha[2], range * span, Math.Min(n, (range + 1) * span),
+                            ReFitRegistrationLoops.Step(px, pr, pz, pp, pq2, pd, alpha[0], alpha[1], alpha[2], range * span, Math.Min(n, (range + 1) * span),
                                 ppartial + range * 9);
                     });
                     var residual = Sum(0);
@@ -564,7 +564,7 @@ namespace Orbiters.ReFit
                     Parallel.For(0, ranges, range =>
                     {
                         fixed (double* pp = p, pz = z)
-                            ReFitRegistrationKernels.Direction(pp, pz, beta[0], beta[1], beta[2], mask, range * span, Math.Min(n, (range + 1) * span));
+                            ReFitRegistrationLoops.Direction(pp, pz, beta[0], beta[1], beta[2], mask, range * span, Math.Min(n, (range + 1) * span));
                     });
                 }
                 converged = !(active[0] || active[1] || active[2]);

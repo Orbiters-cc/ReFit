@@ -572,14 +572,16 @@ namespace Orbiters.ReFit
             }
 
             int taken = 0;
-            for (int cycle = 0; cycle < Cycles; cycle++)
+            // Without a coarse copy, one uninterrupted run of the whole budget (the solve before the coarse correction).
+            int cycles = coarse != null ? Cycles : 1;
+            for (int cycle = 0; cycle < cycles; cycle++)
             {
                 if (coarse != null)
                 {
                     Multiply(x, q, false);
                     coarse.Correct(x, b, q, weights, stiffness);
                 }
-                taken += Iterate(SolverIterations / Cycles, out bool converged);
+                taken += Iterate(SolverIterations / cycles, out bool converged);
                 if (converged || cancellation.IsCancellationRequested) break;
             }
             cancellation.ThrowIfCancellationRequested();
@@ -598,6 +600,9 @@ namespace Orbiters.ReFit
             private int[] of;           // per node, its cube
             private int count;
             public int Count => count;
+
+            /// <summary>The coarse node of a skin node (tests).</summary>
+            internal int Of(int node) => of[node];
             private int[] start, next;  // per cube, the cubes it shares edges with (sorted) ...
             private double[] edges;     // ... and how many
             private double[] cut;       // per cube, its edges to other cubes
@@ -607,14 +612,31 @@ namespace Orbiters.ReFit
             {
                 int n = nodes.Length;
                 var coarse = new Coarse { of = new int[n] };
-                var cubes = new Dictionary<Vector3Int, int>();
+                // A coarse node is the skin of one cube connected within it: two surfaces passing through a cube (the inner
+                // thighs, an arm against the torso, eyes in their sockets) are never tied together.
+                var cubeOf = new Vector3Int[n];
+                for (int i = 0; i < n; i++) cubeOf[i] = Vector3Int.FloorToInt(nodes[i] / cell);
+                var root = new int[n];
+                for (int i = 0; i < n; i++) root[i] = i;
+                int Find(int a) { while (root[a] != a) { root[a] = root[root[a]]; a = root[a]; } return a; }
+                for (int i = 0; i < n; i++)
+                    for (int e = graph.start[i]; e < graph.start[i + 1]; e++)
+                    {
+                        int j = graph.next[e];
+                        if (cubeOf[j] != cubeOf[i]) continue;
+                        int a = Find(i), b = Find(j);
+                        if (a != b) root[Math.Max(a, b)] = Math.Min(a, b);
+                    }
+                // Numbered by their lowest node: the same on every machine.
+                var numberOf = new Dictionary<int, int>();
                 for (int i = 0; i < n; i++)
                 {
-                    var key = Vector3Int.FloorToInt(nodes[i] / cell);
-                    if (!cubes.TryGetValue(key, out int c)) cubes[key] = c = cubes.Count;
+                    int r = Find(i);
+                    if (!numberOf.TryGetValue(r, out int c)) numberOf[r] = c = numberOf.Count;
                     coarse.of[i] = c;
                 }
-                int count = coarse.count = cubes.Count;
+                int cubes = numberOf.Count;
+                int count = coarse.count = cubes;
                 coarse.size = new double[count];
                 coarse.cut = new double[count];
                 for (int i = 0; i < n; i++) coarse.size[coarse.of[i]]++;

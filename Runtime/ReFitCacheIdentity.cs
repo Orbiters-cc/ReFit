@@ -20,7 +20,7 @@ namespace Orbiters.ReFit
         /// centres too, over fields around what lacks room, with a quality guard, the rest mesh only; 17: distance ties broken by
         /// triangle index, neighbours and solver ranges in a fixed order; a shape frame moving no skin within reach of the
         /// clothing leaves it as fitted; the registration's solves opened by a coarse correction; 18: the target's face normals in
-        /// the registration's key, frames reaching the clothing by their moved triangles).
+        /// the registration's key, frames reaching the clothing by their moved triangles, coarse nodes split by connectivity).
         /// </summary>
         public const int Revision = 18;
 

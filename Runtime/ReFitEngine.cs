@@ -1931,9 +1931,12 @@ namespace Orbiters.ReFit
                 : RemapAllOriginal(asset, state.assetBoneToNew);
         }
 
-        // How far from the clothing a stage of a shape frame looks at the body (a binding, the clearance guard's range, the
-        // drape's way into the body, a cloth fit's motion samples), with room to spare.
-        private const float FrameReachLeast = .35f;
+        // How far from the clothing a stage of a shape frame can look at the body, with room to spare. The farthest is the
+        // drape: from skin within its 0.2 m reach of the fabric, a way into the body twice as long (0.6 m from the fabric);
+        // then the bindings (twice maxProjectionDistance, 0.5 m by default, through which a frame moves each group) and the
+        // clearance guard's range. The cloth fit's motion samples (0.15 m), the coverage (0.2 m) and the tubes
+        // (maxProjectionDistance) reach less. Smoothing spreads only motion some group took directly, so it adds nothing.
+        private const float FrameReachLeast = .6f;
 
         private static float FrameReach(ReFitSettings settings) => Mathf.Max(FrameReachLeast,
             Mathf.Max(settings.maxProjectionDistance * 2f, settings.clearanceMaxInwardCorrection + settings.clearanceMaxOutwardCorrection +
@@ -1956,33 +1959,38 @@ namespace Orbiters.ReFit
         }
 
         /// <summary>
-        /// Whether a frame moves anything within <paramref name="reach"/> of the clothing's bounds: a body vertex (where it rests
-        /// or where the frame takes it) or a vertex of a garment worn under it by that garment's own version of the frame.
+        /// Whether a frame moves anything within <paramref name="reach"/> of the clothing's bounds: a triangle of the body with a
+        /// moved corner (all three corners, where they rest and where the frame takes them: a point inside it moves too), or
+        /// such a triangle of a garment worn under it by that garment's own version of the frame.
         /// </summary>
         internal static bool FrameReaches(MeshSnapshot body, Vector3[] bodyMotion, IReadOnlyList<MeshSnapshot> layers,
             IReadOnlyList<Vector3[]> layerMotion, Vector3 garmentMin, Vector3 garmentMax, float reach)
         {
             var low = garmentMin - new Vector3(reach, reach, reach);
             var high = garmentMax + new Vector3(reach, reach, reach);
-            if (Reaches(body.worldVertices, bodyMotion, low, high)) return true;
+            if (Reaches(body.worldVertices, body.triangles, bodyMotion, low, high)) return true;
             if (layers != null && layerMotion != null)
                 for (int layer = 0; layer < layers.Count && layer < layerMotion.Count; layer++)
-                    if (Reaches(layers[layer].worldVertices, layerMotion[layer], low, high)) return true;
+                    if (Reaches(layers[layer].worldVertices, layers[layer].triangles, layerMotion[layer], low, high)) return true;
             return false;
         }
 
-        private static bool Reaches(Vector3[] vertices, Vector3[] motion, Vector3 low, Vector3 high)
+        private static bool Reaches(Vector3[] vertices, int[] triangles, Vector3[] motion, Vector3 low, Vector3 high)
         {
-            if (motion == null) return false;
-            for (int i = 0; i < motion.Length && i < vertices.Length; i++)
+            if (motion == null || triangles == null) return false;
+            for (int t = 0; t + 2 < triangles.Length; t += 3)
             {
-                var d = motion[i];
-                if (d.x == 0f && d.y == 0f && d.z == 0f) continue;
-                if (Inside(vertices[i], low, high) || Inside(vertices[i] + d, low, high)) return true;
+                int a = triangles[t], b = triangles[t + 1], c = triangles[t + 2];
+                if (!Moves(motion[a]) && !Moves(motion[b]) && !Moves(motion[c])) continue;
+                var min = Vector3.Min(Vector3.Min(vertices[a], vertices[b]), vertices[c]);
+                var max = Vector3.Max(Vector3.Max(vertices[a], vertices[b]), vertices[c]);
+                min = Vector3.Min(min, Vector3.Min(Vector3.Min(vertices[a] + motion[a], vertices[b] + motion[b]), vertices[c] + motion[c]));
+                max = Vector3.Max(max, Vector3.Max(Vector3.Max(vertices[a] + motion[a], vertices[b] + motion[b]), vertices[c] + motion[c]));
+                if (min.x <= high.x && min.y <= high.y && min.z <= high.z && max.x >= low.x && max.y >= low.y && max.z >= low.z) return true;
             }
             return false;
 
-            bool Inside(Vector3 p, Vector3 a, Vector3 b) => p.x >= a.x && p.y >= a.y && p.z >= a.z && p.x <= b.x && p.y <= b.y && p.z <= b.z;
+            bool Moves(Vector3 d) => d.x != 0f || d.y != 0f || d.z != 0f;
         }
 
         // Clothing points close to the source skin (within ClothingNearSkin) whose laid counterpart lies farther than

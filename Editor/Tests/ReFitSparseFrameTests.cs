@@ -100,5 +100,22 @@ namespace Orbiters.ReFit.Editor.Tests
             Assert.That(ReFitEngine.FrameReaches(body, far, new[] { layer }, new[] { layerMotion }, garmentMin, garmentMax, .3f), Is.True,
                 "A layer under it moves");
         }
+
+        [Test]
+        public void ATriangleMovedByAFarCornerReachesTheClothingUnderIt()
+        {
+            // One large triangle; the clothing lies just over its middle. Its first corner, far outside the clothing's reach, rises
+            // 10 cm: the point under the clothing (barycentrics .25, .25, .5) rises 2.5 cm.
+            var body = MeshSnapshot.FromWorld(new[] { new Vector3(-1f, 0f, -1f), new Vector3(1f, 0f, -1f), new Vector3(0f, 0f, 1f) },
+                new[] { 0, 1, 2 }, false);
+            var garmentMin = new Vector3(-.05f, .01f, -.05f);
+            var garmentMax = new Vector3(.05f, .01f, .05f);
+            var motion = new[] { Vector3.up * .1f, Vector3.zero, Vector3.zero };
+            Assert.That(ReFitEngine.FrameReaches(body, motion, null, null, garmentMin, garmentMax, .4f), Is.True);
+            // The same for a garment worn under it.
+            var none = new Vector3[3];
+            Assert.That(ReFitEngine.FrameReaches(body, none, new[] { body }, new[] { motion }, garmentMin, garmentMax, .4f), Is.True);
+            Assert.That(ReFitEngine.FrameReaches(body, none, new[] { body }, new[] { none }, garmentMin, garmentMax, .4f), Is.False);
+        }
     }
 }

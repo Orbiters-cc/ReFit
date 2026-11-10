@@ -1675,6 +1675,8 @@ namespace Orbiters.ReFit
             public float frameReach;
             public WeldedNormalsCache normals;
             public Lazy<DetachedCoherence> detachedCoherence;
+            // The clearance pass's context, from the transfer bindings: the same for every frame (read only).
+            public ReFitClearanceCorrection.Context clearanceContext;
         }
 
         // Every frame of every requested shape, transferred on its own, at most shapeWorkers at once.
@@ -1701,6 +1703,7 @@ namespace Orbiters.ReFit
                 normals = new WeldedNormalsCache(asset, state.primaryLocalDeltas),
                 // Built by the first frame that needs it, then shared (thread safe).
                 detachedCoherence = new Lazy<DetachedCoherence>(() => DetachedCoherence.Prepare(state, primaryGroupDeltas, asset.GroupCount)),
+                clearanceContext = BuildClearanceContext(state, targetBasis, fit.transferBindings, true),
             };
             SetBackgroundProgress(state, 0.5f, $"Transferring blendshapes: 0/{work.Length}");
             // Frames own their arrays. Shared snapshots, BVHs and coverage supports are read-only.
@@ -1853,7 +1856,7 @@ namespace Orbiters.ReFit
                 worldShapeDelta,
                 falloff,
                 settings,
-                BuildClearanceContext(worker, targetBasis, transferBindings, true));
+                inputs.clearanceContext);
             steps.Lap("clearance");
             AddClearanceStats(worker, clearanceStats, $"transferred '{shape.sourceName}'");
             worker.tubes.Apply(asset, targetBasis, bvhTarget, worldShapeDelta, primaryGroupDeltas, groupDeltas,

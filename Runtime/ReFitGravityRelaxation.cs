@@ -169,7 +169,7 @@ namespace Orbiters.ReFit
                 return new ReFitGravityPreview { candidate = candidate, frames = new ReFitGravityFrame[0] };
 
             var body = MeshSnapshot.Capture(bodyRenderer, false, null, report);
-            var bodyBvh = SurfaceBvh.Build(body);
+            var bodyBvh = body.Index();
             var bodyVertexRegions = BuildBodyVertexRegions(body, targetAvatar);
             var bodyTriRegions = BuildBodyTriangleRegions(body, bodyVertexRegions);
             var frames = new List<ReFitGravityFrame>();

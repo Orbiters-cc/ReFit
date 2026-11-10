@@ -21,6 +21,8 @@ namespace Orbiters.ReFit.Editor.Tests
             var builder = new AssemblyBuilder(Path.Combine(output, "ReFitStandalone.dll"), sources)
             {
                 flags = AssemblyBuilderFlags.EditorAssembly,
+                // The registration's Burst kernels work on pinned arrays (the runtime assembly allows unsafe code).
+                compilerOptions = new ScriptCompilerOptions { AllowUnsafeCode = true },
                 additionalReferences = Directory.GetFiles(Path.GetDirectoryName(typeof(UnityEditor.EditorWindow).Assembly.Location), "*.dll")
             };
             builder.excludeReferences = builder.defaultReferences.Where(p =>

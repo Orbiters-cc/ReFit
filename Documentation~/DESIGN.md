@@ -58,8 +58,10 @@ in `MCBIntegrationService`, not repeated in commission UI code.
    target on average. Welded source vertices are then pulled to target skin turned their way, of a compatible region
    (along the normal when that is at most 1.5 times the nearest distance plus 5 mm), weighted by normal agreement and
    distance, while a graph-Laplacian keeps the move smooth. Ten passes go from stiff (proportions) to loose (shape), each
-   solved by Jacobi-preconditioned conjugate gradients per axis from the previous move; skin enclosed in another part
-   has no data term. Source points then map to the registered point pressed onto the nearest target skin along its
+   solved by Jacobi-preconditioned conjugate gradients per axis from the previous move, in two cycles each opened by a
+   coarse correction (the same energy over moves constant on the skin connected within each 3 cm cube, solved first: the diagonal
+   preconditioner barely moves what changes over the whole body, and the iteration cap used to leave it where it was);
+   skin enclosed in another part has no data term. Source points then map to the registered point pressed onto the nearest target skin along its
    normal. Neighbouring clothing points keep neighbouring counterparts, where independent nearest points jump into
    creases and onto fluff. On the Novabeast to Ultinova bodies the registered source lies on the target within 1 mm
    (95 %), on the Hypernova within 15 mm (its larger fluff has no source counterpart).
@@ -68,8 +70,9 @@ in `MCBIntegrationService`, not repeated in commission UI code.
    skin met along the source normal (`registrationDisagreementLimit`) and the laid source is more than 1 cm from the
    target skin under 10 % of that clothing. Laid that close, the registration is trusted over the normal, which meets
    fluff, feathers or another sheet of a body sculpted in layers (the Rexouium jacket on the Ultirex: 68 % disagreed with
-   the source laid within 1 mm). Bodies laid onto each other are kept (three, keyed by every input): refitting several
-   pieces between the same bodies lays them once.
+   the source laid within 1 mm). Bodies laid onto each other are kept (three in memory, twelve in the project's
+   `Library/ReFit`, keyed by every input and the algorithm's revision): refitting several pieces between the same bodies,
+   or again in a later session, lays them once.
 
 ## Deformation and Skinning
 
@@ -350,17 +353,41 @@ integrity checking.
 ## Performance Policy
 
 - Reuse source and target BVHs per operation. Build a shaped-body BVH once per clearance pass, reusing it
-  for repeated guards and final measurement.
+  for repeated guards and final measurement. A snapshot keeps its hierarchy (`MeshSnapshot.Index`, rebuilt only when its
+  vertex array or hidden triangles change), so every stage reading a body reads the same one.
+- Treat shape frames as sparse. A frame moving no body vertex (nor a vertex of a garment worn under it) within the reach of
+  any stage of the clothing's bounds (35 cm at least: bindings, the clearance guard, the drape, the cloth fit's motion
+  samples) leaves the clothing as fitted, with no delta at all: a viseme on trousers costs nothing. Before, such a frame
+  ran every pass, and the clearance, coverage and drape passes could add, once per shape, a correction of what the fit had
+  left. A body moved by a frame takes its hierarchies from the rest body's, refitted along the triangles the frame moves
+  (`MeshSnapshot.MovedFrom`, `SurfaceBvh.Clone`, `RefitTriangles`), as does the cloth fit's covered skin.
+- Keep what is derived from a body across refits (`ReFitBodyCache`): each run stages and captures its bodies anew, and
+  a captured body with the same positions, normals and triangles as one an earlier run read (the outfit's other pieces, a
+  refit run again) takes that run's enclosed skin, hierarchies and main surface. Three bodies are kept, six while a batch
+  runs (`ReFitService.BeginBatch`, `ExecuteBatchCoroutine`; Orbiters Toolkit's runner holds one around an outfit).
 - Compute final penetration diagnostics after all corrections, not repeatedly when intermediate results
-  are overwritten without influencing geometry.
+  are overwritten without influencing geometry, and only when asked (`captureProjectionDebug`): the clearance pass's
+  final measure is a second full sampling of the surface whose only output is a number in a log line.
+- Query in parallel, sum in order: the surface guard samples fixed ranges of triangles on all cores, then adds what they
+  ask range after range in triangle order, bit for bit what one thread did. The binder and the guard ask one traversal for
+  the filtered query and every fallback (`SurfaceBvh.ClosestPoints`: the nearest triangle of each acceptance class),
+  instead of up to four traversals with a delegate filter each.
 - Sort BVH subranges in place and use a bounded query-local stack, avoiding per-query allocations and
   shared mutable query state.
 - Share bindings, captured body data and staging across a multi-shape request. Keep verified arithmetic and
-  projection order; a bounds-only BVH-refit experiment was rejected after measurable output drift.
+  projection order. A bounds-only BVH refit drifted the output while ties broke by the tree's layout (below); since
+  ties break by triangle index, a refitted hierarchy answers exactly as a rebuilt one.
 - Emit phase timings and compare geometry against an independently recorded baseline. Native/GPU backends
-  are not included: redundant work was removable without platform binaries or numeric changes.
+  are not included: redundant work was removable without platform binaries or numeric changes. Burst (a compiler the
+  suite already has through Orbiters Toolkit, not a binary) compiles the registration solve's inner loops
+  (`ReFitRegistrationKernels`: the matrix product and the conjugate gradients' updates over fixed ranges of nodes),
+  called directly from the worker; in double precision, strict float mode and a fixed order, they give the same bits
+  compiled or not.
 - Filter BVH queries with structs over cached face normals (`FacingFilter`, `MeshSnapshot.FaceNormals`): no delegate,
-  closure or cross product per triangle tested. Build hierarchies with a median quickselect. Query a hierarchy of only
+  closure or cross product per triangle tested. Build hierarchies with a binned surface area heuristic (16 bins, the
+  median below 40 levels or where no bin boundary separates the triangles), triangles stored in leaf order with their
+  corners side by side, children's distances kept on the traversal stack, rays descending the nearer child first.
+  Query a hierarchy of only
   the triangles that may be found when few are left (`SurfaceBvh.Build(snapshot, include)`), not the whole surface with
   a filter rejecting the rest.
 - Skip work whose result cannot change: the coverage regularization re-tests a limit only when one of its groups moved
@@ -368,8 +395,12 @@ integrity checking.
   wall once; inpainting skips parts with no known change.
 - Record where the time goes inside the slow phases (`registration-timing`, `deformation-timing`, the cloth drape's
   passes, the coverage's build, passes and regularization) and measure before optimizing.
-- Distance ties (a point equally close to two triangles) break by the hierarchy's layout: a new layout moves results
-  computed through many iterations, and metrics signed by the nearest face, by a few samples in either direction.
+- Distance ties (a point equally close to two triangles, a ray through a shared edge) break by the lower triangle index,
+  and bounds are widened by a rounding slack so no node holding a possible answer is pruned: a query's answer depends
+  on the triangles only, never on how the hierarchy was built, refitted, traversed or seeded (`SurfaceBvh`'s remarks).
+  Until revision 17 they broke by the layout, and each new layout moved metrics signed by the nearest face by a few
+  samples. Summation orders are fixed too: neighbour lists are sorted by index, the registration's solver sums over at
+  most 64 ranges whatever the core count, and the cloth fit's motion samples keep the heaviest, equal weights by index.
 
 ## Verification and Limits
 

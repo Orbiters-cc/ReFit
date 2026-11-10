@@ -13,7 +13,7 @@ namespace Orbiters.ReFit.Editor
     /// ReFit as the refit engine of the other Orbiters tools (MCB, My Avatar), registered with Orbiters Toolkit when the
     /// editor loads: they ask Toolkit for a refit and never reference this package.
     /// </summary>
-    internal sealed class ReFitToolkitEngine : IRefitEngine, IRefitInputs
+    internal sealed class ReFitToolkitEngine : IRefitEngine, IRefitInputs, IRefitBatching
     {
         // The last result of each renderer, so the commission window can show it.
         private static readonly Dictionary<int, (ReFitRequest request, ReFitResult result)> Last = new Dictionary<int, (ReFitRequest, ReFitResult)>();
@@ -110,6 +110,9 @@ namespace Orbiters.ReFit.Editor
         public string Inputs(RefitJob job) =>
             job?.Renderer == null ? "" : ReFitOutfitToggles.Describe(ReFitOutfitToggles.WornBodyShapes(job.Renderer, job.Body,
                 job.Avatar != null ? job.Avatar.transform : null));
+
+        /// <summary>The bodies the batch's refits share are derived once (<see cref="ReFitService.BeginBatch"/>).</summary>
+        public IDisposable BeginBatch() => ReFitService.BeginBatch();
 
         public string SaveMetadata(SkinnedMeshRenderer renderer)
         {

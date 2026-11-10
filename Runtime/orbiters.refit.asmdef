@@ -2,11 +2,12 @@
   "name": "orbiters.refit",
   "rootNamespace": "Orbiters.ReFit",
   "references": [
-    "Orbiters.Toolkit"
+    "Orbiters.Toolkit",
+    "Unity.Burst"
   ],
   "includePlatforms": [],
   "excludePlatforms": [],
-  "allowUnsafeCode": false,
+  "allowUnsafeCode": true,
   "autoReferenced": true,
   "overrideReferences": false,
   "precompiledReferences": [],

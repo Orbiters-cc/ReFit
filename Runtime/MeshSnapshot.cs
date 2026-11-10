@@ -73,13 +73,53 @@ namespace Orbiters.ReFit
         /// </summary>
         public bool[] hiddenTriangles;
 
+        // The body content's shared derived data (ReFitBodyCache.Attach), or null.
+        internal ReFitBodyCache.Entry shared;
+        // A surface moved from another one (a shape frame on the body, see MovedFrom): that one and the triangles that moved.
+        private MeshSnapshot movedFrom;
+        private int[] movedTriangles;
+        private SurfaceBvh index;
+        private Vector3[] indexVertices;
+        private bool[] indexHidden;
+        private readonly object indexLock = new object();
+
+        /// <summary>
+        /// The hierarchy of this surface, its <see cref="hiddenTriangles"/> left out, built once and kept while the vertex array
+        /// and the hidden triangles stay the ones it was built on (shared with equal bodies once attached to the body cache).
+        /// Stages reading the same body read the same hierarchy. Thread safe. Code moving the vertices in place builds its own.
+        /// </summary>
+        public SurfaceBvh Index()
+        {
+            lock (indexLock)
+            {
+                if (index != null && ReferenceEquals(indexVertices, worldVertices) && ReferenceEquals(indexHidden, hiddenTriangles)) return index;
+                if (MovesFrom()) index = Moved(movedFrom.Index());
+                else index = shared != null ? shared.Index(this) : SurfaceBvh.Build(this);
+                indexVertices = worldVertices;
+                indexHidden = hiddenTriangles;
+                return index;
+            }
+        }
+
         /// <summary>
         /// Captures a snapshot of <paramref name="smr"/> in its current pose.
         /// Blendshape weights default to the renderer's current weights; <paramref name="shapeWeightOverrides01"/>
         /// (shape index -> weight in 0..1) overrides individual shapes (e.g. force the transferred shape to 0 or 1).
         /// </summary>
         public static MeshSnapshot Capture(SkinnedMeshRenderer smr, bool buildTopology,
-            IDictionary<int, float> shapeWeightOverrides01, ReFitReport report)
+            IDictionary<int, float> shapeWeightOverrides01, ReFitReport report) =>
+            Capture(smr, buildTopology, shapeWeightOverrides01, report, false);
+
+        /// <summary>
+        /// The skinned world positions of <paramref name="smr"/> in its current pose (see <see cref="Capture(SkinnedMeshRenderer,bool,IDictionary{int,float},ReFitReport)"/>),
+        /// bit for bit those a full capture gives, without its normals, tangents, triangles and face normals: for a renderer
+        /// whose bounds or sampled points are all that is read.
+        /// </summary>
+        internal static Vector3[] SkinnedPositions(SkinnedMeshRenderer smr, IDictionary<int, float> shapeWeightOverrides01) =>
+            Capture(smr, false, shapeWeightOverrides01, null, true).worldVertices;
+
+        private static MeshSnapshot Capture(SkinnedMeshRenderer smr, bool buildTopology,
+            IDictionary<int, float> shapeWeightOverrides01, ReFitReport report, bool positionsOnly)
         {
             var snap = new MeshSnapshot
             {
@@ -93,7 +133,7 @@ namespace Orbiters.ReFit
 
             // --- local positions with blendshapes applied -------------------------------------
             snap.localVertices = mesh.vertices;
-            var baseNormals = mesh.normals;
+            var baseNormals = positionsOnly ? null : mesh.normals;
             bool authoredNormals = baseNormals != null && baseNormals.Length == vertexCount;
             // The normals the shown shapes give (their normal deltas added, as Unity skins them); the authored ones
             // stay in baseNormals, the rest pose transferred shapes are measured against.
@@ -136,17 +176,17 @@ namespace Orbiters.ReFit
 
             snap.skinMatrices = new Matrix4x4[vertexCount];
             snap.worldVertices = new Vector3[vertexCount];
-            snap.worldNormals = new Vector3[vertexCount];
+            snap.worldNormals = positionsOnly ? null : new Vector3[vertexCount];
             var rigidMatrix = snap.rendererLocalToWorld;
             var localVerts = snap.localVertices;
             var weights = snap.boneWeights;
 
             // Without authored normals both come from the shown positions.
-            if (!authoredNormals)
+            if (!authoredNormals && !positionsOnly)
                 baseNormals = ComputeVertexNormals(localVerts, GetAllTriangles(mesh));
             snap.baseNormals = baseNormals;
             var skinnedNormals = shownNormals ?? baseNormals;
-            var tangents = mesh.tangents;
+            var tangents = positionsOnly ? null : mesh.tangents;
             snap.baseTangents = tangents != null && tangents.Length == vertexCount ? tangents : null;
 
             Parallel.For(0, vertexCount, i =>
@@ -170,11 +210,13 @@ namespace Orbiters.ReFit
                 }
                 snap.skinMatrices[i] = m;
                 snap.worldVertices[i] = m.MultiplyPoint3x4(localVerts[i]);
+                if (positionsOnly) return;
                 var nm = m.inverse.transpose;
                 var n = nm.MultiplyVector(skinnedNormals[i]);
                 snap.worldNormals[i] = n.sqrMagnitude > 1e-12f ? n.normalized : Vector3.up;
             });
 
+            if (positionsOnly) return snap;
             snap.triangles = GetAllTriangles(mesh);
             snap.CacheFaceNormals();
 
@@ -369,7 +411,12 @@ namespace Orbiters.ReFit
                 if (ga != gc) { adjacency[ga].Add(gc); adjacency[gc].Add(ga); }
             }
             groupAdjacency = new List<int>[adjacency.Length];
-            for (int g = 0; g < adjacency.Length; g++) groupAdjacency[g] = new List<int>(adjacency[g]);
+            // Sorted: every smoothing pass sums neighbours in this order, which must not be a hash set's.
+            for (int g = 0; g < adjacency.Length; g++)
+            {
+                groupAdjacency[g] = new List<int>(adjacency[g]);
+                groupAdjacency[g].Sort();
+            }
         }
 
         // ------------------------------------------------------------------
@@ -382,6 +429,54 @@ namespace Orbiters.ReFit
         private const float EnclosedReach = .3f;
 
         /// <summary>
+        /// The hierarchy of the whole surface, <see cref="hiddenTriangles"/> included: the way out of a part of the body crosses
+        /// enclosed skin too. Shared like <see cref="Index"/> once attached to the body cache.
+        /// </summary>
+        public SurfaceBvh WholeIndex()
+        {
+            if (hiddenTriangles == null) return Index();
+            if (MovesFrom()) return Moved(movedFrom.WholeIndex());
+            if (shared != null) return shared.Index(this, null);
+            return SurfaceBvh.Build(worldVertices, triangles);
+        }
+
+        /// <summary>
+        /// The surface of <paramref name="rest"/> moved to <paramref name="vertices"/> (rest positions plus
+        /// <paramref name="deltas"/>, a shape frame): the same triangles and hidden triangles, its hierarchy the rest's refitted
+        /// along the triangles that moved, which answers exactly as one built anew. Normals are the caller's to set.
+        /// </summary>
+        internal static MeshSnapshot MovedFrom(MeshSnapshot rest, Vector3[] vertices, Vector3[] deltas) => new MeshSnapshot
+        {
+            worldVertices = vertices,
+            triangles = rest.triangles,
+            hiddenTriangles = rest.hiddenTriangles,
+            movedFrom = rest,
+            movedTriangles = MovedTriangles(rest.triangles, deltas),
+        };
+
+        /// <summary>The triangles with a corner whose delta is not exactly zero.</summary>
+        internal static int[] MovedTriangles(int[] triangles, Vector3[] deltas)
+        {
+            var moved = new List<int>();
+            for (int t = 0; t + 2 < triangles.Length; t += 3)
+                if (Moves(deltas[triangles[t]]) || Moves(deltas[triangles[t + 1]]) || Moves(deltas[triangles[t + 2]])) moved.Add(t / 3);
+            return moved.ToArray();
+        }
+
+        private static bool Moves(Vector3 delta) => delta.x != 0f || delta.y != 0f || delta.z != 0f;
+
+        // Still the rest's triangles and hidden triangles (nothing replaced them since MovedFrom).
+        private bool MovesFrom() => movedFrom != null && ReferenceEquals(triangles, movedFrom.triangles) &&
+                                    ReferenceEquals(hiddenTriangles, movedFrom.hiddenTriangles);
+
+        private SurfaceBvh Moved(SurfaceBvh rest)
+        {
+            var copy = rest.Clone();
+            copy.RefitTriangles(worldVertices, triangles, movedTriangles);
+            return copy;
+        }
+
+        /// <summary>
         /// Marks <see cref="hiddenTriangles"/>: skin inside another closed part of the same body, such as the flat chest left
         /// under added breasts or a thigh pressed into the other. Out of such a triangle the first surface met, at least
         /// <see cref="EnclosedDepth"/> away, faces the same way: the way out of the part enclosing it. That part must be
@@ -392,7 +487,15 @@ namespace Orbiters.ReFit
         public int HideEnclosedSkin()
         {
             hiddenTriangles = null;
-            var index = SurfaceBvh.Build(this);
+            var known = shared;
+            if (known != null)
+                lock (known)
+                    if (known.enclosedKnown)
+                    {
+                        hiddenTriangles = known.enclosed;
+                        return Count(hiddenTriangles);
+                    }
+            var index = Index();
             int count = triangles.Length / 3;
             var hidden = new bool[count];
             Parallel.For(0, count, t =>
@@ -402,14 +505,26 @@ namespace Orbiters.ReFit
                 var normal = Unit(Vector3.Cross(worldVertices[triangles[i + 1]] - a, worldVertices[triangles[i + 2]] - a));
                 if (normal == Vector3.zero) return;
                 var center = (a + worldVertices[triangles[i + 1]] + worldVertices[triangles[i + 2]]) / 3f;
-                var hit = index.Raycast(center + normal * .0005f, normal, EnclosedReach, other => other != t);
+                var hit = index.Raycast(center + normal * .0005f, normal, EnclosedReach, new AllBut(t));
                 if (!hit.found || hit.distance < EnclosedDepth || Vector3.Dot(FaceNormal(hit.triangle), normal) <= 0) return;
                 hidden[t] = Inside(index, center + normal * (hit.distance * .5f), normal);
             });
-            int hiddenCount = 0;
-            foreach (bool h in hidden) if (h) hiddenCount++;
+            int hiddenCount = Count(hidden);
             hiddenTriangles = hiddenCount > 0 ? hidden : null;
+            if (known != null)
+                lock (known)
+                {
+                    known.enclosed = hiddenTriangles;
+                    known.enclosedKnown = true;
+                }
             return hiddenCount;
+        }
+
+        private static int Count(bool[] flags)
+        {
+            int count = 0;
+            if (flags != null) foreach (bool flag in flags) if (flag) count++;
+            return count;
         }
 
         // Inside a closed part at point: along the skin (across normal), each way leaves through a surface facing that way.
@@ -417,12 +532,13 @@ namespace Orbiters.ReFit
         {
             var side = Unit(Vector3.Cross(normal, Mathf.Abs(normal.y) < .9f ? Vector3.up : Vector3.right));
             var other = Vector3.Cross(normal, side);
-            foreach (var direction in new[] { side, -side, other, -other })
-            {
-                var exit = index.Raycast(point, direction, EnclosedReach);
-                if (!exit.found || Vector3.Dot(FaceNormal(exit.triangle), direction) <= 0) return false;
-            }
-            return true;
+            return Exits(index, point, side) && Exits(index, point, -side) && Exits(index, point, other) && Exits(index, point, -other);
+        }
+
+        private bool Exits(SurfaceBvh index, Vector3 point, Vector3 direction)
+        {
+            var exit = index.Raycast(point, direction, EnclosedReach);
+            return exit.found && Vector3.Dot(FaceNormal(exit.triangle), direction) > 0;
         }
 
         /// <summary>Vertices of hidden triangles only (see <see cref="hiddenTriangles"/>), or null when none is hidden.</summary>
@@ -440,9 +556,16 @@ namespace Orbiters.ReFit
 
         /// <summary>
         /// The vertices of the largest connected part (vertices at the same place joined): a body's main surface, not its fluff
-        /// cards, horns or hair.
+        /// cards, horns or hair. Read only: a body in the body cache shares it.
         /// </summary>
         public bool[] MainSurface()
+        {
+            var known = shared;
+            if (known == null) return ComputeMainSurface();
+            lock (known) return known.main ??= ComputeMainSurface();
+        }
+
+        private bool[] ComputeMainSurface()
         {
             int count = worldVertices.Length;
             var root = new int[count];

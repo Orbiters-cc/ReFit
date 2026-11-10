@@ -7,13 +7,14 @@
     "Orbiters.Toolkit",
     "Orbiters.Toolkit.VRChat",
     "Orbiters.Toolkit.Editor.VRChat",
-    "Orbiters.Toolkit.Editor"
+    "Orbiters.Toolkit.Editor",
+    "Unity.Burst"
   ],
   "includePlatforms": [
     "Editor"
   ],
   "excludePlatforms": [],
-  "allowUnsafeCode": false,
+  "allowUnsafeCode": true,
   "overrideReferences": false,
   "precompiledReferences": [],
   "autoReferenced": false,

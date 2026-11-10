@@ -1163,11 +1163,58 @@ namespace Orbiters.ReFit
 
         private void ComputeGeometry(State state)
         {
+            // The stages and what each hands the next: the bodies' hierarchies, the correspondence (bindings, the registration,
+            // falloff), the primary fit (by one of three paths), the shape frames, the skin weights.
+            IndexBodies(state);
+            var correspondence = Correspond(state);
+            var fit = FitPrimary(state, correspondence);
+            if (state.shapes.Count > 0) TransferShapes(state, correspondence, fit);
+            if (state.replace) TransferSkinWeights(state, correspondence);
+            if (state.settings.captureProjectionDebug)
+                state.comp.projectionDebug = BuildProjectionDebugData(state, correspondence.bindings, fit.transferBindings, correspondence.falloff);
+            SetBackgroundProgress(state, 1f, "Finishing");
+        }
+
+        /// <summary>What ties the clothing to the bodies (<see cref="Correspond"/>).</summary>
+        private sealed class Correspondence
+        {
+            /// <summary>The surface the clothing is bound to first (the source body for a mesh refit, else the target) and its hierarchy.</summary>
+            public MeshSnapshot firstSnap;
+            public SurfaceBvh firstBvh;
+            /// <summary>Each welded group's point on the first surface, and its counterpart on the target.</summary>
+            public SurfaceBinding[] bindings, targetBindings;
+            /// <summary>How the followed shapes the target shows move it, and the target without them it is laid onto (or the target).</summary>
+            public Vector3[] shownMotion;
+            public MeshSnapshot laidOnto;
+            public SurfaceBvh laidIndex;
+            /// <summary>The source laid onto <see cref="laidOnto"/>, before the shown shapes carry it (or null).</summary>
+            public ReFitBodyRegistration laid;
+            /// <summary>Per group, how much of the motion it takes (its distance to the first surface).</summary>
+            public float[] falloff;
+            public ReFitClearanceCorrection.Profile clearanceProfile;
+            /// <summary>The target bindings saved with an earlier fit of this clothing (shapes added to it), or null.</summary>
+            public SurfaceBinding[] metadataTransferBindings;
+        }
+
+        /// <summary>The primary fit and what the shape frames need of it (<see cref="FitPrimary"/>).</summary>
+        private sealed class FitResult
+        {
+            /// <summary>Per welded group, the world motion of the fit (null: shapes only, no fit).</summary>
+            public Vector3[] primaryGroupDeltas;
+            /// <summary>Each group's point on the target as fitted, for the frames' body motion.</summary>
+            public SurfaceBinding[] transferBindings;
+            /// <summary>The coverage of the body (different-base passes) and of each garment worn under it.</summary>
+            public ReFitSurfaceCoverage coverage;
+            public List<ReFitSurfaceCoverage> layerCoverage;
+        }
+
+        // The garment's own data, the enclosed skin of the target and every body's hierarchy (state.targetBvh).
+        private static void IndexBodies(State state)
+        {
             var settings = state.settings;
             var asset = state.asset;
             var targetBasis = state.targetBasis;
             int groupCount = asset.GroupCount;
-            int vertexCount = asset.localVertices.Length;
             state.tubes = ReFitTubeField.Build(asset, settings.preserveClosedTubes);
             state.openBoundaryWeights =
                 CloneMetadataWeights(state.targetSpaceMetadata?.openBoundaryWeights, groupCount) ??
@@ -1187,10 +1234,19 @@ namespace Orbiters.ReFit
             if (hidesEnclosed && state.targetBare != null) state.targetBare.HideEnclosedSkin();
             if (enclosed > 0)
                 state.Report.Info("enclosed-skin", $"Target body: {enclosed} triangles of skin enclosed in another part of the body are ignored.");
-            var bvhTarget = targetBasis.Index();
-            state.targetBvh = bvhTarget;
-            var bvhSource = state.wantMesh && state.sourceBody != targetBasis ? state.sourceBody.Index() : bvhTarget;
+            state.targetBvh = targetBasis.Index();
+        }
 
+        // Binds the clothing to the first surface, carries the bindings onto the target (through the registration of two
+        // bodies), and derives the falloff and the clearance profile.
+        private static Correspondence Correspond(State state)
+        {
+            var settings = state.settings;
+            var asset = state.asset;
+            var targetBasis = state.targetBasis;
+            var bvhTarget = state.targetBvh;
+            var bvhSource = state.wantMesh && state.sourceBody != targetBasis ? state.sourceBody.Index() : bvhTarget;
+            int groupCount = asset.GroupCount;
             // Bindings to the first surface (source body for mesh refit, target body otherwise)
             SetBackgroundProgress(state, 0.15f, "Binding the asset to the body");
             var firstSnap = state.wantMesh ? state.sourceBody : targetBasis;
@@ -1343,140 +1399,224 @@ namespace Orbiters.ReFit
                         clearanceProfile.eligibleGroups--;
                     }
 
-            // ---- Mesh deformation field --------------------------------------------------
+            return new Correspondence
+            {
+                firstSnap = firstSnap,
+                firstBvh = firstBvh,
+                bindings = bindings,
+                targetBindings = targetBindings,
+                shownMotion = shownMotion,
+                laidOnto = laidOnto,
+                laidIndex = laidIndex,
+                laid = laid,
+                falloff = falloff,
+                clearanceProfile = clearanceProfile,
+                metadataTransferBindings = metadataTransferBindings,
+            };
+        }
+
+        // The primary fit, by the cloth fit (two bodies laid onto each other), the different-base passes (bodies that cannot
+        // be), or none (shapes added to clothing on the target); then what the frames need.
+        private static FitResult FitPrimary(State state, Correspondence c)
+        {
+            var settings = state.settings;
+            Vector3[] clothFitted = state.wantMesh && state.registration != null && settings.clothFit ? TryClothFit(state, c) : null;
+            var fit = state.clothFit != null ? FitAsCloth(state, c, clothFitted)
+                : state.wantMesh ? FitAcrossBases(state, c)
+                : FitShapesOnly(state, c);
+            FinishFit(state, c, fit);
+            return fit;
+        }
+
+        // The cloth fit's motion of each group, or null (and the different-base passes take over) where it cannot fit.
+        private static Vector3[] TryClothFit(State state, Correspondence c)
+        {
+            var settings = state.settings;
+            var asset = state.asset;
+            var targetBasis = state.targetBasis;
+            var bvhTarget = state.targetBvh;
+            int groupCount = asset.GroupCount;
+            var bindings = c.bindings;
+            var targetBindings = c.targetBindings;
+            var firstSnap = c.firstSnap;
+            var falloff = c.falloff;
+            Vector3[] primaryGroupDeltas;
+            SetBackgroundProgress(state, 0.4f, "Draping the clothing over the body");
+            state.clothFit = new ReFitClothFit(asset, bindings, firstSnap, state.assetGroupRegions, state.cancellationToken);
+            primaryGroupDeltas = state.clothFit.Fit(firstSnap, state.sourceTriRegionMasks, state.registration, targetBasis, bvhTarget,
+                state.targetTriRegions, falloff, state.Report, t => state.backgroundProgress = 0.4f + 0.08f * t);
+            if (primaryGroupDeltas == null)
+            {
+                // Bodies the registration could not lay onto each other: the different-base passes, from the skin met
+                // along the normal.
+                state.clothFit = null;
+                state.registration = null;
+                if (state.chainedAlongNormal != null) Array.Copy(state.chainedAlongNormal, targetBindings, groupCount);
+            }
+            return primaryGroupDeltas;
+        }
+
+        // The cloth fit's motion, covered across bases when asked, then what the frames drape from.
+        private static FitResult FitAsCloth(State state, Correspondence c, Vector3[] primaryGroupDeltas)
+        {
+            var settings = state.settings;
+            var asset = state.asset;
+            var targetBasis = state.targetBasis;
+            var bvhTarget = state.targetBvh;
+            var bindings = c.bindings;
+            var targetBindings = c.targetBindings;
+            var firstSnap = c.firstSnap;
+            var firstBvh = c.firstBvh;
+            var transferBindings = targetBindings;
+            if (settings.coverDifferentBaseBody && settings.enableClearanceCorrection)
+            {
+                // Coverage asked for clothing made for the source keeps the cloth fit: what came through it as made (a
+                // strap pressing in, fluff through a collar) was meant to. Clothing made for another body and resized onto
+                // this one lies under much of the source skin as authored: nothing there was meant, and the cloth fit
+                // would keep all of it. The different-base passes cover the target after the cloth fit, as they cover
+                // clothing placed on the target itself.
+                var steps = new StepTimer();
+                // Resized from another body, a garment can lie under little of the source (only the calves through a pair of
+                // trousers), as little as clothing made for the source with a strap pressing in: the caller's word decides.
+                float under = AuthoredUnder(asset, bindings, firstSnap);
+                state.madeForAnother = settings.madeForAnotherBody || under > MadeForAnotherShare;
+                if (state.madeForAnother)
+                {
+                    state.Report.Info("cloth-fit-covered", (settings.madeForAnotherBody ? "Made for another body and resized onto this one: " : "") +
+                                                           $"{under * 100f:0} % of the clothing near the skin lay more than {MadeForAnotherDepth * 1000f:0} mm " +
+                                                           "under the body it is fitted from" + (settings.madeForAnotherBody ? "; " : ": made for another body, ") +
+                                                           "it is pushed out of the target after the fit.");
+                    CoverBody(state, firstSnap, firstBvh, bvhTarget, primaryGroupDeltas, steps);
+                }
+                else
+                    state.Report.Info("cloth-fit-covered", $"{under * 100f:0.0} % of the clothing near the skin lay more than {MadeForAnotherDepth * 1000f:0} mm " +
+                                                           "under the body it is fitted from: made for it, the cloth fit keeps it as made.");
+                CoverLayers(state, primaryGroupDeltas);
+                steps.Lap("layers");
+                state.Report.Info("deformation-timing", "Covering the target: " + steps);
+            }
+            state.primaryRawLocalDeltas = ToLocalDeltas(state, Declip(state, primaryGroupDeltas, bindings, firstSnap, firstBvh, bvhTarget), true);
+            state.primaryLocalDeltas = state.primaryRawLocalDeltas;
+            if (settings.recalculateNormalDeltas)
+                (state.primaryNormalDeltas, state.primaryTangentDeltas) = SurfaceDeltas(asset, state.primaryLocalDeltas, null);
+            transferBindings = BindRefittedAssetToTarget(state, bvhTarget, primaryGroupDeltas, targetBindings);
+            if (state.shapes.Count > 0)
+            {
+                SetBackgroundProgress(state, 0.48f, "Preparing the body shapes");
+                state.clothFit.PrepareShapes(primaryGroupDeltas, targetBasis, state.targetTriCrossMasks);
+            }
+            return new FitResult { primaryGroupDeltas = primaryGroupDeltas, transferBindings = transferBindings };
+        }
+
+        // The different-base passes: the bound displacement, smoothed, then clearance, tubes, coverage and drape.
+        private static FitResult FitAcrossBases(State state, Correspondence c)
+        {
+            var settings = state.settings;
+            var asset = state.asset;
+            var targetBasis = state.targetBasis;
+            var bvhTarget = state.targetBvh;
+            int groupCount = asset.GroupCount;
+            var bindings = c.bindings;
+            var targetBindings = c.targetBindings;
+            var firstSnap = c.firstSnap;
+            var firstBvh = c.firstBvh;
+            var falloff = c.falloff;
+            var clearanceProfile = c.clearanceProfile;
+            var shownMotion = c.shownMotion;
+            var laidOnto = c.laidOnto;
+            var laidIndex = c.laidIndex;
+            Vector3[] primaryGroupDeltas;
+            var transferBindings = targetBindings;
+            if (shownMotion != null)
+            {
+                // The passes made for bodies that cannot be laid onto each other fit at zero, as before: their clearance and
+                // coverage only push the fabric out, so a shape taken away left the clothing as far out as it had pushed it
+                // (the FBX fixture's sculpt: 28 mm from its authored result). The shapes are transferred adding them.
+                targetBasis = state.targetBasis = laidOnto;
+                bvhTarget = state.targetBvh = laidIndex;
+                targetBindings = state.chainedTargetBindings = Chained(state, bindings, firstSnap, targetBasis, bvhTarget);
+                ShownAtZero(state);
+                shownMotion = null;
+                state.Report.Info("followed-shapes-zero", "Fitted by the different-base passes: the shapes it follows are fitted at zero and added by its own shapes.");
+            }
+            SetBackgroundProgress(state, 0.4f, "Computing the deformation");
+            primaryGroupDeltas = new Vector3[groupCount];
+            Parallel.For(0, groupCount, g =>
+            {
+                if (!bindings[g].valid || !targetBindings[g].valid) { primaryGroupDeltas[g] = Vector3.zero; return; }
+                var cpA = bindings[g].point;
+                var cpB = targetBindings[g].point;
+                Vector3 d;
+                if (settings.offsetMode == OffsetMode.RotateWithNormal)
+                {
+                    var p = asset.worldVertices[asset.groupRep[g]];
+                    var nA = firstSnap.FaceNormal(bindings[g].triangle);
+                    var nB = targetBasis.FaceNormal(targetBindings[g].triangle);
+                    var turn = state.registration != null ? state.registration.Turn(bindings[g].triangle) : Quaternion.FromToRotation(nA, nB);
+                    d = cpB + turn * (p - cpA) - p;
+                }
+                else
+                {
+                    d = cpB - cpA;
+                }
+                primaryGroupDeltas[g] = d * falloff[g];
+            });
+            DeltaField.Smooth(primaryGroupDeltas, asset.groupAdjacency,
+                settings.primarySmoothingIterations, settings.primarySmoothingStrength);
+            ApplyUpperBodyHemDamping(primaryGroupDeltas, state.upperBodyHemWeights, settings);
+            state.primaryRawLocalDeltas = ToLocalDeltas(state, primaryGroupDeltas, true);
+
+            var steps = new StepTimer();
+            var clearanceStats = ReFitClearanceCorrection.Apply(
+                asset,
+                targetBasis,
+                targetBindings,
+                clearanceProfile,
+                null,
+                primaryGroupDeltas,
+                null,
+                falloff,
+                settings,
+                BuildClearanceContext(state, targetBasis, targetBindings, false));
+            steps.Lap("clearance");
+            AddClearanceStats(state, clearanceStats, "primary refit");
+            state.tubes.Apply(asset, targetBasis, bvhTarget, null, null, primaryGroupDeltas, settings, state.Report, "primary refit");
+            steps.Lap("tubes");
+
+            if (settings.coverDifferentBaseBody && settings.madeForAnotherBody && !state.madeForAnother)
+            {
+                // The cloth fit (which decides it otherwise) did not run or fell back: the caller's word decides, so its
+                // pieces follow the fabric the coverage moves and its sleeves and legs cover the limbs that came through.
+                state.madeForAnother = true;
+                state.Report.Info("made-for-another-covered", "Made for another body and resized onto this one: fitted by the different-base passes, " +
+                                                       "its pieces carried with the fabric and its limbs covered.");
+            }
+            CoverBody(state, firstSnap, firstBvh, bvhTarget, primaryGroupDeltas, steps);
+            state.Report.Info("deformation-timing", "The fit: " + steps);
+            CoverLayers(state, primaryGroupDeltas);
+            state.primaryLocalDeltas = ToLocalDeltas(state, Declip(state, primaryGroupDeltas, bindings, firstSnap, firstBvh, bvhTarget), true);
+            if (settings.recalculateNormalDeltas)
+                (state.primaryNormalDeltas, state.primaryTangentDeltas) = SurfaceDeltas(asset, state.primaryLocalDeltas, null);
+
+            transferBindings = BindRefittedAssetToTarget(state, bvhTarget, primaryGroupDeltas, targetBindings);
+            // Fitted at zero on the target without the shown shapes: the correspondence is the one onto it.
+            c.targetBindings = targetBindings;
+            c.shownMotion = shownMotion;
+            return new FitResult { primaryGroupDeltas = primaryGroupDeltas, transferBindings = transferBindings };
+        }
+
+        // Shapes added to clothing already on the target: the earlier fit (as saved) is the primary motion, if any.
+        private static FitResult FitShapesOnly(State state, Correspondence c)
+        {
+            var settings = state.settings;
+            var asset = state.asset;
+            var targetBasis = state.targetBasis;
+            var bvhTarget = state.targetBvh;
+            var targetBindings = c.targetBindings;
+            var metadataTransferBindings = c.metadataTransferBindings;
             Vector3[] primaryGroupDeltas = null;
             var transferBindings = targetBindings;
-            if (state.wantMesh && state.registration != null && settings.clothFit)
-            {
-                SetBackgroundProgress(state, 0.4f, "Draping the clothing over the body");
-                state.clothFit = new ReFitClothFit(asset, bindings, firstSnap, state.assetGroupRegions, state.cancellationToken);
-                primaryGroupDeltas = state.clothFit.Fit(firstSnap, state.sourceTriRegionMasks, state.registration, targetBasis, bvhTarget,
-                    state.targetTriRegions, falloff, state.Report, t => state.backgroundProgress = 0.4f + 0.08f * t);
-                if (primaryGroupDeltas == null)
-                {
-                    // Bodies the registration could not lay onto each other: the different-base passes, from the skin met
-                    // along the normal.
-                    state.clothFit = null;
-                    state.registration = null;
-                    if (state.chainedAlongNormal != null) Array.Copy(state.chainedAlongNormal, targetBindings, groupCount);
-                }
-            }
-            if (state.clothFit != null)
-            {
-                if (settings.coverDifferentBaseBody && settings.enableClearanceCorrection)
-                {
-                    // Coverage asked for clothing made for the source keeps the cloth fit: what came through it as made (a
-                    // strap pressing in, fluff through a collar) was meant to. Clothing made for another body and resized onto
-                    // this one lies under much of the source skin as authored: nothing there was meant, and the cloth fit
-                    // would keep all of it. The different-base passes cover the target after the cloth fit, as they cover
-                    // clothing placed on the target itself.
-                    var steps = new StepTimer();
-                    // Resized from another body, a garment can lie under little of the source (only the calves through a pair of
-                    // trousers), as little as clothing made for the source with a strap pressing in: the caller's word decides.
-                    float under = AuthoredUnder(asset, bindings, firstSnap);
-                    state.madeForAnother = settings.madeForAnotherBody || under > MadeForAnotherShare;
-                    if (state.madeForAnother)
-                    {
-                        state.Report.Info("cloth-fit-covered", (settings.madeForAnotherBody ? "Made for another body and resized onto this one: " : "") +
-                                                               $"{under * 100f:0} % of the clothing near the skin lay more than {MadeForAnotherDepth * 1000f:0} mm " +
-                                                               "under the body it is fitted from" + (settings.madeForAnotherBody ? "; " : ": made for another body, ") +
-                                                               "it is pushed out of the target after the fit.");
-                        CoverBody(state, firstSnap, firstBvh, bvhTarget, primaryGroupDeltas, steps);
-                    }
-                    else
-                        state.Report.Info("cloth-fit-covered", $"{under * 100f:0.0} % of the clothing near the skin lay more than {MadeForAnotherDepth * 1000f:0} mm " +
-                                                               "under the body it is fitted from: made for it, the cloth fit keeps it as made.");
-                    CoverLayers(state, primaryGroupDeltas);
-                    steps.Lap("layers");
-                    state.Report.Info("deformation-timing", "Covering the target: " + steps);
-                }
-                state.primaryRawLocalDeltas = ToLocalDeltas(state, Declip(state, primaryGroupDeltas, bindings, firstSnap, firstBvh, bvhTarget), true);
-                state.primaryLocalDeltas = state.primaryRawLocalDeltas;
-                if (settings.recalculateNormalDeltas)
-                    (state.primaryNormalDeltas, state.primaryTangentDeltas) = SurfaceDeltas(asset, state.primaryLocalDeltas, null);
-                transferBindings = BindRefittedAssetToTarget(state, bvhTarget, primaryGroupDeltas, targetBindings);
-                if (state.shapes.Count > 0)
-                {
-                    SetBackgroundProgress(state, 0.48f, "Preparing the body shapes");
-                    state.clothFit.PrepareShapes(primaryGroupDeltas, targetBasis, state.targetTriCrossMasks);
-                }
-            }
-            else if (state.wantMesh)
-            {
-                if (shownMotion != null)
-                {
-                    // The passes made for bodies that cannot be laid onto each other fit at zero, as before: their clearance and
-                    // coverage only push the fabric out, so a shape taken away left the clothing as far out as it had pushed it
-                    // (the FBX fixture's sculpt: 28 mm from its authored result). The shapes are transferred adding them.
-                    targetBasis = state.targetBasis = laidOnto;
-                    bvhTarget = state.targetBvh = laidIndex;
-                    targetBindings = state.chainedTargetBindings = Chained(state, bindings, firstSnap, targetBasis, bvhTarget);
-                    ShownAtZero(state);
-                    shownMotion = null;
-                    state.Report.Info("followed-shapes-zero", "Fitted by the different-base passes: the shapes it follows are fitted at zero and added by its own shapes.");
-                }
-                SetBackgroundProgress(state, 0.4f, "Computing the deformation");
-                primaryGroupDeltas = new Vector3[groupCount];
-                Parallel.For(0, groupCount, g =>
-                {
-                    if (!bindings[g].valid || !targetBindings[g].valid) { primaryGroupDeltas[g] = Vector3.zero; return; }
-                    var cpA = bindings[g].point;
-                    var cpB = targetBindings[g].point;
-                    Vector3 d;
-                    if (settings.offsetMode == OffsetMode.RotateWithNormal)
-                    {
-                        var p = asset.worldVertices[asset.groupRep[g]];
-                        var nA = firstSnap.FaceNormal(bindings[g].triangle);
-                        var nB = targetBasis.FaceNormal(targetBindings[g].triangle);
-                        var turn = state.registration != null ? state.registration.Turn(bindings[g].triangle) : Quaternion.FromToRotation(nA, nB);
-                        d = cpB + turn * (p - cpA) - p;
-                    }
-                    else
-                    {
-                        d = cpB - cpA;
-                    }
-                    primaryGroupDeltas[g] = d * falloff[g];
-                });
-                DeltaField.Smooth(primaryGroupDeltas, asset.groupAdjacency,
-                    settings.primarySmoothingIterations, settings.primarySmoothingStrength);
-                ApplyUpperBodyHemDamping(primaryGroupDeltas, state.upperBodyHemWeights, settings);
-                state.primaryRawLocalDeltas = ToLocalDeltas(state, primaryGroupDeltas, true);
-
-                var steps = new StepTimer();
-                var clearanceStats = ReFitClearanceCorrection.Apply(
-                    asset,
-                    targetBasis,
-                    targetBindings,
-                    clearanceProfile,
-                    null,
-                    primaryGroupDeltas,
-                    null,
-                    falloff,
-                    settings,
-                    BuildClearanceContext(state, targetBasis, targetBindings, false));
-                steps.Lap("clearance");
-                AddClearanceStats(state, clearanceStats, "primary refit");
-                state.tubes.Apply(asset, targetBasis, bvhTarget, null, null, primaryGroupDeltas, settings, state.Report, "primary refit");
-                steps.Lap("tubes");
-
-                if (settings.coverDifferentBaseBody && settings.madeForAnotherBody && !state.madeForAnother)
-                {
-                    // The cloth fit (which decides it otherwise) did not run or fell back: the caller's word decides, so its
-                    // pieces follow the fabric the coverage moves and its sleeves and legs cover the limbs that came through.
-                    state.madeForAnother = true;
-                    state.Report.Info("made-for-another-covered", "Made for another body and resized onto this one: fitted by the different-base passes, " +
-                                                           "its pieces carried with the fabric and its limbs covered.");
-                }
-                CoverBody(state, firstSnap, firstBvh, bvhTarget, primaryGroupDeltas, steps);
-                state.Report.Info("deformation-timing", "The fit: " + steps);
-                CoverLayers(state, primaryGroupDeltas);
-                state.primaryLocalDeltas = ToLocalDeltas(state, Declip(state, primaryGroupDeltas, bindings, firstSnap, firstBvh, bvhTarget), true);
-                if (settings.recalculateNormalDeltas)
-                    (state.primaryNormalDeltas, state.primaryTangentDeltas) = SurfaceDeltas(asset, state.primaryLocalDeltas, null);
-
-                transferBindings = BindRefittedAssetToTarget(state, bvhTarget, primaryGroupDeltas, targetBindings);
-            }
-            else if (state.targetSpaceBaseGroupDeltas != null)
+            if (state.targetSpaceBaseGroupDeltas != null)
             {
                 primaryGroupDeltas = state.targetSpaceBaseGroupDeltas;
                 transferBindings = metadataTransferBindings ?? targetBindings;
@@ -1485,7 +1625,19 @@ namespace Orbiters.ReFit
                     state.drape = new ReFitDrape(asset, primaryGroupDeltas, targetBasis, bvhTarget, targetBasis, state.targetTriRegions,
                         state.assetGroupRegions, state.tubes.groups, null, state.madeForAnother ? state.sourceLimbRegions : null);
             }
+            return new FitResult { primaryGroupDeltas = primaryGroupDeltas, transferBindings = transferBindings };
+        }
 
+        // The generated metadata of a mesh refit, and the coverage the frames drape with.
+        private static void FinishFit(State state, Correspondence c, FitResult fit)
+        {
+            var settings = state.settings;
+            var asset = state.asset;
+            var targetBasis = state.targetBasis;
+            var transferBindings = fit.transferBindings;
+            var falloff = c.falloff;
+            var clearanceProfile = c.clearanceProfile;
+            var primaryGroupDeltas = fit.primaryGroupDeltas;
             if (state.wantMesh)
                 state.comp.generatedMetadata = BuildGeneratedMetadata(
                     state,
@@ -1495,225 +1647,276 @@ namespace Orbiters.ReFit
                     clearanceProfile,
                     primaryGroupDeltas);
 
-            var coverage = state.shapes.Count > 0 && state.clothFit == null
+            fit.coverage = state.shapes.Count > 0 && state.clothFit == null
                 ? ReFitSurfaceCoverage.Build(asset, targetBasis, primaryGroupDeltas,
                     state.assetGroupRegions, state.tubes.groups, settings, state.targetTriRegions, hidden: state.hiddenGroups,
                     carryPieces: state.madeForAnother) : null;
-            var layerCoverage = new List<ReFitSurfaceCoverage>();
+            fit.layerCoverage = new List<ReFitSurfaceCoverage>();
             for (int layer = 0; layer < state.coverageLayers.Count; layer++)
-                layerCoverage.Add(ReFitSurfaceCoverage.Build(asset, state.coverageLayers[layer], primaryGroupDeltas,
+                fit.layerCoverage.Add(ReFitSurfaceCoverage.Build(asset, state.coverageLayers[layer], primaryGroupDeltas,
                     state.assetGroupRegions, state.tubes.groups, settings, authored: state.coverageLayersAuthored[layer],
                     innerGarment: state.coverageLayerNames[layer], carryPieces: state.madeForAnother));
+        }
 
-            // ---- Blendshape transfer fields ----------------------------------------------
-            if (state.shapes.Count > 0)
+        // What a frame worker reads of the fit (read only, shared by the frames).
+        private sealed class FrameInputs
+        {
+            public ReFitSettings settings;
+            public MeshSnapshot asset, targetBasis;
+            public SurfaceBvh bvhTarget;
+            public int groupCount, vertexCount, bodyVerts;
+            public float[] falloff;
+            public ReFitClearanceCorrection.Profile clearanceProfile;
+            public Vector3[] primaryGroupDeltas;
+            public SurfaceBinding[] transferBindings;
+            public ReFitSurfaceCoverage coverage;
+            public List<ReFitSurfaceCoverage> layerCoverage;
+            public Vector3 garmentMin, garmentMax;
+            public float frameReach;
+        }
+
+        // Every frame of every requested shape, transferred on its own, at most shapeWorkers at once.
+        private void TransferShapes(State state, Correspondence c, FitResult fit)
+        {
+            var settings = state.settings;
+            var asset = state.asset;
+            var targetBasis = state.targetBasis;
+            var primaryGroupDeltas = fit.primaryGroupDeltas;
+            // World-space delta of each target body vertex for a shape: M(v) applied to the frame delta.
+            int bodyVerts = targetBasis.localVertices.Length;
+            var work = state.shapes.SelectMany(shape => shape.frames.Select(frame => (shape, frame))).ToArray();
+            var outputs = new ReFitComputation[work.Length];
+            int completed = 0;
+            // Where the clothing lies (as authored and as fitted), and how far from it any stage looks at the body.
+            GarmentBounds(asset, primaryGroupDeltas, out var garmentMin, out var garmentMax);
+            float frameReach = FrameReach(settings);
+            var inputs = new FrameInputs
             {
-                // World-space delta of each target body vertex for a shape: M(v) applied to the frame delta.
-                int bodyVerts = targetBasis.localVertices.Length;
-                var work = state.shapes.SelectMany(shape => shape.frames.Select(frame => (shape, frame))).ToArray();
-                var outputs = new ReFitComputation[work.Length];
-                int completed = 0;
-                // Where the clothing lies (as authored and as fitted), and how far from it any stage looks at the body.
-                GarmentBounds(asset, primaryGroupDeltas, out var garmentMin, out var garmentMax);
-                float frameReach = FrameReach(settings);
-                SetBackgroundProgress(state, 0.5f, $"Transferring blendshapes: 0/{work.Length}");
-                // Frames own their arrays. Shared snapshots, BVHs and coverage supports are read-only.
-                // Bound concurrent frames to avoid multiplying the temporary memory by the shape count.
-                Parallel.For(0, work.Length, new ParallelOptions
+                settings = settings, asset = asset, targetBasis = targetBasis, bvhTarget = state.targetBvh, groupCount = asset.GroupCount,
+                vertexCount = asset.localVertices.Length, bodyVerts = bodyVerts, falloff = c.falloff, clearanceProfile = c.clearanceProfile,
+                primaryGroupDeltas = primaryGroupDeltas, transferBindings = fit.transferBindings, coverage = fit.coverage,
+                layerCoverage = fit.layerCoverage, garmentMin = garmentMin, garmentMax = garmentMax, frameReach = frameReach,
+            };
+            SetBackgroundProgress(state, 0.5f, $"Transferring blendshapes: 0/{work.Length}");
+            // Frames own their arrays. Shared snapshots, BVHs and coverage supports are read-only.
+            // Bound concurrent frames to avoid multiplying the temporary memory by the shape count.
+            Parallel.For(0, work.Length, new ParallelOptions
+            {
+                MaxDegreeOfParallelism = shapeWorkers,
+                CancellationToken = state.cancellationToken
+            }, index =>
+            {
+                var shape = work[index].shape;
+                var frame = work[index].frame;
+                var worker = state.ForShape();
+                outputs[index] = worker.comp;
+                try { TransferFrame(worker, shape, frame, inputs); }
+                finally
                 {
-                    MaxDegreeOfParallelism = shapeWorkers,
-                    CancellationToken = state.cancellationToken
-                }, index =>
+                    lock (outputs)
+                    {
+                        completed++;
+                        state.backgroundProgress = 0.5f + 0.35f * completed / work.Length;
+                        state.backgroundLabel = $"Transferred blendshapes: {completed}/{work.Length} / {shape.sourceName}";
+                    }
+                }
+            });
+            // Merge diagnostics in input order, independent of worker completion order.
+            foreach (var output in outputs)
+            {
+                state.Report.messages.AddRange(output.report.messages);
+                if (output.clearanceCorrectionStats != null)
                 {
-                    var shape = work[index].shape;
-                    var frame = work[index].frame;
-                    var worker = state.ForShape();
-                    outputs[index] = worker.comp;
-                    try { TransferFrame(); }
-                    finally
+                    if (state.comp.clearanceCorrectionStats == null)
+                        state.comp.clearanceCorrectionStats = new ReFitClearanceCorrectionStats();
+                    state.comp.clearanceCorrectionStats.Add(output.clearanceCorrectionStats);
+                }
+                if (output.transferredIslandPropagationDebug != null)
+                    state.comp.transferredIslandPropagationDebug = output.transferredIslandPropagationDebug;
+            }
+            GiveBackShown(state);
+            GiveBackShownToRest(state);
+        }
+
+        // One frame of a shape, on its worker's copy of the state: the clothing's motion for it, per frame.
+        private static void TransferFrame(State worker, ShapeTask shape, ShapeFrame frame, FrameInputs inputs)
+        {
+            var settings = inputs.settings;
+            var asset = inputs.asset;
+            var targetBasis = inputs.targetBasis;
+            var bvhTarget = inputs.bvhTarget;
+            int groupCount = inputs.groupCount, vertexCount = inputs.vertexCount, bodyVerts = inputs.bodyVerts;
+            var falloff = inputs.falloff;
+            var clearanceProfile = inputs.clearanceProfile;
+            var primaryGroupDeltas = inputs.primaryGroupDeltas;
+            var transferBindings = inputs.transferBindings;
+            var coverage = inputs.coverage;
+            var layerCoverage = inputs.layerCoverage;
+            var garmentMin = inputs.garmentMin;
+            var garmentMax = inputs.garmentMax;
+            float frameReach = inputs.frameReach;
+            // A shape the target shows is taken away from the fit (the body moved by -shown of the frame): the clothing
+            // frame is what that moves the clothing, reversed and per frame (see PerFrame).
+            float motion = shape.shown > 0f ? -shape.shown : 1f;
+            var worldShapeDelta = new Vector3[bodyVerts];
+            Parallel.For(0, bodyVerts, i =>
+                worldShapeDelta[i] = TargetShapeDeltaToWorld(worker, targetBasis, i, frame.deltas[i]) * motion);
+            if (!FrameReaches(targetBasis, worldShapeDelta, worker.coverageLayers, frame.layerDeltas, garmentMin, garmentMax, frameReach))
+            {
+                // A viseme under trousers: nothing the frame moves is within reach of any stage, so the clothing stays
+                // as fitted (exactly: no fabric point takes a motion, and the passes are not asked to re-correct what the
+                // fit left once per shape).
+                frame.rawLocalDeltas = new Vector3[vertexCount];
+                frame.localDeltas = frame.rawLocalDeltas;
+                if (settings.recalculateNormalDeltas)
+                {
+                    frame.normalDeltas = new Vector3[vertexCount];
+                    frame.tangentDeltas = asset.baseTangents != null ? new Vector3[vertexCount] : null;
+                }
+                frame.deltas = null;
+                worker.Report.Info("frame-out-of-reach", $"'{shape.sourceName}' (frame at {frame.weight:0.#}) moves no skin within " +
+                                                         $"{frameReach * 100f:0} cm of the clothing: it stays as fitted.");
+                return;
+            }
+            if (worker.clothFit != null)
+            {
+                // Draped over the shaped body from the fitted clothing, like the fit.
+                var draped = worker.clothFit.Shape(targetBasis, worldShapeDelta, falloff, worker.Report, shape.sourceName,
+                    settings.transferredBlendshapeSmoothingIterations, settings.transferredBlendshapeSmoothingStrength);
+                if (layerCoverage.Count > 0)
+                {
+                    // Over the garments worn under it as they take the shape too.
+                    var drapedRaw = (Vector3[])draped.Clone();
+                    for (int layer = 0; layer < layerCoverage.Count; layer++)
+                        layerCoverage[layer]?.Apply(worker.coverageLayers[layer], frame.layerDeltas[layer], draped, drapedRaw, settings,
+                            worker.Report, shape.sourceName);
+                    ReFitSurfaceCoverage.KeepUnderCovers(asset, primaryGroupDeltas, draped, worker.hiddenCovers, worker.coverageLayers, frame.layerDeltas);
+                }
+                frame.rawLocalDeltas = PerFrame(ToLocalDeltas(worker, draped, false), motion);
+                frame.localDeltas = frame.rawLocalDeltas;
+                if (settings.recalculateNormalDeltas)
+                    (frame.normalDeltas, frame.tangentDeltas) = SurfaceDeltas(asset, frame.localDeltas, FrameBase(worker.primaryLocalDeltas, frame.localDeltas, shape.shown));
+                frame.deltas = null;
+                return;
+            }
+
+            var groupDeltas = new Vector3[groupCount];
+            Parallel.For(0, groupCount, g =>
+            {
+                if (!transferBindings[g].valid) { groupDeltas[g] = Vector3.zero; return; }
+                int t = transferBindings[g].triangle * 3;
+                var bary = transferBindings[g].bary;
+                var d = worldShapeDelta[targetBasis.triangles[t]] * bary.x
+                      + worldShapeDelta[targetBasis.triangles[t + 1]] * bary.y
+                      + worldShapeDelta[targetBasis.triangles[t + 2]] * bary.z;
+                groupDeltas[g] = d * falloff[g];
+            });
+            DeltaField.Smooth(groupDeltas, asset.groupAdjacency,
+                settings.transferredBlendshapeSmoothingIterations,
+                settings.transferredBlendshapeSmoothingStrength);
+            // Hem restraint stabilizes source-to-target proportion fitting. An asset already
+            // on the target must receive the complete authored shape displacement instead.
+            if (!worker.sourceIsTarget)
+                ApplyUpperBodyHemDamping(groupDeltas, worker.upperBodyHemWeights, settings);
+            ApplyDetachedTransferredComponentCoherence(worker, primaryGroupDeltas, groupDeltas, shape.sourceName);
+            frame.rawLocalDeltas = PerFrame(ToLocalDeltas(worker, groupDeltas, false), motion);
+
+            var cachedLocalDeltas = FindCachedTransferredLocalDeltas(
+                worker.targetSpaceMetadata,
+                shape.sourceName,
+                vertexCount, frame.identity, worker.settingsIdentity);
+            if (cachedLocalDeltas != null)
+            {
+                frame.localDeltas = cachedLocalDeltas;
+                worker.Report.Info("target-space-cached-transferred-shape",
+                    $"Reused the previously generated tightness-corrected transfer for '{shape.sourceName}'.");
+                if (settings.recalculateNormalDeltas)
+                    (frame.normalDeltas, frame.tangentDeltas) = SurfaceDeltas(asset, frame.localDeltas, FrameBase(worker.primaryLocalDeltas, frame.localDeltas, shape.shown));
+                frame.deltas = null;
+                return;
+            }
+
+            var steps = new StepTimer();
+            var coverageRawDeltas = coverage != null ? (Vector3[])groupDeltas.Clone() : null;
+            var clearanceStats = ReFitClearanceCorrection.Apply(
+                asset,
+                targetBasis,
+                transferBindings,
+                clearanceProfile,
+                primaryGroupDeltas,
+                groupDeltas,
+                worldShapeDelta,
+                falloff,
+                settings,
+                BuildClearanceContext(worker, targetBasis, transferBindings, true));
+            steps.Lap("clearance");
+            AddClearanceStats(worker, clearanceStats, $"transferred '{shape.sourceName}'");
+            worker.tubes.Apply(asset, targetBasis, bvhTarget, worldShapeDelta, primaryGroupDeltas, groupDeltas,
+                settings, worker.Report, $"transferred '{shape.sourceName}'");
+            steps.Lap("tubes");
+            coverage?.Apply(targetBasis, worldShapeDelta, groupDeltas, coverageRawDeltas, settings, worker.Report, shape.sourceName);
+            steps.Lap("coverage");
+            // The drape knows only the body: the layers' coverage and the covers come after it and keep the layer order.
+            worker.drape?.Apply(targetBasis, worldShapeDelta, primaryGroupDeltas, groupDeltas, worker.Report, shape.sourceName,
+                worker.cancellationToken);
+            steps.Lap("drape");
+            for (int layer = 0; layer < layerCoverage.Count; layer++)
+                layerCoverage[layer]?.Apply(worker.coverageLayers[layer], frame.layerDeltas[layer], groupDeltas,
+                    coverageRawDeltas ?? (Vector3[])groupDeltas.Clone(), settings, worker.Report, shape.sourceName);
+            ReFitSurfaceCoverage.KeepUnderCovers(asset, primaryGroupDeltas, groupDeltas, worker.hiddenCovers, worker.coverageLayers, frame.layerDeltas);
+            steps.Lap("layers");
+            worker.Report.Info("deformation-timing", $"'{shape.sourceName}': " + steps);
+
+            frame.localDeltas = PerFrame(ToLocalDeltas(worker, groupDeltas, false), motion);
+            if (settings.recalculateNormalDeltas)
+                (frame.normalDeltas, frame.tangentDeltas) = SurfaceDeltas(asset, frame.localDeltas, FrameBase(worker.primaryLocalDeltas, frame.localDeltas, shape.shown));
+            frame.deltas = null; // free
+        }
+
+        // The clothing's skin weights from the bodies' (armature replaced).
+        private static void TransferSkinWeights(State state, Correspondence c)
+        {
+            var settings = state.settings;
+            var asset = state.asset;
+            var targetBasis = state.targetBasis;
+            int groupCount = asset.GroupCount;
+            var bindings = c.bindings;
+            var targetBindings = c.targetBindings;
+            var firstSnap = c.firstSnap;
+            var falloff = c.falloff;
+            var shownMotion = c.shownMotion;
+            var laidOnto = c.laidOnto;
+            var laidIndex = c.laidIndex;
+            var laid = c.laid;
+            SetBackgroundProgress(state, 0.9f, "Transferring skin weights");
+            // Skin weights are matched between the bodies alike: on the target without the shapes it shows (the same skin,
+            // moved by them), as the target bindings were found on it.
+            var weightBindings = targetBindings;
+            if (shownMotion != null && state.transferWeights)
+            {
+                weightBindings = new SurfaceBinding[groupCount];
+                var into = weightBindings;
+                var used = state.registration != null ? laid : null;
+                var chainedBare = Chained(state, bindings, firstSnap, laidOnto, laidIndex);
+                Parallel.For(0, groupCount, g =>
+                {
+                    if (!bindings[g].valid || !targetBindings[g].valid) { into[g] = targetBindings[g]; return; }
+                    var region = state.assetGroupRegions != null ? state.assetGroupRegions[g] : BodyRegion.Unknown;
+                    if (used != null && RegisteredPoint(used, bindings[g], laidOnto, laidIndex, state.targetTriRegions, region, out var registered))
                     {
-                        lock (outputs)
-                        {
-                            completed++;
-                            state.backgroundProgress = 0.5f + 0.35f * completed / work.Length;
-                            state.backgroundLabel = $"Transferred blendshapes: {completed}/{work.Length} / {shape.sourceName}";
-                        }
+                        into[g] = registered;
+                        return;
                     }
-                    void TransferFrame()
-                    {
-                        // A shape the target shows is taken away from the fit (the body moved by -shown of the frame): the clothing
-                        // frame is what that moves the clothing, reversed and per frame (see PerFrame).
-                        float motion = shape.shown > 0f ? -shape.shown : 1f;
-                        var worldShapeDelta = new Vector3[bodyVerts];
-                        Parallel.For(0, bodyVerts, i =>
-                            worldShapeDelta[i] = TargetShapeDeltaToWorld(worker, targetBasis, i, frame.deltas[i]) * motion);
-                        if (!FrameReaches(targetBasis, worldShapeDelta, worker.coverageLayers, frame.layerDeltas, garmentMin, garmentMax, frameReach))
-                        {
-                            // A viseme under trousers: nothing the frame moves is within reach of any stage, so the clothing stays
-                            // as fitted (exactly: no fabric point takes a motion, and the passes are not asked to re-correct what the
-                            // fit left once per shape).
-                            frame.rawLocalDeltas = new Vector3[vertexCount];
-                            frame.localDeltas = frame.rawLocalDeltas;
-                            if (settings.recalculateNormalDeltas)
-                            {
-                                frame.normalDeltas = new Vector3[vertexCount];
-                                frame.tangentDeltas = asset.baseTangents != null ? new Vector3[vertexCount] : null;
-                            }
-                            frame.deltas = null;
-                            worker.Report.Info("frame-out-of-reach", $"'{shape.sourceName}' (frame at {frame.weight:0.#}) moves no skin within " +
-                                                                     $"{frameReach * 100f:0} cm of the clothing: it stays as fitted.");
-                            return;
-                        }
-                        if (worker.clothFit != null)
-                        {
-                            // Draped over the shaped body from the fitted clothing, like the fit.
-                            var draped = worker.clothFit.Shape(targetBasis, worldShapeDelta, falloff, worker.Report, shape.sourceName,
-                                settings.transferredBlendshapeSmoothingIterations, settings.transferredBlendshapeSmoothingStrength);
-                            if (layerCoverage.Count > 0)
-                            {
-                                // Over the garments worn under it as they take the shape too.
-                                var drapedRaw = (Vector3[])draped.Clone();
-                                for (int layer = 0; layer < layerCoverage.Count; layer++)
-                                    layerCoverage[layer]?.Apply(worker.coverageLayers[layer], frame.layerDeltas[layer], draped, drapedRaw, settings,
-                                        worker.Report, shape.sourceName);
-                                ReFitSurfaceCoverage.KeepUnderCovers(asset, primaryGroupDeltas, draped, worker.hiddenCovers, worker.coverageLayers, frame.layerDeltas);
-                            }
-                            frame.rawLocalDeltas = PerFrame(ToLocalDeltas(worker, draped, false), motion);
-                            frame.localDeltas = frame.rawLocalDeltas;
-                            if (settings.recalculateNormalDeltas)
-                                (frame.normalDeltas, frame.tangentDeltas) = SurfaceDeltas(asset, frame.localDeltas, FrameBase(worker.primaryLocalDeltas, frame.localDeltas, shape.shown));
-                            frame.deltas = null;
-                            return;
-                        }
-
-                        var groupDeltas = new Vector3[groupCount];
-                        Parallel.For(0, groupCount, g =>
-                        {
-                            if (!transferBindings[g].valid) { groupDeltas[g] = Vector3.zero; return; }
-                            int t = transferBindings[g].triangle * 3;
-                            var bary = transferBindings[g].bary;
-                            var d = worldShapeDelta[targetBasis.triangles[t]] * bary.x
-                                  + worldShapeDelta[targetBasis.triangles[t + 1]] * bary.y
-                                  + worldShapeDelta[targetBasis.triangles[t + 2]] * bary.z;
-                            groupDeltas[g] = d * falloff[g];
-                        });
-                        DeltaField.Smooth(groupDeltas, asset.groupAdjacency,
-                            settings.transferredBlendshapeSmoothingIterations,
-                            settings.transferredBlendshapeSmoothingStrength);
-                        // Hem restraint stabilizes source-to-target proportion fitting. An asset already
-                        // on the target must receive the complete authored shape displacement instead.
-                        if (!worker.sourceIsTarget)
-                            ApplyUpperBodyHemDamping(groupDeltas, worker.upperBodyHemWeights, settings);
-                        ApplyDetachedTransferredComponentCoherence(worker, primaryGroupDeltas, groupDeltas, shape.sourceName);
-                        frame.rawLocalDeltas = PerFrame(ToLocalDeltas(worker, groupDeltas, false), motion);
-
-                        var cachedLocalDeltas = FindCachedTransferredLocalDeltas(
-                            worker.targetSpaceMetadata,
-                            shape.sourceName,
-                            vertexCount, frame.identity, worker.settingsIdentity);
-                        if (cachedLocalDeltas != null)
-                        {
-                            frame.localDeltas = cachedLocalDeltas;
-                            worker.Report.Info("target-space-cached-transferred-shape",
-                                $"Reused the previously generated tightness-corrected transfer for '{shape.sourceName}'.");
-                            if (settings.recalculateNormalDeltas)
-                                (frame.normalDeltas, frame.tangentDeltas) = SurfaceDeltas(asset, frame.localDeltas, FrameBase(worker.primaryLocalDeltas, frame.localDeltas, shape.shown));
-                            frame.deltas = null;
-                            return;
-                        }
-
-                        var steps = new StepTimer();
-                        var coverageRawDeltas = coverage != null ? (Vector3[])groupDeltas.Clone() : null;
-                        var clearanceStats = ReFitClearanceCorrection.Apply(
-                            asset,
-                            targetBasis,
-                            transferBindings,
-                            clearanceProfile,
-                            primaryGroupDeltas,
-                            groupDeltas,
-                            worldShapeDelta,
-                            falloff,
-                            settings,
-                            BuildClearanceContext(worker, targetBasis, transferBindings, true));
-                        steps.Lap("clearance");
-                        AddClearanceStats(worker, clearanceStats, $"transferred '{shape.sourceName}'");
-                        worker.tubes.Apply(asset, targetBasis, bvhTarget, worldShapeDelta, primaryGroupDeltas, groupDeltas,
-                            settings, worker.Report, $"transferred '{shape.sourceName}'");
-                        steps.Lap("tubes");
-                        coverage?.Apply(targetBasis, worldShapeDelta, groupDeltas, coverageRawDeltas, settings, worker.Report, shape.sourceName);
-                        steps.Lap("coverage");
-                        // The drape knows only the body: the layers' coverage and the covers come after it and keep the layer order.
-                        worker.drape?.Apply(targetBasis, worldShapeDelta, primaryGroupDeltas, groupDeltas, worker.Report, shape.sourceName,
-                            worker.cancellationToken);
-                        steps.Lap("drape");
-                        for (int layer = 0; layer < layerCoverage.Count; layer++)
-                            layerCoverage[layer]?.Apply(worker.coverageLayers[layer], frame.layerDeltas[layer], groupDeltas,
-                                coverageRawDeltas ?? (Vector3[])groupDeltas.Clone(), settings, worker.Report, shape.sourceName);
-                        ReFitSurfaceCoverage.KeepUnderCovers(asset, primaryGroupDeltas, groupDeltas, worker.hiddenCovers, worker.coverageLayers, frame.layerDeltas);
-                        steps.Lap("layers");
-                        worker.Report.Info("deformation-timing", $"'{shape.sourceName}': " + steps);
-
-                        frame.localDeltas = PerFrame(ToLocalDeltas(worker, groupDeltas, false), motion);
-                        if (settings.recalculateNormalDeltas)
-                            (frame.normalDeltas, frame.tangentDeltas) = SurfaceDeltas(asset, frame.localDeltas, FrameBase(worker.primaryLocalDeltas, frame.localDeltas, shape.shown));
-                        frame.deltas = null; // free
-                    }
+                    into[g] = chainedBare[g].valid ? chainedBare[g] : targetBindings[g];
                 });
-                // Merge diagnostics in input order, independent of worker completion order.
-                foreach (var output in outputs)
-                {
-                    state.Report.messages.AddRange(output.report.messages);
-                    if (output.clearanceCorrectionStats != null)
-                    {
-                        if (state.comp.clearanceCorrectionStats == null)
-                            state.comp.clearanceCorrectionStats = new ReFitClearanceCorrectionStats();
-                        state.comp.clearanceCorrectionStats.Add(output.clearanceCorrectionStats);
-                    }
-                    if (output.transferredIslandPropagationDebug != null)
-                        state.comp.transferredIslandPropagationDebug = output.transferredIslandPropagationDebug;
-                }
-                GiveBackShown(state);
-                GiveBackShownToRest(state);
             }
-
-            // ---- Skin weights --------------------------------------------------------------
-            if (state.replace)
-            {
-                SetBackgroundProgress(state, 0.9f, "Transferring skin weights");
-                // Skin weights are matched between the bodies alike: on the target without the shapes it shows (the same skin,
-                // moved by them), as the target bindings were found on it.
-                var weightBindings = targetBindings;
-                if (shownMotion != null && state.transferWeights)
-                {
-                    weightBindings = new SurfaceBinding[groupCount];
-                    var into = weightBindings;
-                    var used = state.registration != null ? laid : null;
-                    var chainedBare = Chained(state, bindings, firstSnap, laidOnto, laidIndex);
-                    Parallel.For(0, groupCount, g =>
-                    {
-                        if (!bindings[g].valid || !targetBindings[g].valid) { into[g] = targetBindings[g]; return; }
-                        var region = state.assetGroupRegions != null ? state.assetGroupRegions[g] : BodyRegion.Unknown;
-                        if (used != null && RegisteredPoint(used, bindings[g], laidOnto, laidIndex, state.targetTriRegions, region, out var registered))
-                        {
-                            into[g] = registered;
-                            return;
-                        }
-                        into[g] = chainedBare[g].valid ? chainedBare[g] : targetBindings[g];
-                    });
-                }
-                // The source match and its chained target match are the same anatomical point on both bodies.
-                state.newWeights = state.transferWeights
-                    ? WeightTransfer.Transfer(asset, state.sourceBody, bindings, state.sourceBoneToNew,
-                        targetBasis, weightBindings, state.bodyBoneToNew, falloff,
-                        state.assetBoneToNew, state.assetBoneIsExtra, state.newBoneRegions, state.assetGroupRegions,
-                        settings, state.Report, out state.weightDebug)
-                    : RemapAllOriginal(asset, state.assetBoneToNew);
-            }
-
-            if (settings.captureProjectionDebug)
-                state.comp.projectionDebug = BuildProjectionDebugData(state, bindings, transferBindings, falloff);
-
-            SetBackgroundProgress(state, 1f, "Finishing");
+            // The source match and its chained target match are the same anatomical point on both bodies.
+            state.newWeights = state.transferWeights
+                ? WeightTransfer.Transfer(asset, state.sourceBody, bindings, state.sourceBoneToNew,
+                    targetBasis, weightBindings, state.bodyBoneToNew, falloff,
+                    state.assetBoneToNew, state.assetBoneIsExtra, state.newBoneRegions, state.assetGroupRegions,
+                    settings, state.Report, out state.weightDebug)
+                : RemapAllOriginal(asset, state.assetBoneToNew);
         }
 
         // How far from the clothing a stage of a shape frame looks at the body (a binding, the clearance guard's range, the

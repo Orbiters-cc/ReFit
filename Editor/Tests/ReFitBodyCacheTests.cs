@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Threading;
 using NUnit.Framework;
+using Orbiters.Toolkit.Meshes;
 using UnityEngine;
 
 namespace Orbiters.ReFit.Editor.Tests
@@ -163,6 +164,47 @@ namespace Orbiters.ReFit.Editor.Tests
                 Assert.That(read.timing, Does.Contain("earlier session"));
                 Assert.That(read.registered, Is.EqualTo(laid.registered));
             }
+        }
+
+        // A registration laid with the hierarchy's queries as managed code (as before Burst has compiled them, or with Burst
+        // off) and one laid with them compiled are two results: neither is ever served for the other, in memory or from
+        // Library/ReFit, and each is read back bit for bit.
+        [Test]
+        public void ManagedAndCompiledQueriesNeverShareARegistration()
+        {
+            var (sv, st) = Sphere(Vector3.zero, .1f, 12, 24);
+            var (tv, tt) = Sphere(new Vector3(.003f, 0, 0), .106f, 12, 24);
+            var source = MeshSnapshot.FromWorld(sv, st, false);
+            var target = MeshSnapshot.FromWorld(tv, tt, false);
+            ReFitBodyRegistration managed, managedAgain;
+            try
+            {
+                MeshBvh.RunManaged = true;
+                Assert.That(MeshBvh.QueriesCompiled, Is.False, "the seam reports the managed path");
+                managed = ReFitBodyRegistration.Build(source, null, target, target.Index(), null, CancellationToken.None);
+                Assert.That(managed.timing, Does.Not.Contain("reused").And.Not.Contain("earlier"));
+                ReFitBodyRegistration.ClearCache(files: false);
+                managedAgain = ReFitBodyRegistration.Build(source, null, target, target.Index(), null, CancellationToken.None);
+            }
+            finally { MeshBvh.RunManaged = false; }
+            Assert.That(managedAgain.timing, Does.Contain("earlier session"), "the managed result is read back under its own key");
+            Assert.That(managedAgain.registered, Is.EqualTo(managed.registered));
+            if (!MeshBvh.QueriesCompiled) Assert.Ignore("Burst compilation is off: the managed path is the only one.");
+
+            var compiled = ReFitBodyRegistration.Build(source, null, target, target.Index(), null, CancellationToken.None);
+            Assert.That(compiled.timing, Does.Not.Contain("reused").And.Not.Contain("earlier"), "the compiled path is laid anew");
+            Assert.That(Directory.GetFiles(directory, "registration-*.bin").Length, Is.EqualTo(2), "one file per path");
+            var again = ReFitBodyRegistration.Build(source, null, target, target.Index(), null, CancellationToken.None);
+            Assert.That(again.timing, Does.Contain("reused"));
+            Assert.That(again.registered, Is.EqualTo(compiled.registered));
+            ReFitBodyRegistration.ClearCache(files: false);
+            var read = ReFitBodyRegistration.Build(source, null, target, target.Index(), null, CancellationToken.None);
+            Assert.That(read.timing, Does.Contain("earlier session"));
+            Assert.That(read.registered, Is.EqualTo(compiled.registered));
+            // Laid anew on the compiled path, the same bits as the first time (the guard of the damaged-file test).
+            ReFitCaches.Clear();
+            var fresh = ReFitBodyRegistration.Build(source, null, target, target.Index(), null, CancellationToken.None);
+            Assert.That(fresh.registered, Is.EqualTo(compiled.registered));
         }
 
         private static byte[] Concat(byte[] a, byte[] b)

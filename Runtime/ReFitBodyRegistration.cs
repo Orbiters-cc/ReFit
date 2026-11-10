@@ -144,9 +144,11 @@ namespace Orbiters.ReFit
             // The same bodies laid onto each other again (the next piece of an outfit, a refit run again): the last results are
             // kept by the content of everything the registration reads.
             ulong key = Key(source, sourceTriangleMasks, target, targetTriangleMasks, start);
-            // With Burst compilation off the hierarchy's queries run as managed float code, whose last bits may differ: such a
-            // registration is kept (in memory and in Library/ReFit) under a key of its own, never served to a run with Burst on.
-            if (!Unity.Burst.BurstCompiler.IsEnabled) key = unchecked((key ^ 0x6275727374206F66UL) * 1099511628211UL);
+            // The path the hierarchy's queries take, decided before any of them runs (MeshBvh.WarmUp compiles them all on this
+            // thread, so no parallel pass mixes managed and Burst code): managed float code (Burst off, a failed compilation)
+            // rounds otherwise, so such a registration is kept, in memory and in Library/ReFit, under a key of its own. The
+            // solver's kernels compute in double with bit-equal managed twins: they need no key.
+            if (!MeshBvh.WarmUp()) key = unchecked((key ^ 0x6275727374206F66UL) * 1099511628211UL);
             lock (Cache)
                 foreach (var entry in Cache)
                     if (entry.key == key && entry.registered.Length == source.worldVertices.Length)

@@ -165,6 +165,8 @@ namespace Orbiters.ReFit
                     Add(BitConverter.SingleToInt32Bits(values[i].z));
                 }
             }
+            // What is derived (enclosed skin) comes from hierarchy queries: keyed by the path they run (see MeshBvh.WarmUp).
+            Add(MeshBvh.WarmUp() ? 1 : 0);
             Vectors(body.worldVertices);
             Vectors(body.worldNormals);
             var triangles = body.triangles;

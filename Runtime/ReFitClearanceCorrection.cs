@@ -38,6 +38,12 @@ namespace Orbiters.ReFit
 
         public sealed class Context
         {
+            /// <summary>
+            /// Sample the whole surface again after the pass for <see cref="ReFitClearanceCorrectionStats.maxPenetrationAfter"/>
+            /// (diagnostics: the engine asks for it with <see cref="ReFitSettings.captureProjectionDebug"/>). Without it, that
+            /// figure is the per-group measure of the safety guard.
+            /// </summary>
+            public bool measureFinalPenetration;
             public bool transferredBlendshape;
             public BodyRegion[] assetGroupRegions;
             public BodyRegion[] targetTriangleRegions;
@@ -275,7 +281,7 @@ namespace Orbiters.ReFit
                 float amount = signedAmounts[g];
                 if (amount > 0f)
                 {
-                    stats.outwardGroups++;
+                    stats.CountOutward(g, groupCount);
                     stats.maxOutwardCorrection = Mathf.Max(stats.maxOutwardCorrection, corrections[g].magnitude);
                 }
                 else
@@ -369,17 +375,19 @@ namespace Orbiters.ReFit
                     propagation.propagatedGroups);
             }
 
-            stats.maxPenetrationAfter = MeasureFinalMaxPenetrationAfter(
-                asset,
-                targetBody,
-                profile,
-                baseGroupDeltas,
-                mutableGroupDeltas,
-                bodyWorldShapeDeltas,
-                falloff,
-                expansions,
-                settings,
-                context, bodySurface, bodyBvh);
+            // A diagnostic only (no geometry reads it): a second full sampling of the surface, taken when asked.
+            if (context != null && context.measureFinalPenetration)
+                stats.maxPenetrationAfter = MeasureFinalMaxPenetrationAfter(
+                    asset,
+                    targetBody,
+                    profile,
+                    baseGroupDeltas,
+                    mutableGroupDeltas,
+                    bodyWorldShapeDeltas,
+                    falloff,
+                    expansions,
+                    settings,
+                    context, bodySurface, bodyBvh);
 
             return stats;
         }
@@ -443,7 +451,7 @@ namespace Orbiters.ReFit
 
                     mutableGroupDeltas[g] += add;
                     stats.safetyGuardGroups++;
-                    stats.outwardGroups++;
+                    stats.CountOutward(g, groupCount);
                     stats.maxSafetyGuardCorrection = Mathf.Max(stats.maxSafetyGuardCorrection, amount);
                     stats.maxOutwardCorrection = Mathf.Max(stats.maxOutwardCorrection, amount);
                     finalClearance = currentClearance + Vector3.Dot(add, normal);
@@ -453,6 +461,9 @@ namespace Orbiters.ReFit
                     stats.maxPenetrationAfter = Mathf.Max(stats.maxPenetrationAfter, -finalClearance);
             }
         }
+
+        // Triangles per range of the surface guard's parallel sampling.
+        private const int GuardRange = 256;
 
         private static void ApplySurfaceSafetyGuard(
             MeshSnapshot asset,
@@ -503,30 +514,45 @@ namespace Orbiters.ReFit
 
             var corrections = new Vector3[groupCount];
             var weights = new float[groupCount];
+            // Triangles are sampled in fixed ranges on all cores (each sample a pure query of the body); what they ask is then
+            // summed range after range, in triangle order: the result does not depend on the partition or the thread count.
+            int triangleCount = asset.triangles.Length / 3;
+            int ranges = (triangleCount + GuardRange - 1) / GuardRange;
+            var sinks = new GuardSink[ranges];
+            for (int r = 0; r < ranges; r++) sinks[r] = new GuardSink(groupCount);
             for (int iteration = 0; iteration < iterations; iteration++)
             {
                 Array.Clear(corrections, 0, corrections.Length);
                 Array.Clear(weights, 0, weights.Length);
                 int violatingSamples = 0;
 
-                for (int t = 0; t + 2 < asset.triangles.Length; t += 3)
+                Parallel.For(0, ranges, r =>
                 {
-                    int ga = GroupForVertex(asset, asset.triangles[t], groupCount);
-                    int gb = GroupForVertex(asset, asset.triangles[t + 1], groupCount);
-                    int gc = GroupForVertex(asset, asset.triangles[t + 2], groupCount);
-                    if (ga < 0 || gb < 0 || gc < 0)
-                        continue;
-                    if (!AnyAllowedGroup(allowedGroups, ga, gb, gc))
-                        continue;
+                    var sink = sinks[r];
+                    sink.Clear();
+                    int end = Math.Min(triangleCount, (r + 1) * GuardRange);
+                    for (int triangle = r * GuardRange; triangle < end; triangle++)
+                    {
+                        int t = triangle * 3;
+                        int ga = GroupForVertex(asset, asset.triangles[t], groupCount);
+                        int gb = GroupForVertex(asset, asset.triangles[t + 1], groupCount);
+                        int gc = GroupForVertex(asset, asset.triangles[t + 2], groupCount);
+                        if (ga < 0 || gb < 0 || gc < 0)
+                            continue;
+                        if (!AnyAllowedGroup(allowedGroups, ga, gb, gc))
+                            continue;
 
-                    var a = groupWorld[ga];
-                    var b = groupWorld[gb];
-                    var c = groupWorld[gc];
-
-                    violatingSamples += AccumulateTriangleSurfaceGuardSamples(
-                        t / 3, a, b, c, ga, gb, gc,
-                        profile, falloff, expansions, settings, bodySurface, bvh, queryRange, safety, triggerDistance, strength,
-                        context, allowedGroups, corrections, weights, stats);
+                        sink.violations += AccumulateTriangleSurfaceGuardSamples(
+                            triangle, groupWorld[ga], groupWorld[gb], groupWorld[gc], ga, gb, gc,
+                            profile, falloff, expansions, settings, bodySurface, bvh, queryRange, safety, triggerDistance, strength,
+                            context, allowedGroups, sink);
+                    }
+                });
+                foreach (var sink in sinks)
+                {
+                    sink.ApplyTo(corrections, weights);
+                    violatingSamples += sink.violations;
+                    stats.maxPenetrationBefore = Mathf.Max(stats.maxPenetrationBefore, sink.maxPenetration);
                 }
 
                 if (violatingSamples == 0)
@@ -565,7 +591,7 @@ namespace Orbiters.ReFit
                     groupWorld[g] += correction;
                     appliedAny = true;
                     stats.surfaceGuardGroups++;
-                    stats.outwardGroups++;
+                    stats.CountOutward(g, groupCount);
                     stats.maxSurfaceGuardCorrection = Mathf.Max(stats.maxSurfaceGuardCorrection, correction.magnitude);
                     stats.maxOutwardCorrection = Mathf.Max(stats.maxOutwardCorrection, correction.magnitude);
                 }
@@ -1620,24 +1646,22 @@ namespace Orbiters.ReFit
             float strength,
             Context context,
             bool[] allowedGroups,
-            Vector3[] corrections,
-            float[] weights,
-            ReFitClearanceCorrectionStats stats)
+            GuardSink sink)
         {
             int violations = 0;
             int first = triangle * GuardSamplesPerTriangle;
             violations += AccumulateEdgeSurfaceGuardSamples(a, b, ga, gb, first + 1,
                 profile, falloff, expansions, settings, bodySurface, bvh, queryRange, safety, triggerDistance, strength,
-                context, allowedGroups, corrections, weights, stats);
+                context, allowedGroups, sink);
             violations += AccumulateEdgeSurfaceGuardSamples(b, c, gb, gc, first + 4,
                 profile, falloff, expansions, settings, bodySurface, bvh, queryRange, safety, triggerDistance, strength,
-                context, allowedGroups, corrections, weights, stats);
+                context, allowedGroups, sink);
             violations += AccumulateEdgeSurfaceGuardSamples(c, a, gc, ga, first + 7,
                 profile, falloff, expansions, settings, bodySurface, bvh, queryRange, safety, triggerDistance, strength,
-                context, allowedGroups, corrections, weights, stats);
+                context, allowedGroups, sink);
 
             violations += AccumulateSurfaceGuardSample((a + b + c) / 3f, ga, 1f / 3f, gb, 1f / 3f, gc, 1f / 3f, AuthoredClearance(profile, first),
-                profile, falloff, expansions, settings, bodySurface, bvh, queryRange, safety, triggerDistance, strength, context, allowedGroups, corrections, weights, stats) ? 1 : 0;
+                profile, falloff, expansions, settings, bodySurface, bvh, queryRange, safety, triggerDistance, strength, context, allowedGroups, sink) ? 1 : 0;
 
             return violations;
         }
@@ -1660,28 +1684,26 @@ namespace Orbiters.ReFit
             float strength,
             Context context,
             bool[] allowedGroups,
-            Vector3[] corrections,
-            float[] weights,
-            ReFitClearanceCorrectionStats stats)
+            GuardSink sink)
         {
             int samples = Mathf.Clamp(settings != null ? settings.clearanceSurfaceGuardEdgeSamples : 1, 1, 3);
             int violations = 0;
             if (samples >= 2)
             {
                 violations += AccumulateSurfaceGuardSample(Vector3.Lerp(a, b, 1f / 3f), ga, 2f / 3f, gb, 1f / 3f, -1, 0f, AuthoredClearance(profile, firstSample),
-                    profile, falloff, expansions, settings, bodySurface, bvh, queryRange, safety, triggerDistance, strength, context, allowedGroups, corrections, weights, stats) ? 1 : 0;
+                    profile, falloff, expansions, settings, bodySurface, bvh, queryRange, safety, triggerDistance, strength, context, allowedGroups, sink) ? 1 : 0;
             }
 
             if (samples == 1 || samples >= 3)
             {
                 violations += AccumulateSurfaceGuardSample(Vector3.Lerp(a, b, 0.5f), ga, 0.5f, gb, 0.5f, -1, 0f, AuthoredClearance(profile, firstSample + 1),
-                    profile, falloff, expansions, settings, bodySurface, bvh, queryRange, safety, triggerDistance, strength, context, allowedGroups, corrections, weights, stats) ? 1 : 0;
+                    profile, falloff, expansions, settings, bodySurface, bvh, queryRange, safety, triggerDistance, strength, context, allowedGroups, sink) ? 1 : 0;
             }
 
             if (samples >= 2)
             {
                 violations += AccumulateSurfaceGuardSample(Vector3.Lerp(a, b, 2f / 3f), ga, 1f / 3f, gb, 2f / 3f, -1, 0f, AuthoredClearance(profile, firstSample + 2),
-                    profile, falloff, expansions, settings, bodySurface, bvh, queryRange, safety, triggerDistance, strength, context, allowedGroups, corrections, weights, stats) ? 1 : 0;
+                    profile, falloff, expansions, settings, bodySurface, bvh, queryRange, safety, triggerDistance, strength, context, allowedGroups, sink) ? 1 : 0;
             }
 
             return violations;
@@ -1712,9 +1734,7 @@ namespace Orbiters.ReFit
             float strength,
             Context context,
             bool[] allowedGroups,
-            Vector3[] corrections,
-            float[] weights,
-            ReFitClearanceCorrectionStats stats)
+            GuardSink sink)
         {
             float ew0 = EligibleSampleWeight(profile, falloff, expansions, settings, allowedGroups, g0, w0);
             float ew1 = EligibleSampleWeight(profile, falloff, expansions, settings, allowedGroups, g1, w1);
@@ -1745,7 +1765,7 @@ namespace Orbiters.ReFit
             }
             float clearance = Vector3.Dot(point - hit.position, normal);
             if (clearance < 0f)
-                stats.maxPenetrationBefore = Mathf.Max(stats.maxPenetrationBefore, -clearance);
+                sink.maxPenetration = Mathf.Max(sink.maxPenetration, -clearance);
 
             // Only depth the refit added: where the authored clothing already sat inside the body it was made for (a long
             // edge sagging into a curved hip), the guard brings the sample back to that depth, not out of the body.
@@ -1757,19 +1777,45 @@ namespace Orbiters.ReFit
 
             float missing = desired - clearance;
             var correction = normal * (missing * strength);
-            AddWeightedCorrection(corrections, weights, g0, ew0 / totalWeight, correction);
-            AddWeightedCorrection(corrections, weights, g1, ew1 / totalWeight, correction);
-            AddWeightedCorrection(corrections, weights, g2, ew2 / totalWeight, correction);
+            sink.Add(g0, ew0 / totalWeight, correction);
+            sink.Add(g1, ew1 / totalWeight, correction);
+            sink.Add(g2, ew2 / totalWeight, correction);
             return true;
         }
 
-        private static void AddWeightedCorrection(Vector3[] corrections, float[] weights, int group, float weight, Vector3 correction)
+        // What the samples of a range of triangles ask, in the order they ask it: the guard's samples are queried in parallel,
+        // then their corrections summed in triangle order, as one thread would (the same sums, bit for bit).
+        private sealed class GuardSink
         {
-            if (group < 0 || group >= corrections.Length || weight <= 1e-6f)
-                return;
+            private readonly int groupCount;
+            private readonly List<(int group, float weight, Vector3 correction)> asked = new List<(int, float, Vector3)>();
+            public float maxPenetration;
+            public int violations;
 
-            corrections[group] += correction * weight;
-            weights[group] += weight;
+            public GuardSink(int groupCount) => this.groupCount = groupCount;
+
+            public void Clear()
+            {
+                asked.Clear();
+                maxPenetration = 0f;
+                violations = 0;
+            }
+
+            public void Add(int group, float weight, Vector3 correction)
+            {
+                if (group < 0 || group >= groupCount || weight <= 1e-6f)
+                    return;
+                asked.Add((group, weight, correction));
+            }
+
+            public void ApplyTo(Vector3[] corrections, float[] weights)
+            {
+                foreach (var (group, weight, correction) in asked)
+                {
+                    corrections[group] += correction * weight;
+                    weights[group] += weight;
+                }
+            }
         }
 
         private static float MeasureWorstSurfacePenetration(
@@ -2144,36 +2190,49 @@ namespace Orbiters.ReFit
                 ? Mathf.Cos(settings.maxNormalAngle * Mathf.Deg2Rad)
                 : -1f;
 
-            Func<int, bool> filter = t =>
-            {
-                if (useRegion && (t < 0 || t >= context.targetTriangleRegions.Length ||
-                                  !HumanoidBoneMapper.RegionsCompatible(region, context.targetTriangleRegions[t])))
-                    return false;
-                if (useNormal && Vector3.Dot(normal, bodySurface.FaceNormal(t)) < minDot)
-                    return false;
-                return true;
-            };
-
-            var hit = bvh.ClosestPoint(point, queryRange, filter);
-            if (hit.found)
-                return hit;
-
-            if (useRegion)
-            {
-                Func<int, bool> regionOnly = t => t >= 0 && t < context.targetTriangleRegions.Length &&
-                                                  HumanoidBoneMapper.RegionsCompatible(region, context.targetTriangleRegions[t]);
-                hit = bvh.ClosestPoint(point, queryRange, regionOnly);
-                if (hit.found)
-                    return hit;
-            }
-
+            // One traversal for the filter and both fallbacks: what each filtered query would find (SurfaceBvh.ClosestPoints).
+            Span<SurfaceBvh.Hit> hits = stackalloc SurfaceBvh.Hit[3];
+            bvh.ClosestPoints(point, queryRange,
+                new CompatibleClasses(bodySurface, normal, minDot, useNormal, useRegion, region, context?.targetTriangleRegions), 3, hits);
+            if (hits[0].found)
+                return hits[0];
+            if (useRegion && hits[1].found)
+                return hits[1];
             if (useNormal)
+                return hits[2];
+            return hits[0];
+        }
+
+        // A triangle's classes for ClosestCompatiblePoint: 1 of the region and facing the way asked, 2 of the region, 4 facing
+        // the way (each without its filter when it is not asked).
+        private readonly struct CompatibleClasses : ITriangleClassifier
+        {
+            private readonly MeshSnapshot surface;
+            private readonly Vector3 normal;
+            private readonly float minDot;
+            private readonly bool useNormal, useRegion;
+            private readonly BodyRegion region;
+            private readonly BodyRegion[] regions;
+
+            public CompatibleClasses(MeshSnapshot surface, Vector3 normal, float minDot, bool useNormal, bool useRegion, BodyRegion region,
+                BodyRegion[] regions)
             {
-                Func<int, bool> normalOnly = t => Vector3.Dot(normal, bodySurface.FaceNormal(t)) >= minDot;
-                hit = bvh.ClosestPoint(point, queryRange, normalOnly);
+                this.surface = surface;
+                this.normal = normal;
+                this.minDot = minDot;
+                this.useNormal = useNormal;
+                this.useRegion = useRegion;
+                this.region = region;
+                this.regions = regions;
             }
 
-            return hit;
+            public int Classes(int triangle)
+            {
+                bool inRegion = !useRegion || (triangle >= 0 && triangle < regions.Length &&
+                                               HumanoidBoneMapper.RegionsCompatible(region, regions[triangle]));
+                bool facing = !useNormal || Vector3.Dot(normal, surface.FaceNormal(triangle)) >= minDot;
+                return (inRegion && facing ? 1 : 0) | (inRegion ? 2 : 0) | (facing ? 4 : 0);
+            }
         }
 
         private static Vector3 SampleReferenceNormal(Context context, int g0, float w0, int g1, float w1, int g2, float w2)
@@ -2284,9 +2343,11 @@ namespace Orbiters.ReFit
             if (!hasDelta)
                 return body;
 
-            // Its hierarchy is the body's refitted where the frame moves it.
+            // Its hierarchy is the body's refitted where the frame moves it; its face normals are cached, as the rest body's
+            // are, so the guard's facing filter reads them instead of a cross product per triangle tested.
             var shaped = MeshSnapshot.MovedFrom(body, vertices, bodyWorldDeltas);
             shaped.worldNormals = ComputeWorldNormals(vertices, body.triangles);
+            shaped.CacheFaceNormals();
             return shaped;
         }
 

@@ -110,7 +110,14 @@ namespace Orbiters.ReFit
             bool clothNormal = false, int[] bodyTriRegionMasks = null)
         {
             bool useRegion = bodyTriRegions != null && region != BodyRegion.Unknown;
-            var nearEquivalent = bvh.ClosestPoint(point, Mathf.Min(maxDistance, NearEquivalentSurfaceEpsilon), null);
+            // One traversal answers the near probe and every fallback (see ClosestPointWithFallback).
+            var classes = Classify(point, body, bvh, maxDistance, region, bodyTriRegions, referenceNormal, cosMaxAngle, useNormal, useRegion,
+                bodyTriRegionMasks);
+            // The nearest triangle within the probe's range, of any facing or region: the unfiltered class's answer when it lies
+            // that close (the least distance of all), none otherwise. Its squared distance is recomputed as the query computed it.
+            float probe = Mathf.Min(maxDistance, NearEquivalentSurfaceEpsilon);
+            var nearEquivalent = classes.any.found && (classes.any.position - point).sqrMagnitude < probe * probe
+                ? classes.any : default;
             if (nearEquivalent.found)
             {
                 return new SurfaceBinding
@@ -127,9 +134,7 @@ namespace Orbiters.ReFit
                 };
             }
 
-            var hit = ClosestPointWithFallback(
-                point, body, bvh, maxDistance, region, bodyTriRegions, referenceNormal, cosMaxAngle, useNormal, useRegion,
-                out bool usedRelaxedFallback, clothNormal, bodyTriRegionMasks);
+            var hit = Fallback(classes, body, region, referenceNormal, cosMaxAngle, useNormal, useRegion, out bool usedRelaxedFallback, clothNormal);
             return new SurfaceBinding
             {
                 valid = hit.found,
@@ -172,8 +177,7 @@ namespace Orbiters.ReFit
             var nearest = BindPoint(point, body, bvh, maxDistance, region, bodyTriRegions, normal, cosMaxAngle, useNormal, false, bodyTriRegionMasks);
             if (nearest.valid && nearest.distance <= NearEquivalentSurfaceEpsilon) return nearest;
             bool useRegion = bodyTriRegions != null && region != BodyRegion.Unknown;
-            Func<int, bool> facing = t => (!useRegion || Compatible(region, t, bodyTriRegions, bodyTriRegionMasks)) &&
-                                          Vector3.Dot(normal, body.FaceNormal(t)) >= cosMaxAngle;
+            var facing = new Facing(body, normal, cosMaxAngle, useRegion, region, bodyTriRegions, bodyTriRegionMasks);
             float reach = nearest.valid ? Mathf.Min(maxDistance, nearest.distance * ProjectionReach + ProjectionSlack) : maxDistance;
             var outward = bvh.Raycast(point, normal, reach, facing);
             var inward = bvh.Raycast(point, -normal, outward.found ? outward.distance : reach, facing);
@@ -201,39 +205,110 @@ namespace Orbiters.ReFit
 
         private static SurfaceBvh.Hit ClosestPointWithFallback(Vector3 point, MeshSnapshot body, SurfaceBvh bvh, float maxDistance,
             BodyRegion region, BodyRegion[] bodyTriRegions, Vector3 referenceNormal, float cosMaxAngle,
-            bool useNormal, bool useRegion, out bool usedRelaxedFallback, bool clothNormal, int[] masks)
-        {
-            usedRelaxedFallback = false;
+            bool useNormal, bool useRegion, out bool usedRelaxedFallback, bool clothNormal, int[] masks) =>
+            Fallback(Classify(point, body, bvh, maxDistance, region, bodyTriRegions, referenceNormal, cosMaxAngle, useNormal, useRegion, masks),
+                body, region, referenceNormal, cosMaxAngle, useNormal, useRegion, out usedRelaxedFallback, clothNormal);
 
-            Func<int, bool> fullFilter = null;
-            if (useNormal || useRegion)
+        // The nearest triangle of each acceptance class the fallbacks read: the filter asked for (its region and facing), the
+        // region alone, and any triangle.
+        private struct Classes
+        {
+            public SurfaceBvh.Hit full, regionOnly, any;
+        }
+
+        // A triangle's classes: 1 any, 2 of the region (any without region filtering), 4 of the region and facing the way asked.
+        private readonly struct BindingClassifier : ITriangleClassifier
+        {
+            private readonly MeshSnapshot body;
+            private readonly Vector3 normal;
+            private readonly float cosMaxAngle;
+            private readonly bool useNormal, useRegion;
+            private readonly BodyRegion region;
+            private readonly BodyRegion[] regions;
+            private readonly int[] masks;
+
+            public BindingClassifier(MeshSnapshot body, Vector3 normal, float cosMaxAngle, bool useNormal, bool useRegion, BodyRegion region,
+                BodyRegion[] regions, int[] masks)
             {
-                fullFilter = t =>
-                {
-                    if (useRegion && !Compatible(region, t, bodyTriRegions, masks)) return false;
-                    if (useNormal && Vector3.Dot(referenceNormal, body.FaceNormal(t)) < cosMaxAngle) return false;
-                    return true;
-                };
+                this.body = body;
+                this.normal = normal;
+                this.cosMaxAngle = cosMaxAngle;
+                this.useNormal = useNormal;
+                this.useRegion = useRegion;
+                this.region = region;
+                this.regions = regions;
+                this.masks = masks;
             }
 
-            var hit = bvh.ClosestPoint(point, maxDistance, fullFilter);
-            Func<int, bool> regionOnly = useRegion ? t => Compatible(region, t, bodyTriRegions, masks) : (Func<int, bool>)null;
+            public int Classes(int triangle)
+            {
+                if (useRegion && !Compatible(region, triangle, regions, masks)) return 1;
+                if (useNormal && Vector3.Dot(normal, body.FaceNormal(triangle)) < cosMaxAngle) return 1 | 2;
+                return 1 | 2 | 4;
+            }
+        }
+
+        // Triangles of a compatible region (when filtered) facing a direction: the rays of ChainPoint.
+        private readonly struct Facing : ITriangleFilter
+        {
+            private readonly MeshSnapshot body;
+            private readonly Vector3 normal;
+            private readonly float cosMaxAngle;
+            private readonly bool useRegion;
+            private readonly BodyRegion region;
+            private readonly BodyRegion[] regions;
+            private readonly int[] masks;
+
+            public Facing(MeshSnapshot body, Vector3 normal, float cosMaxAngle, bool useRegion, BodyRegion region, BodyRegion[] regions, int[] masks)
+            {
+                this.body = body;
+                this.normal = normal;
+                this.cosMaxAngle = cosMaxAngle;
+                this.useRegion = useRegion;
+                this.region = region;
+                this.regions = regions;
+                this.masks = masks;
+            }
+
+            public bool Accept(int triangle) => (!useRegion || Compatible(region, triangle, regions, masks)) &&
+                                                Vector3.Dot(normal, body.FaceNormal(triangle)) >= cosMaxAngle;
+        }
+
+        private static Classes Classify(Vector3 point, MeshSnapshot body, SurfaceBvh bvh, float maxDistance, BodyRegion region,
+            BodyRegion[] bodyTriRegions, Vector3 referenceNormal, float cosMaxAngle, bool useNormal, bool useRegion, int[] masks)
+        {
+            Span<SurfaceBvh.Hit> hits = stackalloc SurfaceBvh.Hit[3];
+            bvh.ClosestPoints(point, maxDistance,
+                new BindingClassifier(body, referenceNormal, cosMaxAngle, useNormal, useRegion, region, bodyTriRegions, masks), 3, hits);
+            return new Classes { any = hits[0], regionOnly = hits[1], full = hits[2] };
+        }
+
+        // The precedence of the filtered query's fallbacks, over the classes' answers: the filter asked for; for a clothing
+        // normal, the skin it faces when nothing turned its way is about as close; the region alone; then any triangle (for the
+        // torso or no region).
+        private static SurfaceBvh.Hit Fallback(Classes classes, MeshSnapshot body, BodyRegion region, Vector3 referenceNormal, float cosMaxAngle,
+            bool useNormal, bool useRegion, out bool usedRelaxedFallback, bool clothNormal)
+        {
+            usedRelaxedFallback = false;
+            bool filtered = useNormal || useRegion;
+            var hit = filtered ? classes.full : classes.any;
+            var regionOnly = useRegion ? classes.regionOnly : classes.any;
             if (useNormal && clothNormal)
             {
                 // The shading normal of a surface facing the skin points into that skin. Matching it to faces turned the
                 // same way finds the far side of the limb or another body part; keep the skin it faces when nothing
                 // turned its way is about as close.
-                var near = bvh.ClosestPoint(point, maxDistance, regionOnly);
+                var near = regionOnly;
                 if (near.found && Vector3.Dot(-referenceNormal, body.FaceNormal(near.triangle)) >= cosMaxAngle &&
                     (!hit.found || hit.distance > near.distance + Mathf.Max(SkinFacingSlack, near.distance)))
                     return near;
             }
-            if (hit.found || fullFilter == null)
+            if (hit.found || !filtered)
                 return hit;
 
             if (useRegion && useNormal)
             {
-                hit = bvh.ClosestPoint(point, maxDistance, regionOnly);
+                hit = regionOnly;
                 if (hit.found)
                 {
                     usedRelaxedFallback = true;
@@ -243,7 +318,7 @@ namespace Orbiters.ReFit
 
             if (!useRegion || region == BodyRegion.Unknown || region == BodyRegion.Torso)
             {
-                hit = bvh.ClosestPoint(point, maxDistance, null);
+                hit = classes.any;
                 usedRelaxedFallback = hit.found;
             }
 

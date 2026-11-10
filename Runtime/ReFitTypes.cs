@@ -383,7 +383,19 @@ namespace Orbiters.ReFit
     public class ReFitClearanceCorrectionStats
     {
         public int eligibleGroups;
+        /// <summary>Groups moved outwards by the pass or its guards (each counted once per pass).</summary>
         public int outwardGroups;
+        // Within one pass: the groups counted in outwardGroups.
+        [NonSerialized] private bool[] outwardSeen;
+
+        /// <summary>Counts <paramref name="group"/> in <see cref="outwardGroups"/> once per pass of <paramref name="groupCount"/> groups.</summary>
+        internal void CountOutward(int group, int groupCount)
+        {
+            outwardSeen ??= new bool[groupCount];
+            if (group < 0 || group >= outwardSeen.Length || outwardSeen[group]) return;
+            outwardSeen[group] = true;
+            outwardGroups++;
+        }
         public int inwardGroups;
         public float maxOutwardCorrection;
         public float maxInwardCorrection;

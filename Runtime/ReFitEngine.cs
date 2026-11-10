@@ -1979,6 +1979,7 @@ namespace Orbiters.ReFit
         {
             return new ReFitClearanceCorrection.Context
             {
+                measureFinalPenetration = state.settings.captureProjectionDebug,
                 transferredBlendshape = transferredBlendshape,
                 assetGroupRegions = state.assetGroupRegions,
                 targetTriangleRegions = state.targetTriRegions,

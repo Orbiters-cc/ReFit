@@ -1667,6 +1667,8 @@ namespace Orbiters.ReFit.Editor.Tests
             var falloff = new[] { 1f, 1f, 1f, 0f, 0f, 0f };
             var context = new ReFitClearanceCorrection.Context
             {
+                // The final measure is what this case checks: a diagnostic taken on request.
+                measureFinalPenetration = true,
                 transferredBlendshape = true,
                 assetGroupRegions = new[] { BodyRegion.Torso, BodyRegion.Torso, BodyRegion.Torso, BodyRegion.Torso, BodyRegion.Torso, BodyRegion.Torso },
                 targetTriangleRegions = new[] { BodyRegion.Torso },

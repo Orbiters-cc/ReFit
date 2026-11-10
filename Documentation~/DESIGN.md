@@ -364,7 +364,12 @@ integrity checking.
   refit run again) takes that run's enclosed skin, hierarchies and main surface. Three bodies are kept, six while a batch
   runs (`ReFitService.BeginBatch`, `ExecuteBatchCoroutine`; Orbiters Toolkit's runner holds one around an outfit).
 - Compute final penetration diagnostics after all corrections, not repeatedly when intermediate results
-  are overwritten without influencing geometry.
+  are overwritten without influencing geometry, and only when asked (`captureProjectionDebug`): the clearance pass's
+  final measure is a second full sampling of the surface whose only output is a number in a log line.
+- Query in parallel, sum in order: the surface guard samples fixed ranges of triangles on all cores, then adds what they
+  ask range after range in triangle order, bit for bit what one thread did. The binder and the guard ask one traversal for
+  the filtered query and every fallback (`SurfaceBvh.ClosestPoints`: the nearest triangle of each acceptance class),
+  instead of up to four traversals with a delegate filter each.
 - Sort BVH subranges in place and use a bounded query-local stack, avoiding per-query allocations and
   shared mutable query state.
 - Share bindings, captured body data and staging across a multi-shape request. Keep verified arithmetic and

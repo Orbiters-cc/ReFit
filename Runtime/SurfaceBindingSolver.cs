@@ -326,30 +326,18 @@ namespace Orbiters.ReFit
         public static void Smooth(Vector3[] deltas, System.Collections.Generic.List<int>[] adjacency, int iterations, float strength)
         {
             if (iterations <= 0 || strength <= 0f) return;
-            int n = deltas.Length;
-            var buffer = new Vector3[n];
-            // Ranges of groups per task, not a delegate call per group (a few additions each): every group's result is its own.
-            int ranges = (n + SmoothRange - 1) / SmoothRange;
-            for (int it = 0; it < iterations; it++)
-            {
-                Parallel.For(0, ranges, range =>
-                {
-                    int end = Math.Min(n, (range + 1) * SmoothRange);
-                    for (int g = range * SmoothRange; g < end; g++)
-                    {
-                        var neighbors = adjacency[g];
-                        if (neighbors.Count == 0) { buffer[g] = deltas[g]; continue; }
-                        Vector3 avg = Vector3.zero;
-                        foreach (var nb in neighbors) avg += deltas[nb];
-                        avg /= neighbors.Count;
-                        buffer[g] = Vector3.Lerp(deltas[g], avg, strength);
-                    }
-                });
-                Array.Copy(buffer, deltas, n);
-            }
+            Smooth(deltas, GroupGraph.Of(adjacency), iterations, strength);
         }
 
-        private const int SmoothRange = 1024;
+        /// <summary>
+        /// <see cref="Smooth(Vector3[], System.Collections.Generic.List{int}[], int, float)"/> over compressed adjacency: each pass moves
+        /// every group towards the mean of its neighbours by <paramref name="strength"/> (Burst, see <see cref="ReFitFieldKernels"/>).
+        /// </summary>
+        internal static void Smooth(Vector3[] deltas, GroupGraph graph, int iterations, float strength)
+        {
+            if (iterations <= 0 || strength <= 0f) return;
+            ReFitFieldLoops.Smooth(deltas, new Vector3[deltas.Length], graph, iterations, strength);
+        }
 
         /// <summary>1 below <paramref name="start"/>, 0 above <paramref name="max"/>, smoothstep in between.</summary>
         public static float Falloff(float distance, float start, float max)

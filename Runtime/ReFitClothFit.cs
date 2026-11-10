@@ -62,6 +62,7 @@ namespace Orbiters.ReFit
         private readonly int groupCount;
         private readonly int[] groupTriangles;
         private readonly List<int>[] adjacency;
+        private readonly GroupGraph graph;
         private readonly float[] clearance;
         // How far each group lay over the skin it was made on (negative: under it).
         private readonly float[] authoredGap;
@@ -97,6 +98,7 @@ namespace Orbiters.ReFit
             groupCount = asset.GroupCount;
             regions = groupRegions;
             adjacency = asset.groupAdjacency;
+            graph = GroupGraph.Of(adjacency);
             var tris = new List<int>(asset.triangles.Length);
             for (int t = 0; t + 2 < asset.triangles.Length; t += 3)
             {
@@ -319,7 +321,7 @@ namespace Orbiters.ReFit
                 for (int k = 0; k < s.Length; k++) motion += shapeMotion[s[k]] * shapeWeights[g][k];
                 motions[g] = motion * (falloff != null ? falloff[g] : 1f);
             });
-            DeltaField.Smooth(motions, adjacency, smoothingIterations, smoothingStrength);
+            DeltaField.Smooth(motions, graph, smoothingIterations, smoothingStrength);
             MoveAsOne(fitted, motions);
             var start = new Vector3[groupCount];
             for (int g = 0; g < groupCount; g++) start[g] = fitted[g] + motions[g];
@@ -596,29 +598,8 @@ namespace Orbiters.ReFit
             }
         }
 
-        private void Smooth(Vector3[] field, Vector3[] buffer, float strength)
-        {
-            // Ranges of groups per task, not a delegate call per group: every group's result is its own.
-            const int range = 1024;
-            int ranges = (groupCount + range - 1) / range;
-            for (int pass = 0; pass < SmoothPasses; pass++)
-            {
-                Parallel.For(0, ranges, r =>
-                {
-                    int end = Math.Min(groupCount, (r + 1) * range);
-                    for (int g = r * range; g < end; g++)
-                    {
-                        var around = adjacency[g];
-                        if (around.Count == 0) { buffer[g] = field[g]; continue; }
-                        var mean = Vector3.zero;
-                        foreach (int other in around) mean += field[other];
-                        mean /= around.Count;
-                        buffer[g] = Vector3.Lerp(field[g], mean, strength);
-                    }
-                });
-                Array.Copy(buffer, field, groupCount);
-            }
-        }
+        // Each group towards the mean of its neighbours, SmoothPasses times (Burst, see ReFitFieldKernels).
+        private void Smooth(Vector3[] field, Vector3[] buffer, float strength) => ReFitFieldLoops.Smooth(field, buffer, graph, SmoothPasses, strength);
 
         // Target skin with no counterpart on the source, in front of the fabric covering the skin around it.
         private int Through(Vector3[] positions, MeshSnapshot target, bool[] unmatched)

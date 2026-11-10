@@ -41,7 +41,7 @@ namespace Orbiters.ReFit
             /// <summary>
             /// Sample the whole surface again after the pass for <see cref="ReFitClearanceCorrectionStats.maxPenetrationAfter"/>
             /// (diagnostics: the engine asks for it with <see cref="ReFitSettings.captureProjectionDebug"/>). Without it, that
-            /// figure is the per-group measure of the safety guard.
+            /// figure stays 0 and <see cref="ReFitClearanceCorrectionStats.finalPenetrationMeasured"/> false.
             /// </summary>
             public bool measureFinalPenetration;
             public bool transferredBlendshape;
@@ -377,6 +377,8 @@ namespace Orbiters.ReFit
 
             // A diagnostic only (no geometry reads it): a second full sampling of the surface, taken when asked.
             if (context != null && context.measureFinalPenetration)
+            {
+                stats.finalPenetrationMeasured = true;
                 stats.maxPenetrationAfter = MeasureFinalMaxPenetrationAfter(
                     asset,
                     targetBody,
@@ -388,6 +390,7 @@ namespace Orbiters.ReFit
                     expansions,
                     settings,
                     context, bodySurface, bodyBvh);
+            }
 
             return stats;
         }
@@ -458,7 +461,7 @@ namespace Orbiters.ReFit
                 }
 
                 if (finalClearance < 0f)
-                    stats.maxPenetrationAfter = Mathf.Max(stats.maxPenetrationAfter, -finalClearance);
+                    stats.maxPenetrationAfterGuard = Mathf.Max(stats.maxPenetrationAfterGuard, -finalClearance);
             }
         }
 

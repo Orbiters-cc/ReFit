@@ -400,7 +400,15 @@ namespace Orbiters.ReFit
         public float maxOutwardCorrection;
         public float maxInwardCorrection;
         public float maxPenetrationBefore;
+        /// <summary>
+        /// The deepest a surface sample of the clothing lies in the body after the whole pass (its final measure), when it was
+        /// taken (<see cref="finalPenetrationMeasured"/>; <see cref="ReFitSettings.captureProjectionDebug"/>); 0 otherwise.
+        /// </summary>
         public float maxPenetrationAfter;
+        /// <summary>Whether <see cref="maxPenetrationAfter"/> was measured.</summary>
+        public bool finalPenetrationMeasured;
+        /// <summary>The deepest a welded group lay in the body after the safety guard (measured at the groups, before the surface guard).</summary>
+        public float maxPenetrationAfterGuard;
         public int safetyGuardGroups;
         public float maxSafetyGuardCorrection;
         public int surfaceGuardSamples;
@@ -439,6 +447,8 @@ namespace Orbiters.ReFit
             maxInwardCorrection = Mathf.Max(maxInwardCorrection, other.maxInwardCorrection);
             maxPenetrationBefore = Mathf.Max(maxPenetrationBefore, other.maxPenetrationBefore);
             maxPenetrationAfter = Mathf.Max(maxPenetrationAfter, other.maxPenetrationAfter);
+            finalPenetrationMeasured |= other.finalPenetrationMeasured;
+            maxPenetrationAfterGuard = Mathf.Max(maxPenetrationAfterGuard, other.maxPenetrationAfterGuard);
             safetyGuardGroups += other.safetyGuardGroups;
             maxSafetyGuardCorrection = Mathf.Max(maxSafetyGuardCorrection, other.maxSafetyGuardCorrection);
             surfaceGuardSamples += other.surfaceGuardSamples;
@@ -477,7 +487,9 @@ namespace Orbiters.ReFit
                    $"islandRejects(noSupport={islandPropagationRejectedNoSupportGroups}, unstable={islandPropagationRejectedUnstableGroups}, insufficientSupport={islandPropagationRejectedInsufficientSupportGroups}, weakDonor={islandPropagationRejectedWeakDonorGroups}, weight={islandPropagationRejectedWeightGroups}, budget={islandPropagationRejectedBudgetGroups}), " +
                    $"maxIslandPropagated={maxPropagatedIslandCorrection * 1000f:0.###}mm, " +
                    $"maxIslandSupportDistance={maxIslandPropagationSupportDistance * 1000f:0.###}mm, " +
-                   $"maxPenetrationBefore={maxPenetrationBefore * 1000f:0.###}mm, maxPenetrationAfter={maxPenetrationAfter * 1000f:0.###}mm, " +
+                   $"maxPenetrationBefore={maxPenetrationBefore * 1000f:0.###}mm, " +
+                   (finalPenetrationMeasured ? $"maxPenetrationAfter={maxPenetrationAfter * 1000f:0.###}mm, " : "") +
+                   $"maxPenetrationAfterGuard={maxPenetrationAfterGuard * 1000f:0.###}mm, " +
                    $"maxClearanceLossBefore={maxClearanceLossBefore * 1000f:0.###}mm, maxExpansion={maxExpansion * 1000f:0.###}mm.";
         }
     }

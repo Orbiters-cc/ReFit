@@ -1706,6 +1706,7 @@ namespace Orbiters.ReFit.Editor.Tests
                 "Synthetic cap regression did not trigger disconnected island propagation.");
             AssertLessOrEqual(maxCorrection, settings.clearanceMaxTransferredTotalCorrection + 0.0005f,
                 "Post-propagation safety/surface guard exceeded the transferred correction cap.");
+            AssertTrue(stats.finalPenetrationMeasured, "The final penetration was asked for and not measured.");
             AssertGreater(stats.maxPenetrationAfter, 0.04f,
                 "Final maxPenetrationAfter did not reflect the penetration left by the transferred correction cap.");
             AssertLessOrEqual(Mathf.Abs(stats.maxPenetrationAfter - expectedFinalPenetration), 0.002f,

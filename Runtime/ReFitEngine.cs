@@ -1674,6 +1674,7 @@ namespace Orbiters.ReFit
             public Vector3 garmentMin, garmentMax;
             public float frameReach;
             public WeldedNormalsCache normals;
+            public Lazy<DetachedCoherence> detachedCoherence;
         }
 
         // Every frame of every requested shape, transferred on its own, at most shapeWorkers at once.
@@ -1698,6 +1699,8 @@ namespace Orbiters.ReFit
                 primaryGroupDeltas = primaryGroupDeltas, transferBindings = fit.transferBindings, coverage = fit.coverage,
                 layerCoverage = fit.layerCoverage, garmentMin = garmentMin, garmentMax = garmentMax, frameReach = frameReach,
                 normals = new WeldedNormalsCache(asset, state.primaryLocalDeltas),
+                // Built by the first frame that needs it, then shared (thread safe).
+                detachedCoherence = new Lazy<DetachedCoherence>(() => DetachedCoherence.Prepare(state, primaryGroupDeltas, asset.GroupCount)),
             };
             SetBackgroundProgress(state, 0.5f, $"Transferring blendshapes: 0/{work.Length}");
             // Frames own their arrays. Shared snapshots, BVHs and coverage supports are read-only.
@@ -1820,7 +1823,7 @@ namespace Orbiters.ReFit
             // on the target must receive the complete authored shape displacement instead.
             if (!worker.sourceIsTarget)
                 ApplyUpperBodyHemDamping(groupDeltas, worker.upperBodyHemWeights, settings);
-            ApplyDetachedTransferredComponentCoherence(worker, primaryGroupDeltas, groupDeltas, shape.sourceName);
+            ApplyDetachedTransferredComponentCoherence(worker, inputs.detachedCoherence, groupDeltas, shape.sourceName);
             frame.rawLocalDeltas = PerFrame(ToLocalDeltas(worker, groupDeltas, false), motion);
 
             var cachedLocalDeltas = FindCachedTransferredLocalDeltas(
@@ -2431,9 +2434,66 @@ namespace Orbiters.ReFit
             return t * t * (3f - 2f * t);
         }
 
+        /// <summary>
+        /// What the detached-component coherence derives from the clothing and its fit alone, the same for every frame of a
+        /// transfer: the components, their groups, reference positions and bounds, the donor surface and the clusters.
+        /// Read only once built.
+        /// </summary>
+        private sealed class DetachedCoherence
+        {
+            public int groupCount;
+            public int[] componentByGroup, componentSizes;
+            public List<int>[] componentGroups;
+            public Vector3[] reference;
+            public DetachedSurfaceSupport surfaceSupport;
+            public List<List<int>> clusters;
+
+            /// <summary>The setup for clothing of <paramref name="groupCount"/> groups fitted by <paramref name="primaryGroupDeltas"/>, or null when nothing can be stabilized.</summary>
+            public static DetachedCoherence Prepare(State state, Vector3[] primaryGroupDeltas, int groupCount)
+            {
+                var asset = state.asset;
+                var settings = state.settings;
+                var componentByGroup = BuildDetachedComponentMap(asset, groupCount, out var componentSizes, out int largestComponentSize);
+                if (componentByGroup == null || componentSizes == null || componentSizes.Length <= 1 || largestComponentSize <= 0)
+                    return null;
+
+                int receiverSizeLimit = Mathf.Max(64, Mathf.RoundToInt(largestComponentSize * 0.25f));
+                var componentGroups = BuildComponentGroupLists(componentByGroup, componentSizes, groupCount);
+                var reference = BuildDetachedCoherenceReferencePositions(asset, primaryGroupDeltas, groupCount);
+                var componentBounds = BuildComponentBounds(componentGroups, reference);
+                var surfaceSupport = BuildDetachedSurfaceSupport(state, reference, componentByGroup, componentSizes, groupCount);
+                var eligibleComponents = new bool[componentSizes.Length];
+                for (int component = 0; component < componentSizes.Length; component++)
+                {
+                    int size = componentSizes[component];
+                    eligibleComponents[component] = size >= DetachedCoherenceMinGroups &&
+                                                    !state.tubes.groups[componentGroups[component][0]] &&
+                                                    size < largestComponentSize &&
+                                                    size <= receiverSizeLimit &&
+                                                    componentBounds[component].valid;
+                }
+
+                var clusters = BuildDetachedComponentClusters(
+                    eligibleComponents,
+                    componentBounds,
+                    Mathf.Min(DetachedCoherenceMaxClusterDistance, Mathf.Max(0.025f, settings.maxProjectionDistance * 0.2f)));
+                return new DetachedCoherence
+                {
+                    groupCount = groupCount,
+                    componentByGroup = componentByGroup,
+                    componentSizes = componentSizes,
+                    componentGroups = componentGroups,
+                    reference = reference,
+                    surfaceSupport = surfaceSupport,
+                    clusters = clusters,
+                };
+            }
+        }
+
+        /// <param name="setup">The transfer's frame-invariant part (<see cref="DetachedCoherence.Prepare"/>), shared by its frames.</param>
         private static void ApplyDetachedTransferredComponentCoherence(
             State state,
-            Vector3[] primaryGroupDeltas,
+            Lazy<DetachedCoherence> setup,
             Vector3[] transferredGroupDeltas,
             string shapeName)
         {
@@ -2444,31 +2504,15 @@ namespace Orbiters.ReFit
                 asset.worldVertices == null || asset.GroupCount <= 0)
                 return;
 
-            int groupCount = Mathf.Min(asset.GroupCount, transferredGroupDeltas.Length);
-            var componentByGroup = BuildDetachedComponentMap(asset, groupCount, out var componentSizes, out int largestComponentSize);
-            if (componentByGroup == null || componentSizes == null || componentSizes.Length <= 1 || largestComponentSize <= 0)
+            var prepared = setup.Value;
+            if (prepared == null || prepared.groupCount != Mathf.Min(asset.GroupCount, transferredGroupDeltas.Length))
                 return;
-
-            int receiverSizeLimit = Mathf.Max(64, Mathf.RoundToInt(largestComponentSize * 0.25f));
-            var componentGroups = BuildComponentGroupLists(componentByGroup, componentSizes, groupCount);
-            var reference = BuildDetachedCoherenceReferencePositions(asset, primaryGroupDeltas, groupCount);
-            var componentBounds = BuildComponentBounds(componentGroups, reference);
-            var surfaceSupport = BuildDetachedSurfaceSupport(state, reference, componentByGroup, componentSizes, groupCount);
-            var eligibleComponents = new bool[componentSizes.Length];
-            for (int component = 0; component < componentSizes.Length; component++)
-            {
-                int size = componentSizes[component];
-                eligibleComponents[component] = size >= DetachedCoherenceMinGroups &&
-                                                !state.tubes.groups[componentGroups[component][0]] &&
-                                                size < largestComponentSize &&
-                                                size <= receiverSizeLimit &&
-                                                componentBounds[component].valid;
-            }
-
-            var clusters = BuildDetachedComponentClusters(
-                eligibleComponents,
-                componentBounds,
-                Mathf.Min(DetachedCoherenceMaxClusterDistance, Mathf.Max(0.025f, settings.maxProjectionDistance * 0.2f)));
+            var componentByGroup = prepared.componentByGroup;
+            var componentSizes = prepared.componentSizes;
+            var componentGroups = prepared.componentGroups;
+            var reference = prepared.reference;
+            var surfaceSupport = prepared.surfaceSupport;
+            var clusters = prepared.clusters;
 
             int stabilizedClusters = 0;
             int stabilizedGroups = 0;

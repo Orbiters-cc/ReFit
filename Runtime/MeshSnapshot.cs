@@ -107,7 +107,19 @@ namespace Orbiters.ReFit
         /// (shape index -> weight in 0..1) overrides individual shapes (e.g. force the transferred shape to 0 or 1).
         /// </summary>
         public static MeshSnapshot Capture(SkinnedMeshRenderer smr, bool buildTopology,
-            IDictionary<int, float> shapeWeightOverrides01, ReFitReport report)
+            IDictionary<int, float> shapeWeightOverrides01, ReFitReport report) =>
+            Capture(smr, buildTopology, shapeWeightOverrides01, report, false);
+
+        /// <summary>
+        /// The skinned world positions of <paramref name="smr"/> in its current pose (see <see cref="Capture(SkinnedMeshRenderer,bool,IDictionary{int,float},ReFitReport)"/>),
+        /// bit for bit those a full capture gives, without its normals, tangents, triangles and face normals: for a renderer
+        /// whose bounds or sampled points are all that is read.
+        /// </summary>
+        internal static Vector3[] SkinnedPositions(SkinnedMeshRenderer smr, IDictionary<int, float> shapeWeightOverrides01) =>
+            Capture(smr, false, shapeWeightOverrides01, null, true).worldVertices;
+
+        private static MeshSnapshot Capture(SkinnedMeshRenderer smr, bool buildTopology,
+            IDictionary<int, float> shapeWeightOverrides01, ReFitReport report, bool positionsOnly)
         {
             var snap = new MeshSnapshot
             {
@@ -121,7 +133,7 @@ namespace Orbiters.ReFit
 
             // --- local positions with blendshapes applied -------------------------------------
             snap.localVertices = mesh.vertices;
-            var baseNormals = mesh.normals;
+            var baseNormals = positionsOnly ? null : mesh.normals;
             bool authoredNormals = baseNormals != null && baseNormals.Length == vertexCount;
             // The normals the shown shapes give (their normal deltas added, as Unity skins them); the authored ones
             // stay in baseNormals, the rest pose transferred shapes are measured against.
@@ -164,17 +176,17 @@ namespace Orbiters.ReFit
 
             snap.skinMatrices = new Matrix4x4[vertexCount];
             snap.worldVertices = new Vector3[vertexCount];
-            snap.worldNormals = new Vector3[vertexCount];
+            snap.worldNormals = positionsOnly ? null : new Vector3[vertexCount];
             var rigidMatrix = snap.rendererLocalToWorld;
             var localVerts = snap.localVertices;
             var weights = snap.boneWeights;
 
             // Without authored normals both come from the shown positions.
-            if (!authoredNormals)
+            if (!authoredNormals && !positionsOnly)
                 baseNormals = ComputeVertexNormals(localVerts, GetAllTriangles(mesh));
             snap.baseNormals = baseNormals;
             var skinnedNormals = shownNormals ?? baseNormals;
-            var tangents = mesh.tangents;
+            var tangents = positionsOnly ? null : mesh.tangents;
             snap.baseTangents = tangents != null && tangents.Length == vertexCount ? tangents : null;
 
             Parallel.For(0, vertexCount, i =>
@@ -198,11 +210,13 @@ namespace Orbiters.ReFit
                 }
                 snap.skinMatrices[i] = m;
                 snap.worldVertices[i] = m.MultiplyPoint3x4(localVerts[i]);
+                if (positionsOnly) return;
                 var nm = m.inverse.transpose;
                 var n = nm.MultiplyVector(skinnedNormals[i]);
                 snap.worldNormals[i] = n.sqrMagnitude > 1e-12f ? n.normalized : Vector3.up;
             });
 
+            if (positionsOnly) return snap;
             snap.triangles = GetAllTriangles(mesh);
             snap.CacheFaceNormals();
 

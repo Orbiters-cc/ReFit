@@ -665,7 +665,7 @@ namespace Orbiters.ReFit
             // The clothing as it is worn over the body as it shows those shapes.
             var shownBody = MeshSnapshot.Capture(body, false, ReFitWornShapes.AsShown(body, request.wornBodyShapes, zeroed, made), null);
             var index = shownBody.Index();
-            var cloth = MeshSnapshot.Capture(stage.assetRenderer, false, null, null).worldVertices;
+            var cloth = MeshSnapshot.SkinnedPositions(stage.assetRenderer, null);
             var mesh = body.sharedMesh;
             var frame = new Vector3[mesh.vertexCount];
             foreach (var name in unknown)

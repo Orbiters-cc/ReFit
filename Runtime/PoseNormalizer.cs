@@ -876,8 +876,8 @@ namespace Orbiters.ReFit
         private static Bounds? BakedWorldBounds(SkinnedMeshRenderer smr)
         {
             if (smr == null || smr.sharedMesh == null) return null;
-            var snap = MeshSnapshot.Capture(smr, false, ZeroBlendShapeOverrides(smr), null);
-            var verts = snap.worldVertices;
+            // Positions only: the bounds read nothing else of a capture.
+            var verts = MeshSnapshot.SkinnedPositions(smr, ZeroBlendShapeOverrides(smr));
             if (verts == null || verts.Length == 0) return null;
 
             var min = new Vector3(float.MaxValue, float.MaxValue, float.MaxValue);
@@ -943,8 +943,7 @@ namespace Orbiters.ReFit
                 originalPositions[i] = assetTransforms[i].localPosition;
                 originalRotations[i] = assetTransforms[i].localRotation;
             }
-            var beforePose = MeshSnapshot.Capture(stage.assetRenderer, false,
-                ZeroBlendShapeOverrides(stage.assetRenderer), null);
+            var beforePose = MeshSnapshot.SkinnedPositions(stage.assetRenderer, ZeroBlendShapeOverrides(stage.assetRenderer));
 
             // Apply parent-first so children read already-updated parents.
             int applied = 0;
@@ -994,8 +993,7 @@ namespace Orbiters.ReFit
                 // The engine reads this body (and its hierarchy) again, as do the next refits from the same source.
                 ReFitBodyCache.Attach(stage.sourceSurface);
                 var sourceIndex = stage.sourceSurface.Index();
-                var afterPose = MeshSnapshot.Capture(stage.assetRenderer, false,
-                    ZeroBlendShapeOverrides(stage.assetRenderer), null);
+                var afterPose = MeshSnapshot.SkinnedPositions(stage.assetRenderer, ZeroBlendShapeOverrides(stage.assetRenderer));
                 var before = MeasurePoseSurfaceDistance(beforePose, sourceIndex);
                 var after = MeasurePoseSurfaceDistance(afterPose, sourceIndex);
                 // Joint locations are not mesh correspondences. An inserted garment joint can make
@@ -1025,16 +1023,16 @@ namespace Orbiters.ReFit
             return count;
         }
 
-        private static Vector2 MeasurePoseSurfaceDistance(MeshSnapshot asset, SurfaceBvh source)
+        private static Vector2 MeasurePoseSurfaceDistance(Vector3[] positions, SurfaceBvh source)
         {
-            int count = Mathf.Min(asset.worldVertices.Length, 512);
+            int count = Mathf.Min(positions.Length, 512);
             if (count == 0) return Vector2.zero;
             var distances = new float[count];
             double sum = 0;
             for (int i = 0; i < count; i++)
             {
-                int vertex = (int)((long)i * asset.worldVertices.Length / count);
-                distances[i] = source.ClosestPoint(asset.worldVertices[vertex], float.MaxValue).distance;
+                int vertex = (int)((long)i * positions.Length / count);
+                distances[i] = source.ClosestPoint(positions[vertex], float.MaxValue).distance;
                 sum += distances[i];
             }
             Array.Sort(distances);

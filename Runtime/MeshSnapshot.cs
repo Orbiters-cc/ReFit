@@ -369,7 +369,12 @@ namespace Orbiters.ReFit
                 if (ga != gc) { adjacency[ga].Add(gc); adjacency[gc].Add(ga); }
             }
             groupAdjacency = new List<int>[adjacency.Length];
-            for (int g = 0; g < adjacency.Length; g++) groupAdjacency[g] = new List<int>(adjacency[g]);
+            // Sorted: every smoothing pass sums neighbours in this order, which must not be a hash set's.
+            for (int g = 0; g < adjacency.Length; g++)
+            {
+                groupAdjacency[g] = new List<int>(adjacency[g]);
+                groupAdjacency[g].Sort();
+            }
         }
 
         // ------------------------------------------------------------------

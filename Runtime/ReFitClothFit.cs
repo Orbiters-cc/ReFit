@@ -672,7 +672,8 @@ namespace Orbiters.ReFit
                 }
                 if (found.Count > MaxSamples)
                 {
-                    found.Sort((a, b) => b.weight.CompareTo(a.weight));
+                    // Heaviest first, equal weights by point: the points kept do not depend on the sort's internals.
+                    found.Sort((a, b) => a.weight != b.weight ? b.weight.CompareTo(a.weight) : a.index.CompareTo(b.index));
                     found.RemoveRange(MaxSamples, found.Count - MaxSamples);
                 }
                 float total = 0f;

@@ -356,11 +356,15 @@ integrity checking.
 - Sort BVH subranges in place and use a bounded query-local stack, avoiding per-query allocations and
   shared mutable query state.
 - Share bindings, captured body data and staging across a multi-shape request. Keep verified arithmetic and
-  projection order; a bounds-only BVH-refit experiment was rejected after measurable output drift.
+  projection order. A bounds-only BVH refit drifted the output while ties broke by the tree's layout (below); since
+  ties break by triangle index, a refitted hierarchy answers exactly as a rebuilt one.
 - Emit phase timings and compare geometry against an independently recorded baseline. Native/GPU backends
   are not included: redundant work was removable without platform binaries or numeric changes.
 - Filter BVH queries with structs over cached face normals (`FacingFilter`, `MeshSnapshot.FaceNormals`): no delegate,
-  closure or cross product per triangle tested. Build hierarchies with a median quickselect. Query a hierarchy of only
+  closure or cross product per triangle tested. Build hierarchies with a binned surface area heuristic (16 bins, the
+  median below 40 levels or where no bin boundary separates the triangles), triangles stored in leaf order with their
+  corners side by side, children's distances kept on the traversal stack, rays descending the nearer child first.
+  Query a hierarchy of only
   the triangles that may be found when few are left (`SurfaceBvh.Build(snapshot, include)`), not the whole surface with
   a filter rejecting the rest.
 - Skip work whose result cannot change: the coverage regularization re-tests a limit only when one of its groups moved
@@ -368,8 +372,12 @@ integrity checking.
   wall once; inpainting skips parts with no known change.
 - Record where the time goes inside the slow phases (`registration-timing`, `deformation-timing`, the cloth drape's
   passes, the coverage's build, passes and regularization) and measure before optimizing.
-- Distance ties (a point equally close to two triangles) break by the hierarchy's layout: a new layout moves results
-  computed through many iterations, and metrics signed by the nearest face, by a few samples in either direction.
+- Distance ties (a point equally close to two triangles, a ray through a shared edge) break by the lower triangle index,
+  and bounds are widened by a rounding slack so no node holding a possible answer is pruned: a query's answer depends
+  on the triangles only, never on how the hierarchy was built, refitted, traversed or seeded (`SurfaceBvh`'s remarks).
+  Until revision 17 they broke by the layout, and each new layout moved metrics signed by the nearest face by a few
+  samples. Summation orders are fixed too: neighbour lists are sorted by index, the registration's solver sums over at
+  most 64 ranges whatever the core count, and the cloth fit's motion samples keep the heaviest, equal weights by index.
 
 ## Verification and Limits
 

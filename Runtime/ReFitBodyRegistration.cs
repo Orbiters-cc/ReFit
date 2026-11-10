@@ -320,15 +320,21 @@ namespace Orbiters.ReFit
                 var graph = new Graph { start = new int[count + 1] };
                 for (int n = 0; n < count; n++) graph.start[n + 1] = graph.start[n] + sets[n].Count;
                 graph.next = new int[graph.start[count]];
-                for (int n = 0; n < count; n++) sets[n].CopyTo(graph.next, graph.start[n]);
+                // Sorted: the solver sums neighbours in this order, which must not be a hash set's.
+                for (int n = 0; n < count; n++)
+                {
+                    sets[n].CopyTo(graph.next, graph.start[n]);
+                    Array.Sort(graph.next, graph.start[n], sets[n].Count);
+                }
                 return graph;
             }
 
             public int Degree(int n) => start[n + 1] - start[n];
         }
 
-        // Nodes are worked in this many ranges per core: enough to balance, few enough to keep the hand-offs cheap.
-        private const int RangesPerCore = 4;
+        // Nodes are worked in at most this many ranges, whatever the machine: the dot products are summed per range, then over
+        // the ranges in order, so the same count on every machine gives the same bits (a count from the cores would not).
+        private const int MaxRanges = 64;
 
         /// <summary>
         /// (W + stiffness L + Anchor I) x = W targets + Anchor x0, the three axes at once (each its own conjugate gradients, from the
@@ -337,7 +343,7 @@ namespace Orbiters.ReFit
         private static int Solve(Vector3[] move, float[] weights, Vector3[] targets, Graph graph, float stiffness, CancellationToken cancellation)
         {
             int n = move.Length;
-            int ranges = Math.Max(1, Math.Min(n / 512 + 1, Environment.ProcessorCount * RangesPerCore));
+            int ranges = Math.Max(1, Math.Min(n / 512 + 1, MaxRanges));
             int span = (n + ranges - 1) / ranges;
             // Interleaved by axis: [3i + axis].
             var x = new double[3 * n];

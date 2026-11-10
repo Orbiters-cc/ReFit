@@ -58,8 +58,10 @@ in `MCBIntegrationService`, not repeated in commission UI code.
    target on average. Welded source vertices are then pulled to target skin turned their way, of a compatible region
    (along the normal when that is at most 1.5 times the nearest distance plus 5 mm), weighted by normal agreement and
    distance, while a graph-Laplacian keeps the move smooth. Ten passes go from stiff (proportions) to loose (shape), each
-   solved by Jacobi-preconditioned conjugate gradients per axis from the previous move; skin enclosed in another part
-   has no data term. Source points then map to the registered point pressed onto the nearest target skin along its
+   solved by Jacobi-preconditioned conjugate gradients per axis from the previous move, in two cycles each opened by a
+   coarse correction (the same energy over moves constant on 3 cm cubes of the skin, solved first: the diagonal
+   preconditioner barely moves what changes over the whole body, and the iteration cap used to leave it where it was);
+   skin enclosed in another part has no data term. Source points then map to the registered point pressed onto the nearest target skin along its
    normal. Neighbouring clothing points keep neighbouring counterparts, where independent nearest points jump into
    creases and onto fluff. On the Novabeast to Ultinova bodies the registered source lies on the target within 1 mm
    (95 %), on the Hypernova within 15 mm (its larger fluff has no source counterpart).

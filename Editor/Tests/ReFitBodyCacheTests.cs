@@ -118,6 +118,61 @@ namespace Orbiters.ReFit.Editor.Tests
             Assert.That(laid.p95Gap, Is.LessThan(.004f));
         }
 
+        [Test]
+        public void ATargetWithOtherFaceNormalsIsLaidAgain()
+        {
+            var (sv, st) = Sphere(Vector3.zero, .1f, 12, 24);
+            var (tv, tt) = Sphere(Vector3.zero, .105f, 12, 24);
+            // A collapsed triangle (three corners on a line) by the target: its face normal is its corners' normals.
+            var vertices = new List<Vector3>(tv) { new Vector3(.12f, 0f, 0f), new Vector3(.12f, .01f, 0f), new Vector3(.12f, .02f, 0f) };
+            var triangles = new List<int>(tt) { tv.Length, tv.Length + 1, tv.Length + 2 };
+            var source = MeshSnapshot.FromWorld(sv, st, false);
+            var target = MeshSnapshot.FromWorld(vertices.ToArray(), triangles.ToArray(), false);
+            var turned = MeshSnapshot.FromWorld(vertices.ToArray(), triangles.ToArray(), false);
+            for (int k = 0; k < 3; k++) turned.worldNormals[tv.Length + k] = Vector3.left;
+            turned.CacheFaceNormals();
+            Assert.That(turned.FaceNormals[triangles.Count / 3 - 1], Is.Not.EqualTo(target.FaceNormals[triangles.Count / 3 - 1]));
+
+            ReFitBodyRegistration.Build(source, null, target, target.Index(), null, CancellationToken.None);
+            var same = MeshSnapshot.FromWorld(vertices.ToArray(), triangles.ToArray(), false);
+            Assert.That(ReFitBodyRegistration.Build(source, null, same, same.Index(), null, CancellationToken.None).timing, Does.Contain("reused"));
+            var other = ReFitBodyRegistration.Build(source, null, turned, turned.Index(), null, CancellationToken.None);
+            Assert.That(other.timing, Does.Not.Contain("reused").And.Not.Contain("earlier"), "Only the normals differ: laid again");
+        }
+
+        [Test]
+        public void ADamagedLibraryFileIsLaidAgainAndRewritten()
+        {
+            var (sv, st) = Sphere(Vector3.zero, .1f, 12, 24);
+            var (tv, tt) = Sphere(Vector3.zero, .106f, 12, 24);
+            var source = MeshSnapshot.FromWorld(sv, st, false);
+            var target = MeshSnapshot.FromWorld(tv, tt, false);
+            var laid = ReFitBodyRegistration.Build(source, null, target, target.Index(), null, CancellationToken.None);
+            string file = Directory.GetFiles(directory, "registration-*.bin")[0];
+            var bytes = File.ReadAllBytes(file);
+            foreach (var damaged in new[] { System.Linq.Enumerable.ToArray(System.Linq.Enumerable.Take(bytes, bytes.Length / 2)), Concat(bytes, new byte[] { 1, 2, 3 }) })
+            {
+                File.WriteAllBytes(file, damaged);
+                ReFitBodyRegistration.ClearCache(files: false);
+                var again = ReFitBodyRegistration.Build(source, null, target, target.Index(), null, CancellationToken.None);
+                Assert.That(again.timing, Does.Not.Contain("earlier"), "A damaged file is not read");
+                Assert.That(again.registered, Is.EqualTo(laid.registered));
+                // Written anew, whole: read back in the next session.
+                ReFitBodyRegistration.ClearCache(files: false);
+                var read = ReFitBodyRegistration.Build(source, null, target, target.Index(), null, CancellationToken.None);
+                Assert.That(read.timing, Does.Contain("earlier session"));
+                Assert.That(read.registered, Is.EqualTo(laid.registered));
+            }
+        }
+
+        private static byte[] Concat(byte[] a, byte[] b)
+        {
+            var all = new byte[a.Length + b.Length];
+            a.CopyTo(all, 0);
+            b.CopyTo(all, a.Length);
+            return all;
+        }
+
         // A closed UV sphere, its poles and seam shared, its faces turned outwards.
         private static (Vector3[] vertices, int[] triangles) Sphere(Vector3 center, float radius, int rings, int segments)
         {

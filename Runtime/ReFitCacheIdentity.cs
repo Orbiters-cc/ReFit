@@ -19,9 +19,10 @@ namespace Orbiters.ReFit
         /// clipping" after the fit, what is left in the body pushed out along its distance field; 16: Fix clipping by triangle
         /// centres too, over fields around what lacks room, with a quality guard, the rest mesh only; 17: distance ties broken by
         /// triangle index, neighbours and solver ranges in a fixed order; a shape frame moving no skin within reach of the
-        /// clothing leaves it as fitted; the registration's solves opened by a coarse correction).
+        /// clothing leaves it as fitted; the registration's solves opened by a coarse correction; 18: the target's face normals in
+        /// the registration's key, frames reaching the clothing by their moved triangles).
         /// </summary>
-        public const int Revision = 17;
+        public const int Revision = 18;
 
         public static string Renderer(SkinnedMeshRenderer renderer, bool includeShapes)
         {

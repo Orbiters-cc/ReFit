@@ -208,6 +208,8 @@ namespace Orbiters.ReFit
                     entry.medianGap = reader.ReadSingle();
                     entry.p95Gap = reader.ReadSingle();
                     entry.timing = reader.ReadString();
+                    // Anything after the record is another layout or a damaged file.
+                    if (reader.BaseStream.Position != reader.BaseStream.Length) return null;
                     return entry;
                 }
             }
@@ -239,8 +241,9 @@ namespace Orbiters.ReFit
                     writer.Write(entry.p95Gap);
                     writer.Write(entry.timing ?? "");
                 }
-                if (System.IO.File.Exists(path)) System.IO.File.Delete(path);
-                System.IO.File.Move(partial, path);
+                // Swapped in whole: a reader sees the old file or the new one, never a part.
+                if (System.IO.File.Exists(path)) System.IO.File.Replace(partial, path, null);
+                else System.IO.File.Move(partial, path);
                 var files = new System.IO.DirectoryInfo(directory).GetFiles("registration-*.bin");
                 if (files.Length <= FilesKept) return;
                 Array.Sort(files, (a, b) => b.LastWriteTimeUtc.CompareTo(a.LastWriteTimeUtc));
@@ -284,7 +287,10 @@ namespace Orbiters.ReFit
             }
         }
 
-        // FNV-1a over the bits of every input the registration reads.
+        // FNV-1a over the bits of every input the registration reads: the source's positions, triangles, hidden skin and
+        // regions (its normals come from its positions), where the skeletons start it, and the target's positions, triangles,
+        // hidden skin, regions and face normals as the passes read them (a collapsed triangle takes its corners' normals).
+        // Settings are not read: the passes' constants are the file version's.
         private static ulong Key(MeshSnapshot source, int[] sourceMasks, MeshSnapshot target, int[] targetMasks, Vector3[] start)
         {
             ulong hash = 14695981039346656037UL;
@@ -302,6 +308,7 @@ namespace Orbiters.ReFit
             void Flags(bool[] values) { Add(values?.Length ?? -1); if (values != null) for (int i = 0; i < values.Length; i++) if (values[i]) Add(i); }
             Vectors(source.worldVertices); Ints(source.triangles); Flags(source.hiddenTriangles); Ints(sourceMasks);
             Vectors(target.worldVertices); Ints(target.triangles); Flags(target.hiddenTriangles); Ints(targetMasks);
+            Vectors(target.FaceNormals ?? target.CacheFaceNormals());
             Vectors(start);
             return hash;
         }

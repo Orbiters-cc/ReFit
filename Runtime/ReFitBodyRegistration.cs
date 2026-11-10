@@ -457,7 +457,7 @@ namespace Orbiters.ReFit
         /// <see cref="CoarseCell"/> cubes, the same energy restricted to moves constant over each), which lowers the energy and
         /// never raises it, then iterates from there. Returns the iterations taken by the slowest axis.
         /// </summary>
-        internal static int Solve(Vector3[] move, float[] weights, Vector3[] targets, Graph graph, Coarse coarse, float stiffness, CancellationToken cancellation)
+        internal static unsafe int Solve(Vector3[] move, float[] weights, Vector3[] targets, Graph graph, Coarse coarse, float stiffness, CancellationToken cancellation)
         {
             int n = move.Length;
             int ranges = Math.Max(1, Math.Min(n / 512 + 1, MaxRanges));
@@ -471,39 +471,27 @@ namespace Orbiters.ReFit
             var q = new double[3 * n];
             var diagonal = new double[n];
             var partial = new double[ranges * 3 * 3];
+            double s = stiffness;
             for (int i = 0; i < n; i++)
             {
-                diagonal[i] = weights[i] + stiffness * graph.Degree(i) + Anchor;
+                // The matrix's diagonal as ReFitRegistrationKernels.Multiply forms it, in double precision.
+                diagonal[i] = (double)weights[i] + Anchor + s * graph.Degree(i);
                 for (int axis = 0; axis < 3; axis++)
                 {
                     x[3 * i + axis] = move[i][axis];
                     b[3 * i + axis] = weights[i] * targets[i][axis] + Anchor * move[i][axis];
                 }
             }
-
+            // The inner loops (ReFitRegistrationKernels) over fixed ranges of nodes; the arrays are pinned per call.
             void Multiply(double[] input, double[] output, bool dot)
             {
                 Parallel.For(0, ranges, range =>
                 {
-                    double d0 = 0, d1 = 0, d2 = 0;
-                    int end = Math.Min(n, (range + 1) * span);
-                    for (int i = range * span; i < end; i++)
-                    {
-                        double s0 = 0, s1 = 0, s2 = 0;
-                        for (int e = graph.start[i]; e < graph.start[i + 1]; e++)
-                        {
-                            int j = 3 * graph.next[e];
-                            s0 += input[j]; s1 += input[j + 1]; s2 += input[j + 2];
-                        }
-                        double self = weights[i] + Anchor + stiffness * (graph.start[i + 1] - graph.start[i]);
-                        int k = 3 * i;
-                        double o0 = output[k] = self * input[k] - stiffness * s0;
-                        double o1 = output[k + 1] = self * input[k + 1] - stiffness * s1;
-                        double o2 = output[k + 2] = self * input[k + 2] - stiffness * s2;
-                        if (dot) { d0 += input[k] * o0; d1 += input[k + 1] * o1; d2 += input[k + 2] * o2; }
-                    }
-                    int at = range * 9;
-                    partial[at] = d0; partial[at + 1] = d1; partial[at + 2] = d2;
+                    fixed (double* pin = input, pout = output, ppartial = partial)
+                    fixed (int* pstart = graph.start, pnext = graph.next)
+                    fixed (float* pweights = weights)
+                        ReFitRegistrationKernels.Multiply(pin, pout, pstart, pnext, pweights, Anchor, s, range * span, Math.Min(n, (range + 1) * span),
+                            dot ? 1 : 0, ppartial + range * 9);
                 });
             }
 
@@ -522,24 +510,8 @@ namespace Orbiters.ReFit
                 Multiply(x, q, false);
                 Parallel.For(0, ranges, range =>
                 {
-                    double rz0 = 0, rz1 = 0, rz2 = 0, b0 = 0, b1 = 0, b2 = 0;
-                    int end = Math.Min(n, (range + 1) * span);
-                    for (int i = range * span; i < end; i++)
-                    {
-                        double inverse = 1.0 / diagonal[i];
-                        for (int axis = 0; axis < 3; axis++)
-                        {
-                            int k = 3 * i + axis;
-                            r[k] = b[k] - q[k];
-                            z[k] = r[k] * inverse;
-                            p[k] = z[k];
-                        }
-                        rz0 += r[3 * i] * z[3 * i]; rz1 += r[3 * i + 1] * z[3 * i + 1]; rz2 += r[3 * i + 2] * z[3 * i + 2];
-                        b0 += b[3 * i] * b[3 * i]; b1 += b[3 * i + 1] * b[3 * i + 1]; b2 += b[3 * i + 2] * b[3 * i + 2];
-                    }
-                    int at = range * 9;
-                    partial[at] = rz0; partial[at + 1] = rz1; partial[at + 2] = rz2;
-                    partial[at + 3] = b0; partial[at + 4] = b1; partial[at + 5] = b2;
+                    fixed (double* pb = b, pq = q, pr = r, pz = z, pp = p, pd = diagonal, ppartial = partial)
+                        ReFitRegistrationKernels.Start(pb, pq, pr, pz, pp, pd, range * span, Math.Min(n, (range + 1) * span), ppartial + range * 9);
                 });
                 var rz = Sum(0);
                 var norm = Sum(1);
@@ -565,21 +537,9 @@ namespace Orbiters.ReFit
                     }
                     Parallel.For(0, ranges, range =>
                     {
-                        double res0 = 0, res1 = 0, res2 = 0, next0 = 0, next1 = 0, next2 = 0;
-                        int end = Math.Min(n, (range + 1) * span);
-                        for (int i = range * span; i < end; i++)
-                        {
-                            double inverse = 1.0 / diagonal[i];
-                            int k = 3 * i;
-                            x[k] += alpha[0] * p[k]; r[k] -= alpha[0] * q[k]; z[k] = r[k] * inverse;
-                            x[k + 1] += alpha[1] * p[k + 1]; r[k + 1] -= alpha[1] * q[k + 1]; z[k + 1] = r[k + 1] * inverse;
-                            x[k + 2] += alpha[2] * p[k + 2]; r[k + 2] -= alpha[2] * q[k + 2]; z[k + 2] = r[k + 2] * inverse;
-                            res0 += r[k] * r[k]; res1 += r[k + 1] * r[k + 1]; res2 += r[k + 2] * r[k + 2];
-                            next0 += r[k] * z[k]; next1 += r[k + 1] * z[k + 1]; next2 += r[k + 2] * z[k + 2];
-                        }
-                        int at = range * 9;
-                        partial[at] = res0; partial[at + 1] = res1; partial[at + 2] = res2;
-                        partial[at + 3] = next0; partial[at + 4] = next1; partial[at + 5] = next2;
+                        fixed (double* px = x, pr = r, pz = z, pp = p, pq2 = q, pd = diagonal, ppartial = partial)
+                            ReFitRegistrationKernels.Step(px, pr, pz, pp, pq2, pd, alpha[0], alpha[1], alpha[2], range * span, Math.Min(n, (range + 1) * span),
+                                ppartial + range * 9);
                     });
                     var residual = Sum(0);
                     var next = Sum(1);
@@ -593,16 +553,11 @@ namespace Orbiters.ReFit
                         if (rz[axis] <= 1e-30) active[axis] = false;
                     }
                     if (!(active[0] || active[1] || active[2])) { iteration++; break; }
+                    int mask = (active[0] ? 1 : 0) | (active[1] ? 2 : 0) | (active[2] ? 4 : 0);
                     Parallel.For(0, ranges, range =>
                     {
-                        int end = Math.Min(n, (range + 1) * span);
-                        for (int i = range * span; i < end; i++)
-                        {
-                            int k = 3 * i;
-                            if (active[0]) p[k] = z[k] + beta[0] * p[k];
-                            if (active[1]) p[k + 1] = z[k + 1] + beta[1] * p[k + 1];
-                            if (active[2]) p[k + 2] = z[k + 2] + beta[2] * p[k + 2];
-                        }
+                        fixed (double* pp = p, pz = z)
+                            ReFitRegistrationKernels.Direction(pp, pz, beta[0], beta[1], beta[2], mask, range * span, Math.Min(n, (range + 1) * span));
                     });
                 }
                 converged = !(active[0] || active[1] || active[2]);

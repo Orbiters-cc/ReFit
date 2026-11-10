@@ -378,7 +378,11 @@ integrity checking.
   projection order. A bounds-only BVH refit drifted the output while ties broke by the tree's layout (below); since
   ties break by triangle index, a refitted hierarchy answers exactly as a rebuilt one.
 - Emit phase timings and compare geometry against an independently recorded baseline. Native/GPU backends
-  are not included: redundant work was removable without platform binaries or numeric changes.
+  are not included: redundant work was removable without platform binaries or numeric changes. Burst (a compiler the
+  suite already has through Orbiters Toolkit, not a binary) compiles the registration solve's inner loops
+  (`ReFitRegistrationKernels`: the matrix product and the conjugate gradients' updates over fixed ranges of nodes),
+  called directly from the worker; in double precision, strict float mode and a fixed order, they give the same bits
+  compiled or not.
 - Filter BVH queries with structs over cached face normals (`FacingFilter`, `MeshSnapshot.FaceNormals`): no delegate,
   closure or cross product per triangle tested. Build hierarchies with a binned surface area heuristic (16 bins, the
   median below 40 levels or where no bin boundary separates the triangles), triangles stored in leaf order with their

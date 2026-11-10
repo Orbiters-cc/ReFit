@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using UnityEngine;
+using Orbiters.Toolkit.Meshes;
 
 namespace Orbiters.ReFit
 {
@@ -87,17 +88,17 @@ namespace Orbiters.ReFit
         /// <paramref name="laidOnto"/> (<paramref name="motion"/> per vertex). Laid onto the target without the shapes it shows
         /// (the bodies alike), the source follows them onto <paramref name="target"/>. The gaps are those of the laying.
         /// </summary>
-        public ReFitBodyRegistration Carried(MeshSnapshot laidOnto, SurfaceBvh laidIndex, Vector3[] motion, MeshSnapshot target)
+        public ReFitBodyRegistration Carried(MeshSnapshot laidOnto, MeshBvh laidIndex, Vector3[] motion, MeshSnapshot target)
         {
             var moved = new Vector3[registered.Length];
             Parallel.For(0, moved.Length, v =>
             {
                 moved[v] = registered[v];
                 var hit = laidIndex.ClosestPoint(registered[v], Reach);
-                if (!hit.found) return;
-                int t = hit.triangle * 3;
-                moved[v] += motion[laidOnto.triangles[t]] * hit.bary.x + motion[laidOnto.triangles[t + 1]] * hit.bary.y +
-                            motion[laidOnto.triangles[t + 2]] * hit.bary.z;
+                if (!hit.Found) return;
+                int t = hit.TriangleOrNone * 3;
+                moved[v] += motion[laidOnto.triangles[t]] * hit.Bary.x + motion[laidOnto.triangles[t + 1]] * hit.Bary.y +
+                            motion[laidOnto.triangles[t + 2]] * hit.Bary.z;
             });
             var carried = new ReFitBodyRegistration(source, moved, confidence, medianGap, p95Gap) { timing = timing };
             Captured?.Invoke(carried, target);
@@ -137,12 +138,15 @@ namespace Orbiters.ReFit
         /// <param name="sourceTriangleMasks">Body regions of each source triangle (see <see cref="SurfaceBindingSolver.RegionMask"/>), or null.</param>
         /// <param name="targetTriangleMasks">Body regions each target triangle accepts, or null.</param>
         /// <param name="start">Per source vertex, where the skeletons put it on the target (see <see cref="Retarget"/>), or null.</param>
-        public static ReFitBodyRegistration Build(MeshSnapshot source, int[] sourceTriangleMasks, MeshSnapshot target, SurfaceBvh targetIndex,
+        public static ReFitBodyRegistration Build(MeshSnapshot source, int[] sourceTriangleMasks, MeshSnapshot target, MeshBvh targetIndex,
             int[] targetTriangleMasks, CancellationToken cancellation, Action<float> progress = null, Vector3[] start = null)
         {
             // The same bodies laid onto each other again (the next piece of an outfit, a refit run again): the last results are
             // kept by the content of everything the registration reads.
             ulong key = Key(source, sourceTriangleMasks, target, targetTriangleMasks, start);
+            // With Burst compilation off the hierarchy's queries run as managed float code, whose last bits may differ: such a
+            // registration is kept (in memory and in Library/ReFit) under a key of its own, never served to a run with Burst on.
+            if (!Unity.Burst.BurstCompiler.IsEnabled) key = unchecked((key ^ 0x6275727374206F66UL) * 1099511628211UL);
             lock (Cache)
                 foreach (var entry in Cache)
                     if (entry.key == key && entry.registered.Length == source.worldVertices.Length)
@@ -313,7 +317,25 @@ namespace Orbiters.ReFit
             return hash;
         }
 
-        private static ReFitBodyRegistration Compute(MeshSnapshot source, int[] sourceTriangleMasks, MeshSnapshot target, SurfaceBvh targetIndex,
+        /// <summary>
+        /// Where a source point (unit <paramref name="normal"/>) lands on the target in a pass: on the surface it already touches;
+        /// otherwise the facing surface met along its normal (inward first, then outward) within a reach set by the nearest
+        /// facing point, else that nearest point. <paramref name="seed"/> carries the nearest triangle from pass to pass.
+        /// </summary>
+        internal static MeshBvh.Hit Match(MeshBvh targetIndex, Vector3 p, Vector3 normal, float reach, in TriangleRule facing, ref int seed)
+        {
+            var nearest = targetIndex.ClosestPoint(p, reach, facing, seed);
+            if (nearest.Found) seed = nearest.TriangleOrNone;
+            // Already on the target: projecting along the normal could only move it onto another layer.
+            if (nearest.Found && nearest.Distance == 0f) return nearest;
+            float limit = nearest.Found ? Mathf.Min(reach, nearest.Distance * AlongFactor + AlongSlack) : reach;
+            var outward = targetIndex.Ray(p, normal, limit, true, facing);
+            var inward = targetIndex.Ray(p, -normal, outward.Found ? outward.Distance : limit, true, facing);
+            var along = inward.Found ? inward : outward;
+            return along.Found ? along : nearest;
+        }
+
+        private static ReFitBodyRegistration Compute(MeshSnapshot source, int[] sourceTriangleMasks, MeshSnapshot target, MeshBvh targetIndex,
             int[] targetTriangleMasks, CancellationToken cancellation, Action<float> progress, Vector3[] start)
         {
             int vertexCount = source.worldVertices.Length;
@@ -349,7 +371,7 @@ namespace Orbiters.ReFit
             var position = new Vector3[nodeCount];
             var faceNormals = target.FaceNormals ?? target.CacheFaceNormals();
             // Each node's nearest target triangle in the pass before: a node moves little from one pass to the next, so the
-            // search starts bounded by it (the answer is the unseeded one, see SurfaceBvh).
+            // search starts bounded by it (the answer is the unseeded one, see MeshBvh).
             var seed = new int[nodeCount];
             for (int n = 0; n < nodeCount; n++) seed[n] = -1;
             var watch = System.Diagnostics.Stopwatch.StartNew();
@@ -368,19 +390,13 @@ namespace Orbiters.ReFit
                     if (!visible[n] || normals[n] == Vector3.zero) return;
                     var p = position[n];
                     var normal = normals[n];
-                    var facing = new FacingFilter(faceNormals, normal, Facing, masks[n], targetTriangleMasks);
-                    var nearest = targetIndex.ClosestPoint(p, reach, facing, seed[n]);
-                    if (nearest.found) seed[n] = nearest.triangle;
-                    float limit = nearest.found ? Mathf.Min(reach, nearest.distance * AlongFactor + AlongSlack) : reach;
-                    var outward = targetIndex.Raycast(p, normal, limit, facing);
-                    var inward = targetIndex.Raycast(p, -normal, outward.found ? outward.distance : limit, facing);
-                    var along = inward.found ? inward : outward;
-                    SurfaceBvh.Hit hit = along.found ? along : nearest;
-                    if (!hit.found) return;
-                    float agreement = Vector3.Dot(faceNormals[hit.triangle], normal);
-                    float d = hit.distance / falloff;
+                    var facing = SurfaceRules.Facing(faceNormals, normal, Facing, masks[n], targetTriangleMasks);
+                    var hit = Match(targetIndex, p, normal, reach, facing, ref seed[n]);
+                    if (!hit.Found) return;
+                    float agreement = Vector3.Dot(faceNormals[hit.TriangleOrNone], normal);
+                    float d = hit.Distance / falloff;
                     weights[n] = agreement * agreement * Mathf.Exp(-d * d);
-                    targets[n] = hit.position - nodes[n];
+                    targets[n] = hit.Position - nodes[n];
                 });
                 queryMs += watch.Elapsed.TotalMilliseconds;
                 watch.Restart();
@@ -402,7 +418,7 @@ namespace Orbiters.ReFit
                 if (visible[n])
                 {
                     var hit = targetIndex.ClosestPoint(nodes[n] + move[n], .2f);
-                    gaps.Add(hit.found ? hit.distance : .2f);
+                    gaps.Add(hit.Found ? hit.Distance : .2f);
                 }
             gaps.Sort();
             float median = gaps.Count > 0 ? gaps[gaps.Count / 2] : 0f;

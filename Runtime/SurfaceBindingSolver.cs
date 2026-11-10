@@ -1,6 +1,7 @@
 using System;
 using System.Threading.Tasks;
 using UnityEngine;
+using Orbiters.Toolkit.Meshes;
 
 namespace Orbiters.ReFit
 {
@@ -44,7 +45,7 @@ namespace Orbiters.ReFit
         /// <param name="bodyTriRegionMasks">Optional: every region each triangle belongs to (see <see cref="RegionMask"/>),
         /// so a transition band such as the hips' side accepts clothing of both regions. Null filters by dominant region.</param>
         public static SurfaceBinding[] ComputeGroupBindings(
-            MeshSnapshot asset, MeshSnapshot body, SurfaceBvh bvh, ReFitSettings settings,
+            MeshSnapshot asset, MeshSnapshot body, MeshBvh bvh, ReFitSettings settings,
             BodyRegion[] assetGroupRegions, BodyRegion[] bodyTriRegions, ReFitReport report, bool[] tubularGroups = null,
             int[] bodyTriRegionMasks = null)
         {
@@ -71,19 +72,19 @@ namespace Orbiters.ReFit
                     useNormal && !lowerBodyCloth && !(tubularGroups != null && tubularGroups[g]), useRegion,
                     out bool usedRelaxedFallback, true, bodyTriRegionMasks);
 
-                if (hit.found)
+                if (hit.Found)
                 {
                     bindings[g] = new SurfaceBinding
                     {
                         valid = true,
-                        triangle = hit.triangle,
-                        bary = hit.bary,
-                        point = hit.position,
-                        distance = hit.distance,
+                        triangle = hit.TriangleOrNone,
+                        bary = hit.Bary,
+                        point = hit.Position,
+                        distance = hit.Distance,
                         requestedRegion = region,
-                        hitRegion = TriangleRegion(hit.triangle, bodyTriRegions),
+                        hitRegion = TriangleRegion(hit.TriangleOrNone, bodyTriRegions),
                         usedRelaxedFallback = usedRelaxedFallback,
-                        normalDot = Vector3.Dot(n, body.FaceNormal(hit.triangle))
+                        normalDot = Vector3.Dot(n, body.FaceNormal(hit.TriangleOrNone))
                     };
                 }
                 else
@@ -105,7 +106,7 @@ namespace Orbiters.ReFit
         /// <param name="clothNormal">The reference normal is a clothing normal (not a body normal): a clothing surface facing
         /// the near skin keeps it (see <see cref="ComputeGroupBindings"/>).</param>
         /// <param name="bodyTriRegionMasks">Optional: every region each triangle belongs to (see <see cref="RegionMask"/>).</param>
-        public static SurfaceBinding BindPoint(Vector3 point, MeshSnapshot body, SurfaceBvh bvh, float maxDistance,
+        public static SurfaceBinding BindPoint(Vector3 point, MeshSnapshot body, MeshBvh bvh, float maxDistance,
             BodyRegion region, BodyRegion[] bodyTriRegions, Vector3 referenceNormal, float cosMaxAngle, bool useNormal,
             bool clothNormal = false, int[] bodyTriRegionMasks = null)
         {
@@ -116,48 +117,41 @@ namespace Orbiters.ReFit
             // The nearest triangle within the probe's range, of any facing or region: the unfiltered class's answer when it lies
             // that close (the least distance of all), none otherwise. Its squared distance is recomputed as the query computed it.
             float probe = Mathf.Min(maxDistance, NearEquivalentSurfaceEpsilon);
-            var nearEquivalent = classes.any.found && (classes.any.position - point).sqrMagnitude < probe * probe
+            var nearEquivalent = classes.any.Found && (classes.any.Position - point).sqrMagnitude < probe * probe
                 ? classes.any : default;
-            if (nearEquivalent.found)
+            if (nearEquivalent.Found)
             {
                 return new SurfaceBinding
                 {
                     valid = true,
-                    triangle = nearEquivalent.triangle,
-                    bary = nearEquivalent.bary,
-                    point = nearEquivalent.position,
-                    distance = nearEquivalent.distance,
+                    triangle = nearEquivalent.TriangleOrNone,
+                    bary = nearEquivalent.Bary,
+                    point = nearEquivalent.Position,
+                    distance = nearEquivalent.Distance,
                     requestedRegion = region,
-                    hitRegion = TriangleRegion(nearEquivalent.triangle, bodyTriRegions),
+                    hitRegion = TriangleRegion(nearEquivalent.TriangleOrNone, bodyTriRegions),
                     usedRelaxedFallback = useNormal || useRegion,
-                    normalDot = Vector3.Dot(referenceNormal, body.FaceNormal(nearEquivalent.triangle))
+                    normalDot = Vector3.Dot(referenceNormal, body.FaceNormal(nearEquivalent.TriangleOrNone))
                 };
             }
 
             var hit = Fallback(classes, body, region, referenceNormal, cosMaxAngle, useNormal, useRegion, out bool usedRelaxedFallback, clothNormal);
             return new SurfaceBinding
             {
-                valid = hit.found,
-                triangle = hit.triangle,
-                bary = hit.bary,
-                point = hit.position,
-                distance = hit.distance,
+                valid = hit.Found,
+                triangle = hit.TriangleOrNone,
+                bary = hit.Bary,
+                point = hit.Position,
+                distance = hit.Distance,
                 requestedRegion = region,
-                hitRegion = TriangleRegion(hit.triangle, bodyTriRegions),
+                hitRegion = TriangleRegion(hit.TriangleOrNone, bodyTriRegions),
                 usedRelaxedFallback = usedRelaxedFallback,
-                normalDot = hit.found ? Vector3.Dot(referenceNormal, body.FaceNormal(hit.triangle)) : 0f
+                normalDot = hit.Found ? Vector3.Dot(referenceNormal, body.FaceNormal(hit.TriangleOrNone)) : 0f
             };
         }
 
         /// <summary>The bit of a region in a triangle region mask (0 for <see cref="BodyRegion.Unknown"/>).</summary>
         public static int RegionMask(BodyRegion region) => region == BodyRegion.Unknown ? 0 : 1 << (int)region;
-
-        private static bool Compatible(BodyRegion region, int triangle, BodyRegion[] bodyTriRegions, int[] masks)
-        {
-            if (masks == null) return HumanoidBoneMapper.RegionsCompatible(region, bodyTriRegions[triangle]);
-            int mask = masks[triangle];
-            return region == BodyRegion.Unknown || mask == 0 || (mask & RegionMask(region)) != 0;
-        }
 
         // How much farther than the nearest compatible point the surface along the normal may be (factor, then slack).
         private const float ProjectionReach = 3f;
@@ -171,28 +165,28 @@ namespace Orbiters.ReFit
         /// instead of jumping to the nearest crease.
         /// </summary>
         /// <param name="normal">Unit surface normal at <paramref name="point"/>.</param>
-        public static SurfaceBinding ChainPoint(Vector3 point, Vector3 normal, MeshSnapshot body, SurfaceBvh bvh, float maxDistance,
+        public static SurfaceBinding ChainPoint(Vector3 point, Vector3 normal, MeshSnapshot body, MeshBvh bvh, float maxDistance,
             BodyRegion region, BodyRegion[] bodyTriRegions, float cosMaxAngle, bool useNormal, int[] bodyTriRegionMasks = null)
         {
             var nearest = BindPoint(point, body, bvh, maxDistance, region, bodyTriRegions, normal, cosMaxAngle, useNormal, false, bodyTriRegionMasks);
             if (nearest.valid && nearest.distance <= NearEquivalentSurfaceEpsilon) return nearest;
             bool useRegion = bodyTriRegions != null && region != BodyRegion.Unknown;
-            var facing = new Facing(body, normal, cosMaxAngle, useRegion, region, bodyTriRegions, bodyTriRegionMasks);
+            var facing = Rule(body, normal, cosMaxAngle, useRegion, region, bodyTriRegions, bodyTriRegionMasks);
             float reach = nearest.valid ? Mathf.Min(maxDistance, nearest.distance * ProjectionReach + ProjectionSlack) : maxDistance;
-            var outward = bvh.Raycast(point, normal, reach, facing);
-            var inward = bvh.Raycast(point, -normal, outward.found ? outward.distance : reach, facing);
-            var along = inward.found ? inward : outward;
-            if (!along.found) return nearest;
+            var outward = bvh.Ray(point, normal, reach, true, facing);
+            var inward = bvh.Ray(point, -normal, outward.Found ? outward.Distance : reach, true, facing);
+            var along = inward.Found ? inward : outward;
+            if (!along.Found) return nearest;
             return new SurfaceBinding
             {
                 valid = true,
-                triangle = along.triangle,
-                bary = along.bary,
-                point = along.position,
-                distance = along.distance,
+                triangle = along.TriangleOrNone,
+                bary = along.Bary,
+                point = along.Position,
+                distance = along.Distance,
                 requestedRegion = region,
-                hitRegion = TriangleRegion(along.triangle, bodyTriRegions),
-                normalDot = Vector3.Dot(normal, body.FaceNormal(along.triangle))
+                hitRegion = TriangleRegion(along.TriangleOrNone, bodyTriRegions),
+                normalDot = Vector3.Dot(normal, body.FaceNormal(along.TriangleOrNone))
             };
         }
 
@@ -203,7 +197,7 @@ namespace Orbiters.ReFit
             return bodyTriRegions[triangle];
         }
 
-        private static SurfaceBvh.Hit ClosestPointWithFallback(Vector3 point, MeshSnapshot body, SurfaceBvh bvh, float maxDistance,
+        private static MeshBvh.Hit ClosestPointWithFallback(Vector3 point, MeshSnapshot body, MeshBvh bvh, float maxDistance,
             BodyRegion region, BodyRegion[] bodyTriRegions, Vector3 referenceNormal, float cosMaxAngle,
             bool useNormal, bool useRegion, out bool usedRelaxedFallback, bool clothNormal, int[] masks) =>
             Fallback(Classify(point, body, bvh, maxDistance, region, bodyTriRegions, referenceNormal, cosMaxAngle, useNormal, useRegion, masks),
@@ -213,80 +207,40 @@ namespace Orbiters.ReFit
         // region alone, and any triangle.
         private struct Classes
         {
-            public SurfaceBvh.Hit full, regionOnly, any;
+            public MeshBvh.Hit full, regionOnly, any;
         }
 
-        // A triangle's classes: 1 any, 2 of the region (any without region filtering), 4 of the region and facing the way asked.
-        private readonly struct BindingClassifier : ITriangleClassifier
+        // The rule both the rays of ChainPoint and the classes of Classify read: the region test (Labels, or Masks with region
+        // masks; only when filtering by region) and the facing test (at least cosMaxAngle).
+        private static TriangleRule Rule(MeshSnapshot body, Vector3 normal, float cosMaxAngle, bool useRegion, BodyRegion region, BodyRegion[] regions,
+            int[] masks)
         {
-            private readonly MeshSnapshot body;
-            private readonly Vector3 normal;
-            private readonly float cosMaxAngle;
-            private readonly bool useNormal, useRegion;
-            private readonly BodyRegion region;
-            private readonly BodyRegion[] regions;
-            private readonly int[] masks;
-
-            public BindingClassifier(MeshSnapshot body, Vector3 normal, float cosMaxAngle, bool useNormal, bool useRegion, BodyRegion region,
-                BodyRegion[] regions, int[] masks)
-            {
-                this.body = body;
-                this.normal = normal;
-                this.cosMaxAngle = cosMaxAngle;
-                this.useNormal = useNormal;
-                this.useRegion = useRegion;
-                this.region = region;
-                this.regions = regions;
-                this.masks = masks;
-            }
-
-            public int Classes(int triangle)
-            {
-                if (useRegion && !Compatible(region, triangle, regions, masks)) return 1;
-                if (useNormal && Vector3.Dot(normal, body.FaceNormal(triangle)) < cosMaxAngle) return 1 | 2;
-                return 1 | 2 | 4;
-            }
+            var rule = TriangleRule.All.Facing(body.KnownFaceNormals(), normal, cosMaxAngle);
+            if (!useRegion) return rule;
+            return masks != null ? rule.InMasks(masks, RegionMask(region)) : rule.CompatibleRegion(regions, region);
         }
 
-        // Triangles of a compatible region (when filtered) facing a direction: the rays of ChainPoint.
-        private readonly struct Facing : ITriangleFilter
-        {
-            private readonly MeshSnapshot body;
-            private readonly Vector3 normal;
-            private readonly float cosMaxAngle;
-            private readonly bool useRegion;
-            private readonly BodyRegion region;
-            private readonly BodyRegion[] regions;
-            private readonly int[] masks;
+        // The region test the rule makes (see Rule).
+        private static TriangleTests RegionTest(bool useRegion, int[] masks) =>
+            !useRegion ? TriangleTests.None : masks != null ? TriangleTests.Masks : TriangleTests.Labels;
 
-            public Facing(MeshSnapshot body, Vector3 normal, float cosMaxAngle, bool useRegion, BodyRegion region, BodyRegion[] regions, int[] masks)
-            {
-                this.body = body;
-                this.normal = normal;
-                this.cosMaxAngle = cosMaxAngle;
-                this.useRegion = useRegion;
-                this.region = region;
-                this.regions = regions;
-                this.masks = masks;
-            }
-
-            public bool Accept(int triangle) => (!useRegion || Compatible(region, triangle, regions, masks)) &&
-                                                Vector3.Dot(normal, body.FaceNormal(triangle)) >= cosMaxAngle;
-        }
-
-        private static Classes Classify(Vector3 point, MeshSnapshot body, SurfaceBvh bvh, float maxDistance, BodyRegion region,
+        // A triangle's classes: 0 any, 1 of the region (any without region filtering), 2 of the region and facing the way asked
+        // (without normal filtering, of the region).
+        private static Classes Classify(Vector3 point, MeshSnapshot body, MeshBvh bvh, float maxDistance, BodyRegion region,
             BodyRegion[] bodyTriRegions, Vector3 referenceNormal, float cosMaxAngle, bool useNormal, bool useRegion, int[] masks)
         {
-            Span<SurfaceBvh.Hit> hits = stackalloc SurfaceBvh.Hit[3];
-            bvh.ClosestPoints(point, maxDistance,
-                new BindingClassifier(body, referenceNormal, cosMaxAngle, useNormal, useRegion, region, bodyTriRegions, masks), 3, hits);
+            Span<MeshBvh.Hit> hits = stackalloc MeshBvh.Hit[3];
+            var regionTest = RegionTest(useRegion, masks);
+            var classes = new TriangleClasses(Rule(body, referenceNormal, cosMaxAngle, useRegion, region, bodyTriRegions, masks),
+                TriangleTests.None, regionTest, regionTest | (useNormal ? TriangleTests.Facing : TriangleTests.None));
+            bvh.ClosestPointsByClass(point, maxDistance, classes, hits);
             return new Classes { any = hits[0], regionOnly = hits[1], full = hits[2] };
         }
 
         // The precedence of the filtered query's fallbacks, over the classes' answers: the filter asked for; for a clothing
         // normal, the skin it faces when nothing turned its way is about as close; the region alone; then any triangle (for the
         // torso or no region).
-        private static SurfaceBvh.Hit Fallback(Classes classes, MeshSnapshot body, BodyRegion region, Vector3 referenceNormal, float cosMaxAngle,
+        private static MeshBvh.Hit Fallback(Classes classes, MeshSnapshot body, BodyRegion region, Vector3 referenceNormal, float cosMaxAngle,
             bool useNormal, bool useRegion, out bool usedRelaxedFallback, bool clothNormal)
         {
             usedRelaxedFallback = false;
@@ -299,17 +253,17 @@ namespace Orbiters.ReFit
                 // same way finds the far side of the limb or another body part; keep the skin it faces when nothing
                 // turned its way is about as close.
                 var near = regionOnly;
-                if (near.found && Vector3.Dot(-referenceNormal, body.FaceNormal(near.triangle)) >= cosMaxAngle &&
-                    (!hit.found || hit.distance > near.distance + Mathf.Max(SkinFacingSlack, near.distance)))
+                if (near.Found && Vector3.Dot(-referenceNormal, body.FaceNormal(near.TriangleOrNone)) >= cosMaxAngle &&
+                    (!hit.Found || hit.Distance > near.Distance + Mathf.Max(SkinFacingSlack, near.Distance)))
                     return near;
             }
-            if (hit.found || !filtered)
+            if (hit.Found || !filtered)
                 return hit;
 
             if (useRegion && useNormal)
             {
                 hit = regionOnly;
-                if (hit.found)
+                if (hit.Found)
                 {
                     usedRelaxedFallback = true;
                     return hit;
@@ -319,7 +273,7 @@ namespace Orbiters.ReFit
             if (!useRegion || region == BodyRegion.Unknown || region == BodyRegion.Torso)
             {
                 hit = classes.any;
-                usedRelaxedFallback = hit.found;
+                usedRelaxedFallback = hit.Found;
             }
 
             return hit;
@@ -372,30 +326,18 @@ namespace Orbiters.ReFit
         public static void Smooth(Vector3[] deltas, System.Collections.Generic.List<int>[] adjacency, int iterations, float strength)
         {
             if (iterations <= 0 || strength <= 0f) return;
-            int n = deltas.Length;
-            var buffer = new Vector3[n];
-            // Ranges of groups per task, not a delegate call per group (a few additions each): every group's result is its own.
-            int ranges = (n + SmoothRange - 1) / SmoothRange;
-            for (int it = 0; it < iterations; it++)
-            {
-                Parallel.For(0, ranges, range =>
-                {
-                    int end = Math.Min(n, (range + 1) * SmoothRange);
-                    for (int g = range * SmoothRange; g < end; g++)
-                    {
-                        var neighbors = adjacency[g];
-                        if (neighbors.Count == 0) { buffer[g] = deltas[g]; continue; }
-                        Vector3 avg = Vector3.zero;
-                        foreach (var nb in neighbors) avg += deltas[nb];
-                        avg /= neighbors.Count;
-                        buffer[g] = Vector3.Lerp(deltas[g], avg, strength);
-                    }
-                });
-                Array.Copy(buffer, deltas, n);
-            }
+            Smooth(deltas, GroupGraph.Of(adjacency), iterations, strength);
         }
 
-        private const int SmoothRange = 1024;
+        /// <summary>
+        /// <see cref="Smooth(Vector3[], System.Collections.Generic.List{int}[], int, float)"/> over compressed adjacency: each pass moves
+        /// every group towards the mean of its neighbours by <paramref name="strength"/> (Burst, see <see cref="ReFitFieldKernels"/>).
+        /// </summary>
+        internal static void Smooth(Vector3[] deltas, GroupGraph graph, int iterations, float strength)
+        {
+            if (iterations <= 0 || strength <= 0f) return;
+            ReFitFieldLoops.Smooth(deltas, new Vector3[deltas.Length], graph, iterations, strength);
+        }
 
         /// <summary>1 below <paramref name="start"/>, 0 above <paramref name="max"/>, smoothstep in between.</summary>
         public static float Falloff(float distance, float start, float max)

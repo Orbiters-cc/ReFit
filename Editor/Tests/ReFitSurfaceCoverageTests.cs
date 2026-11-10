@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using UnityEngine;
 using Object = UnityEngine.Object;
+using Orbiters.Toolkit.Meshes;
 
 namespace Orbiters.ReFit.Editor.Tests
 {
@@ -212,11 +213,11 @@ namespace Orbiters.ReFit.Editor.Tests
                     var delta = new Vector3[cloth.sharedMesh.vertexCount];
                     result.mesh.GetBlendShapeFrameVertices(result.mesh.GetBlendShapeIndex("refit"), 0, delta, null, null);
                     var surface = new MeshSnapshot { worldVertices = cloth.sharedMesh.vertices.Select((p,i)=>p+delta[i]).ToArray(), triangles = cloth.sharedMesh.triangles };
-                    var index = SurfaceBvh.Build(surface);
+                    var index = MeshSnapshot.BuildIndex(surface);
                     for (int i = 0; i < vertices.Length; i++)
                     {
                         var hit = index.ClosestPoint(vertices[i], .1f);
-                        float gap = Vector3.Dot(hit.position-vertices[i], surface.FaceNormal(hit.triangle));
+                        float gap = Vector3.Dot(hit.Position-vertices[i], surface.FaceNormal(hit.TriangleOrNone));
                         if (gap < -.0001f) throw new Exception($"Initial cross-base peak remains inside cloth: {gap*1000:F3}mm at {i}.");
                     }
                     if (!cloth.sharedMesh.boneWeights.SequenceEqual(result.mesh.boneWeights)) throw new Exception("Coverage changed skinning.");
@@ -279,12 +280,12 @@ namespace Orbiters.ReFit.Editor.Tests
                 {
                     var at = baseCloth.Select((p, i) => p + first[i] * weight).ToArray();
                     var surface = new MeshSnapshot { worldVertices = at, triangles = baseSurface.triangles };
-                    var atIndex = SurfaceBvh.Build(surface);
+                    var atIndex = MeshSnapshot.BuildIndex(surface);
                     for (int i = 0; i < vertices.Length; i++)
                     {
                         var point = vertices[i] + delta[i] * weight;
-                        var hit = atIndex.ClosestPoint(point, .1f, null);
-                        float gap = Vector3.Dot(hit.position - point, surface.FaceNormal(hit.triangle));
+                        var hit = atIndex.ClosestPoint(point, .1f);
+                        float gap = Vector3.Dot(hit.Position - point, surface.FaceNormal(hit.TriangleOrNone));
                         if (gap < .0005f) throw new Exception($"Dense peak passes through fabric at rotated={rotated}, weight={weight}, vertex={i}, gap={gap * 1000:F3}mm. " + string.Join("\n", computation.report.messages.Where(m => m.code == "surface-coverage")));
                     }
                 }
@@ -298,13 +299,13 @@ namespace Orbiters.ReFit.Editor.Tests
                         var priorDelta = new Vector3[first.Length];
                         previous.mesh.GetBlendShapeFrameVertices(previous.mesh.GetBlendShapeIndex("refit_peak"), 0, priorDelta, null, null);
                         var surface = new MeshSnapshot { worldVertices = baseCloth.Select((p, i) => p + priorDelta[i]).ToArray(), triangles = baseSurface.triangles };
-                        var index = SurfaceBvh.Build(surface);
+                        var index = MeshSnapshot.BuildIndex(surface);
                         float worst = 0;
                         for (int i = 0; i < vertices.Length; i++)
                         {
                             var point = vertices[i] + delta[i];
-                            var hit = index.ClosestPoint(point, .1f, null);
-                            worst = Mathf.Min(worst, Vector3.Dot(hit.position - point, surface.FaceNormal(hit.triangle)));
+                            var hit = index.ClosestPoint(point, .1f);
+                            worst = Mathf.Min(worst, Vector3.Dot(hit.Position - point, surface.FaceNormal(hit.TriangleOrNone)));
                         }
                         if (worst >= -.001f) throw new Exception("Dense-peak fixture no longer reproduces the original >1mm clipping.");
                     }

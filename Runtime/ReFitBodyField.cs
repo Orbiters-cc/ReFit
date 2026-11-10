@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using UnityEngine;
+using Orbiters.Toolkit.Meshes;
 
 namespace Orbiters.ReFit
 {
@@ -50,7 +51,7 @@ namespace Orbiters.ReFit
         /// <param name="cell">Cell size (metres): a few millimetres.</param>
         /// <param name="maxCells">Cell count the grid may not exceed: the cell grows to fit.</param>
         /// <param name="seal">Gaps narrower than about this many cells stay shut (0: none, the air goes everywhere it can).</param>
-        public static ReFitBodyField Build(MeshSnapshot body, SurfaceBvh index, Bounds region, float cell, int maxCells, CancellationToken cancellation,
+        public static ReFitBodyField Build(MeshSnapshot body, MeshBvh index, Bounds region, float cell, int maxCells, CancellationToken cancellation,
             int seal = SealCells)
         {
             var size = region.size;
@@ -67,7 +68,7 @@ namespace Orbiters.ReFit
 
         private Vector3 Center(int x, int y, int z) => origin + new Vector3(x * cell, y * cell, z * cell);
 
-        private void Fill(MeshSnapshot body, SurfaceBvh index, int sealCells, CancellationToken cancellation)
+        private void Fill(MeshSnapshot body, MeshBvh index, int sealCells, CancellationToken cancellation)
         {
             int count = values.Length;
             var watch = System.Diagnostics.Stopwatch.StartNew();
@@ -105,10 +106,10 @@ namespace Orbiters.ReFit
                         if (!near[i]) { unsigned[i] = band; continue; }
                         var p = Center(x, y, z);
                         var hit = index.ClosestPoint(p, band);
-                        if (!hit.found) { unsigned[i] = band; near[i] = false; continue; }
-                        unsigned[i] = hit.distance;
+                        if (!hit.Found) { unsigned[i] = band; near[i] = false; continue; }
+                        unsigned[i] = hit.Distance;
                         // Inside or out by the smooth normal where the closest point is (the face normal on a degenerate one).
-                        outsideByNormal[i] = Vector3.Dot(p - hit.position, body.BaryNormal(hit.triangle, hit.bary)) >= 0f;
+                        outsideByNormal[i] = Vector3.Dot(p - hit.Position, body.BaryNormal(hit.TriangleOrNone, hit.Bary)) >= 0f;
                     }
             });
 
@@ -142,7 +143,7 @@ namespace Orbiters.ReFit
                 var p = Center(i % nx, i / nx % ny, i / (nx * ny));
                 if (!bodyBounds.Contains(p)) return;
                 var hit = index.ClosestPoint(p, BorderReach);
-                inLimb[i] = hit.found && Vector3.Dot(p - hit.position, body.BaryNormal(hit.triangle, hit.bary)) < 0f;
+                inLimb[i] = hit.Found && Vector3.Dot(p - hit.Position, body.BaryNormal(hit.TriangleOrNone, hit.Bary)) < 0f;
             });
             void Border(int x, int y, int z)
             {

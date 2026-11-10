@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using UnityEngine;
+using Orbiters.Toolkit.Meshes;
 
 namespace Orbiters.ReFit
 {
@@ -78,7 +79,7 @@ namespace Orbiters.ReFit
             return result;
         }
 
-        public void Apply(MeshSnapshot asset, MeshSnapshot body, SurfaceBvh bodyIndex, Vector3[] bodyDeltas,
+        public void Apply(MeshSnapshot asset, MeshSnapshot body, MeshBvh bodyIndex, Vector3[] bodyDeltas,
             Vector3[] primary, Vector3[] deltas, ReFitSettings settings, ReFitReport report, string label)
         {
             if (Count == 0) return;
@@ -106,13 +107,13 @@ namespace Orbiters.ReFit
                     {
                         int g = ring.groups[i];
                         var baseline = asset.worldVertices[asset.groupRep[g]] + (primary != null ? primary[g] : Vector3.zero);
-                        var hit = bodyIndex.ClosestPoint(baseline, settings.maxProjectionDistance, null);
-                        if (!hit.found) continue;
-                        int t = hit.triangle * 3;
-                        var motion = bodyDeltas[body.triangles[t]] * hit.bary.x + bodyDeltas[body.triangles[t + 1]] * hit.bary.y + bodyDeltas[body.triangles[t + 2]] * hit.bary.z;
-                        contacts[i] = hit.position + motion;
-                        normals[i] = shaped.FaceNormal(hit.triangle);
-                        gaps[i] = Mathf.Min(Vector3.Dot(baseline - hit.position, body.FaceNormal(hit.triangle)), settings.clearanceMinimumSafetyDistance);
+                        var hit = bodyIndex.ClosestPoint(baseline, settings.maxProjectionDistance);
+                        if (!hit.Found) continue;
+                        int t = hit.TriangleOrNone * 3;
+                        var motion = bodyDeltas[body.triangles[t]] * hit.Bary.x + bodyDeltas[body.triangles[t + 1]] * hit.Bary.y + bodyDeltas[body.triangles[t + 2]] * hit.Bary.z;
+                        contacts[i] = hit.Position + motion;
+                        normals[i] = shaped.FaceNormal(hit.TriangleOrNone);
+                        gaps[i] = Mathf.Min(Vector3.Dot(baseline - hit.Position, body.FaceNormal(hit.TriangleOrNone)), settings.clearanceMinimumSafetyDistance);
                     }
                 // Project contact inequalities onto the shared centerline coefficients. Cross-sectional
                 // vertices never receive independent clearance pushes or inward shrinkwrap corrections.

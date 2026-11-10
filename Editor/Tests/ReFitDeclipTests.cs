@@ -3,6 +3,7 @@ using System.Linq;
 using System.Threading;
 using NUnit.Framework;
 using UnityEngine;
+using Orbiters.Toolkit.Meshes;
 
 namespace Orbiters.ReFit.Editor.Tests
 {
@@ -66,8 +67,8 @@ namespace Orbiters.ReFit.Editor.Tests
             {
                 var p = cloth.worldVertices[cloth.groupRep[g]];
                 var hit = index.ClosestPoint(p, .05f);
-                Assert.That(hit.found);
-                bindings[g] = new SurfaceBinding { valid = true, triangle = hit.triangle, bary = hit.bary, point = hit.position + p.normalized * .001f };
+                Assert.That(hit.Found);
+                bindings[g] = new SurfaceBinding { valid = true, triangle = hit.TriangleOrNone, bary = hit.Bary, point = hit.Position + p.normalized * .001f };
             }
             var rooms = ReFitDeclip.Rooms(cloth, bindings, body, Room, true);
             Assert.That(rooms.Max(), Is.LessThan(-.003f), "The room is no more than the authored gap.");
@@ -155,10 +156,10 @@ namespace Orbiters.ReFit.Editor.Tests
             Assert.That(overridden.declipRoomMm, Is.EqualTo(2f));
         }
 
-        private static (MeshSnapshot body, SurfaceBvh index) Body()
+        private static (MeshSnapshot body, MeshBvh index) Body()
         {
             var body = Shell(Vector3.zero, Radius, 48, 96);
-            return (body, SurfaceBvh.Build(body));
+            return (body, MeshSnapshot.BuildIndex(body));
         }
 
         private static float[] Rooms(MeshSnapshot cloth, float room) => Enumerable.Repeat(room, cloth.GroupCount).ToArray();

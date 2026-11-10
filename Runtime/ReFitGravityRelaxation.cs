@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Threading.Tasks;
 using Orbiters.Toolkit.Armature;
 using UnityEngine;
+using Orbiters.Toolkit.Meshes;
 
 namespace Orbiters.ReFit
 {
@@ -208,7 +209,7 @@ namespace Orbiters.ReFit
             MeshSnapshot baseAsset,
             MeshSnapshot asset,
             MeshSnapshot body,
-            SurfaceBvh bodyBvh,
+            MeshBvh bodyBvh,
             BodyRegion[] bodyVertexRegions,
             BodyRegion[] bodyTriRegions,
             GameObject targetAvatar,

@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using UnityEditor;
 using UnityEngine;
 using Object = UnityEngine.Object;
+using Orbiters.Toolkit.Meshes;
 
 namespace Orbiters.ReFit.Editor.Tests
 {
@@ -180,7 +181,7 @@ namespace Orbiters.ReFit.Editor.Tests
                 {
                     var p = asset.worldVertices[asset.groupRep[g]];
                     var hit = bodyAt.bvh.ClosestPoint(p, .08f);
-                    bool inside = hit.found && Vector3.Dot(p - hit.position, bodyAt.snapshot.BaryNormal(hit.triangle, hit.bary)) < -.001f;
+                    bool inside = hit.Found && Vector3.Dot(p - hit.Position, bodyAt.snapshot.BaryNormal(hit.TriangleOrNone, hit.Bary)) < -.001f;
                     if (!inside && !all) continue;
                     int key = hidden[g] ? by[g] : -2;
                     if (!groups.TryGetValue(key, out var list)) groups[key] = list = new List<Vector3>();
@@ -211,7 +212,7 @@ namespace Orbiters.ReFit.Editor.Tests
                 var body = avatar.GetComponentsInChildren<SkinnedMeshRenderer>(true).First(r => r.name == "Body" && !r.transform.IsChildOf(outfit));
                 var garment = outfit.GetComponentsInChildren<SkinnedMeshRenderer>(true).First();
                 var surface = MeshSnapshot.Capture(body, false, null, null);
-                var index = SurfaceBvh.Build(surface);
+                var index = MeshSnapshot.BuildIndex(surface);
                 var asset = MeshSnapshot.Capture(garment, true, null, null);
                 var by = new int[asset.GroupCount];
                 var hidden = ReFitSurfaceCoverage.HiddenGroups(asset, surface, index, new List<(MeshSnapshot, bool)>(), by, null);
@@ -224,7 +225,7 @@ namespace Orbiters.ReFit.Editor.Tests
                     var p = asset.worldVertices[asset.groupRep[g]];
                     if (!box.Contains(p)) continue;
                     var hit = index.ClosestPoint(p, .1f);
-                    if (!hit.found || Vector3.Dot(p - hit.position, surface.BaryNormal(hit.triangle, hit.bary)) >= -.001f) continue;
+                    if (!hit.Found || Vector3.Dot(p - hit.Position, surface.BaryNormal(hit.TriangleOrNone, hit.Bary)) >= -.001f) continue;
                     clipped++;
                     if (hidden[g]) hid++; else if (tubes[g]) tube++; else if (details[g]) detail++; else free++;
                 }
@@ -269,7 +270,7 @@ namespace Orbiters.ReFit.Editor.Tests
         {
             public Mesh mesh;
             public MeshSnapshot snapshot;
-            public SurfaceBvh bvh;
+            public MeshBvh bvh;
         }
 
         private static Body BodyAt(SkinnedMeshRenderer body, string shape, float weight, List<Object> owned)
@@ -279,7 +280,7 @@ namespace Orbiters.ReFit.Editor.Tests
             var overrides = new Dictionary<int, float>();
             for (int s = 0; s < body.sharedMesh.blendShapeCount; s++) overrides[s] = values[body.sharedMesh.GetBlendShapeName(s)] / 100;
             var snapshot = MeshSnapshot.Capture(body, false, overrides, null);
-            return new Body { mesh = Keep(ReFitAccessoryValidation.Bake(body, body.sharedMesh, values), owned), snapshot = snapshot, bvh = SurfaceBvh.Build(snapshot) };
+            return new Body { mesh = Keep(ReFitAccessoryValidation.Bake(body, body.sharedMesh, values), owned), snapshot = snapshot, bvh = MeshSnapshot.BuildIndex(snapshot) };
         }
 
         // Vertices inside the body: below the nearest surface and confirmed by the winding number (open or folded body
@@ -292,8 +293,8 @@ namespace Orbiters.ReFit.Editor.Tests
             Parallel.For(0, points.Length, i =>
             {
                 var hit = body.bvh.ClosestPoint(points[i], .08f);
-                if (!hit.found) return;
-                float signed = Vector3.Dot(points[i] - hit.position, body.snapshot.BaryNormal(hit.triangle, hit.bary));
+                if (!hit.Found) return;
+                float signed = Vector3.Dot(points[i] - hit.Position, body.snapshot.BaryNormal(hit.TriangleOrNone, hit.Bary));
                 if (signed > -.0005f || ReFitMeshIntersectionChecks.Winding(body.snapshot, points[i]) < .5) return;
                 lock (gate) depths.Add(-signed);
             });

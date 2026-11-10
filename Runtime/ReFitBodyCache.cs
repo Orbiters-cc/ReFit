@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using UnityEngine;
+using Orbiters.Toolkit.Meshes;
 
 namespace Orbiters.ReFit
 {
@@ -49,7 +50,7 @@ namespace Orbiters.ReFit
             internal bool[] enclosed;
             internal bool[] main;
             // Hierarchies by the content of the hidden triangles they leave out (0: none).
-            private readonly Dictionary<ulong, SurfaceBvh> indices = new Dictionary<ulong, SurfaceBvh>();
+            private readonly Dictionary<ulong, MeshBvh> indices = new Dictionary<ulong, MeshBvh>();
 
             public Entry(ulong key, int vertexCount, int triangleCount)
             {
@@ -59,10 +60,10 @@ namespace Orbiters.ReFit
             }
 
             /// <summary>The hierarchy of <paramref name="body"/> (this entry's content) leaving out its current hidden triangles.</summary>
-            public SurfaceBvh Index(MeshSnapshot body) => Index(body, body.hiddenTriangles);
+            public MeshBvh Index(MeshSnapshot body) => Index(body, body.hiddenTriangles);
 
             /// <summary>The hierarchy of <paramref name="body"/> (this entry's content) leaving out <paramref name="hiddenTriangles"/>.</summary>
-            public SurfaceBvh Index(MeshSnapshot body, bool[] hiddenTriangles)
+            public MeshBvh Index(MeshSnapshot body, bool[] hiddenTriangles)
             {
                 ulong hidden = FlagsKey(hiddenTriangles);
                 lock (indices)
@@ -70,7 +71,7 @@ namespace Orbiters.ReFit
                     if (indices.TryGetValue(hidden, out var index)) { System.Threading.Interlocked.Increment(ref hits); return index; }
                 }
                 // Built outside the lock (it takes a while); two threads asking at once build the same tree.
-                var built = SurfaceBvh.Build(body.worldVertices, body.triangles, hiddenTriangles);
+                var built = MeshSnapshot.BuildIndex(body.worldVertices, body.triangles, hiddenTriangles);
                 lock (indices)
                 {
                     if (indices.TryGetValue(hidden, out var index)) return index;

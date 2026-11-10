@@ -3,6 +3,7 @@ using System.Linq;
 using NUnit.Framework;
 using UnityEditor.SceneManagement;
 using UnityEngine;
+using Orbiters.Toolkit.Meshes;
 
 namespace Orbiters.ReFit.Editor.Tests
 {
@@ -26,7 +27,7 @@ namespace Orbiters.ReFit.Editor.Tests
             };
             foreach (var (a, b, c, p, expected) in cases)
             {
-                var q = SurfaceBvh.ClosestPointOnTriangle(p, a, b, c, out var bary);
+                var q = MeshBvh.ClosestPointOnTriangle(p, a, b, c, out var bary);
                 Assert.That(Finite(q) && Finite(bary), Is.True, $"{a} {b} {c} from {p}: {q} {bary}");
                 Assert.That((q - expected).magnitude, Is.LessThan(1e-5f), $"{a} {b} {c} from {p}: {q}");
                 Assert.That(bary.x + bary.y + bary.z, Is.EqualTo(1f).Within(1e-5f));
@@ -34,7 +35,7 @@ namespace Orbiters.ReFit.Editor.Tests
             }
 
             // A triangle with area answers as before.
-            var flat = SurfaceBvh.ClosestPointOnTriangle(new Vector3(.25f, .25f, 1f), Vector3.zero, Vector3.right, Vector3.up, out var flatBary);
+            var flat = MeshBvh.ClosestPointOnTriangle(new Vector3(.25f, .25f, 1f), Vector3.zero, Vector3.right, Vector3.up, out var flatBary);
             Assert.That((flat - new Vector3(.25f, .25f, 0f)).magnitude, Is.LessThan(1e-6f));
             Assert.That((flatBary - new Vector3(.5f, .25f, .25f)).magnitude, Is.LessThan(1e-6f));
         }

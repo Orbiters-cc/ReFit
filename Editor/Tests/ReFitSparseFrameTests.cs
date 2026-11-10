@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using NUnit.Framework;
 using UnityEngine;
+using Orbiters.Toolkit.Meshes;
 
 namespace Orbiters.ReFit.Editor.Tests
 {
@@ -50,8 +51,8 @@ namespace Orbiters.ReFit.Editor.Tests
             var vertices = new Vector3[motion.Length];
             for (int i = 0; i < vertices.Length; i++) vertices[i] = rest.worldVertices[i] + motion[i];
             var moved = MeshSnapshot.MovedFrom(rest, vertices, motion);
-            var built = SurfaceBvh.Build(vertices, rest.triangles, rest.hiddenTriangles);
-            var wholeBuilt = SurfaceBvh.Build(vertices, rest.triangles);
+            var built = MeshSnapshot.BuildIndex(vertices, rest.triangles, rest.hiddenTriangles);
+            var wholeBuilt = MeshSnapshot.BuildIndex(vertices, rest.triangles);
             var refitted = moved.Index();
             var whole = moved.WholeIndex();
             Assert.That(refitted, Is.Not.SameAs(rest.Index()), "The rest's hierarchy is left as it is");
@@ -63,17 +64,17 @@ namespace Orbiters.ReFit.Editor.Tests
                 {
                     var x = a.ClosestPoint(p, .3f);
                     var y = b.ClosestPoint(p, .3f);
-                    Assert.That(x.triangle, Is.EqualTo(y.triangle), "Point " + i);
-                    Assert.That(x.distance, Is.EqualTo(y.distance), "Point " + i);
+                    Assert.That(x.TriangleOrNone, Is.EqualTo(y.TriangleOrNone), "Point " + i);
+                    Assert.That(x.Distance, Is.EqualTo(y.Distance), "Point " + i);
                     var rx = a.Raycast(p + Vector3.up, Vector3.down, 2f);
                     var ry = b.Raycast(p + Vector3.up, Vector3.down, 2f);
-                    Assert.That(rx.triangle, Is.EqualTo(ry.triangle), "Ray " + i);
-                    Assert.That(rx.distance, Is.EqualTo(ry.distance), "Ray " + i);
+                    Assert.That(rx.TriangleOrNone, Is.EqualTo(ry.TriangleOrNone), "Ray " + i);
+                    Assert.That(rx.Distance, Is.EqualTo(ry.Distance), "Ray " + i);
                 }
             }
             // The rest's own hierarchy still answers for the rest.
             var restHit = rest.Index().Raycast(new Vector3(.3f, 1f, .6f), Vector3.down, 2f);
-            Assert.That(restHit.distance, Is.EqualTo(1f).Within(1e-5f));
+            Assert.That(restHit.Distance, Is.EqualTo(1f).Within(1e-5f));
         }
 
         [Test]

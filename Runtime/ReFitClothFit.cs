@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using UnityEngine;
+using Orbiters.Toolkit.Meshes;
 
 namespace Orbiters.ReFit
 {
@@ -61,6 +62,7 @@ namespace Orbiters.ReFit
         private readonly int groupCount;
         private readonly int[] groupTriangles;
         private readonly List<int>[] adjacency;
+        private readonly GroupGraph graph;
         private readonly float[] clearance;
         // How far each group lay over the skin it was made on (negative: under it).
         private readonly float[] authoredGap;
@@ -77,7 +79,9 @@ namespace Orbiters.ReFit
         private int[] shapeCandidates;
         // The target's covered skin alone (the triangles all of whose corners are covered), for shapes: each frame refits it
         // where the frame moves the skin instead of building it again.
-        private SurfaceBvh shapeCoveredIndex;
+        private MeshBvh shapeCoveredIndex;
+        // The target as FromWorld derives it, for shaped bodies derived again only where a frame moves the skin.
+        private MeshSnapshot.WorldSurface shapeSurface;
         // How far the fitted clothing still lets the skin through (per group, per candidate skin vertex): a shape's drape
         // corrects only what the shape adds. Shapes are summed when several are on, so each fixing what the fit left would
         // apply that correction once per shape.
@@ -96,6 +100,7 @@ namespace Orbiters.ReFit
             groupCount = asset.GroupCount;
             regions = groupRegions;
             adjacency = asset.groupAdjacency;
+            graph = GroupGraph.Of(adjacency);
             var tris = new List<int>(asset.triangles.Length);
             for (int t = 0; t + 2 < asset.triangles.Length; t += 3)
             {
@@ -133,14 +138,14 @@ namespace Orbiters.ReFit
         /// </summary>
         /// <param name="targetRegions">The target's triangle regions, or null: skin of the head near a collar is not under it.</param>
         public Vector3[] Fit(MeshSnapshot source, int[] sourceTriangleMasks, ReFitBodyRegistration registration, MeshSnapshot target,
-            SurfaceBvh targetIndex, BodyRegion[] targetRegions, float[] falloff, ReFitReport report, Action<float> progress)
+            MeshBvh targetIndex, BodyRegion[] targetRegions, float[] falloff, ReFitReport report, Action<float> progress)
         {
             var authored = new Vector3[groupCount];
             for (int g = 0; g < groupCount; g++) authored[g] = asset.worldVertices[asset.groupRep[g]];
 
             // 1. The motion of the skin under each group (the skin around it where none is under it).
             var authoredSurface = MeshSnapshot.FromWorld(authored, groupTriangles, false);
-            var authoredIndex = SurfaceBvh.Build(authoredSurface);
+            var authoredIndex = MeshSnapshot.BuildIndex(authoredSurface);
             var sourceCovered = new bool[source.worldVertices.Length];
             Parallel.For(0, sourceCovered.Length, v =>
                 sourceCovered[v] = Covered(source.worldVertices[v], source.worldNormals[v], authoredSurface, authoredIndex));
@@ -168,7 +173,7 @@ namespace Orbiters.ReFit
             // 2. Which target skin the fabric covers: where its counterpart on the source was under the authored fabric.
             var registered = MeshSnapshot.FromWorld(registration.registered, source.triangles, false);
             registered.hiddenTriangles = source.hiddenTriangles;
-            var registeredIndex = SurfaceBvh.Build(registered);
+            var registeredIndex = MeshSnapshot.BuildIndex(registered);
             int targetCount = target.worldVertices.Length;
             var covered = new bool[targetCount];
             var unmatched = new bool[targetCount];
@@ -181,20 +186,20 @@ namespace Orbiters.ReFit
                 if (hidden != null && hidden[t]) return;
                 var p = target.worldVertices[t];
                 var n = target.worldNormals[t];
-                var facing = new FacingFilter(registered.FaceNormals, n, Facing);
+                var facing = SurfaceRules.Facing(registered.FaceNormals, n, Facing);
                 var counterpart = registeredIndex.ClosestPoint(p, CounterpartReach, facing);
-                if (!counterpart.found && main[t])
+                if (!counterpart.Found && main[t])
                 {
                     // Grown skin: the skin beneath it on the laid source, or above it where the target is smaller, whichever is
                     // nearer (as ReFitDrape.CounterpartCovered): a ray in through a thigh smaller than the source's goes on to the
                     // other thigh.
-                    var inward = registeredIndex.Raycast(p, -n, GrownReach, facing);
-                    var outward = registeredIndex.Raycast(p, n, ShrunkReach, facing);
-                    counterpart = outward.found && (!inward.found || outward.distance < inward.distance) ? outward : inward;
+                    var inward = registeredIndex.Ray(p, -n, GrownReach, true, facing);
+                    var outward = registeredIndex.Ray(p, n, ShrunkReach, true, facing);
+                    counterpart = outward.Found && (!inward.Found || outward.Distance < inward.Distance) ? outward : inward;
                 }
-                if (!counterpart.found) { unmatched[t] = true; return; }
-                var sp = source.BaryPoint(counterpart.triangle, counterpart.bary);
-                var sn = source.BaryNormal(counterpart.triangle, counterpart.bary);
+                if (!counterpart.Found) { unmatched[t] = true; return; }
+                var sp = source.BaryPoint(counterpart.TriangleOrNone, counterpart.Bary);
+                var sn = source.BaryNormal(counterpart.TriangleOrNone, counterpart.Bary);
                 covered[t] = Covered(sp, sn, authoredSurface, authoredIndex);
                 counterpartPoint[t] = sp;
                 counterpartNormal[t] = sn;
@@ -207,9 +212,9 @@ namespace Orbiters.ReFit
             // What came through the fabric as authored stays allowed: coarse fabric sags into a curved body between its
             // vertices, straps press into it. The drape corrects only what the move to the target adds.
             var startSurface = MeshSnapshot.FromWorld(start, groupTriangles, false);
-            var startIndex = SurfaceBvh.Build(startSurface);
+            var startIndex = MeshSnapshot.BuildIndex(startSurface);
             var under = new bool[targetCount];
-            Parallel.For(0, targetCount, t => under[t] = (hidden == null || !hidden[t]) && startIndex.ClosestPoint(target.worldVertices[t], CoverReach).found);
+            Parallel.For(0, targetCount, t => under[t] = (hidden == null || !hidden[t]) && startIndex.ClosestPoint(target.worldVertices[t], CoverReach).Found);
             // Skin the source lacks on the target's main surface (not fluff, horns or hair: parts of their own) under the clothing.
             // The head is not under it: a muzzle or a mane of another shape lies within reach of a collar, and the clothing never
             // covers it.
@@ -220,7 +225,7 @@ namespace Orbiters.ReFit
                         for (int k = 0; k < 3; k++) head[target.triangles[tri * 3 + k]] = true;
             var lacks = new bool[targetCount];
             Parallel.For(0, targetCount, t =>
-                lacks[t] = under[t] && main[t] && !head[t] && (unmatched[t] || !registeredIndex.ClosestPoint(target.worldVertices[t], UnreachedGap).found));
+                lacks[t] = under[t] && main[t] && !head[t] && (unmatched[t] || !registeredIndex.ClosestPoint(target.worldVertices[t], UnreachedGap).Found));
             int underCount = 0, lacking = 0;
             for (int t = 0; t < targetCount; t++)
             {
@@ -270,7 +275,7 @@ namespace Orbiters.ReFit
             for (int g = 0; g < groupCount; g++) fitted[g] = asset.worldVertices[asset.groupRep[g]] + (fit != null ? fit[g] : Vector3.zero);
             // The target skin the fitted fabric covers keeps it covered while the shape moves it.
             var surface = MeshSnapshot.FromWorld(fitted, groupTriangles, false);
-            var index = SurfaceBvh.Build(surface);
+            var index = MeshSnapshot.BuildIndex(surface);
             int count = target.worldVertices.Length;
             shapeCovered = new bool[count];
             var hidden = target.HiddenVertices();
@@ -280,7 +285,7 @@ namespace Orbiters.ReFit
                 if (hidden != null && hidden[t]) return;
                 var p = target.worldVertices[t];
                 shapeCovered[t] = Covered(p, target.worldNormals[t], surface, index);
-                near[t] = index.ClosestPoint(p, CoverReach).found;
+                near[t] = index.ClosestPoint(p, CoverReach).Found;
             });
             var candidates = new List<int>();
             for (int t = 0; t < count; t++) if (shapeCovered[t] && near[t]) candidates.Add(t);
@@ -289,7 +294,8 @@ namespace Orbiters.ReFit
             Samples(fitted, skin, target.Index(), out shapeSamples, out shapeWeights);
             fabricAllowance = new float[groupCount];
             skinAllowance = new float[shapeCandidates.Length];
-            shapeCoveredIndex = SurfaceBvh.Build(target, CoveredTriangles(target, shapeCovered));
+            shapeCoveredIndex = MeshSnapshot.BuildIndex(target, CoveredTriangles(target, shapeCovered));
+            shapeSurface = MeshSnapshot.WorldSurface.Of(target.worldVertices, target.triangles);
             Relax(fitted, target, shapeCovered, null, null, null, shapeCandidates, measure: true, coveredIndex: shapeCoveredIndex);
         }
 
@@ -318,17 +324,18 @@ namespace Orbiters.ReFit
                 for (int k = 0; k < s.Length; k++) motion += shapeMotion[s[k]] * shapeWeights[g][k];
                 motions[g] = motion * (falloff != null ? falloff[g] : 1f);
             });
-            DeltaField.Smooth(motions, adjacency, smoothingIterations, smoothingStrength);
+            DeltaField.Smooth(motions, graph, smoothingIterations, smoothingStrength);
             MoveAsOne(fitted, motions);
             var start = new Vector3[groupCount];
             for (int g = 0; g < groupCount; g++) start[g] = fitted[g] + motions[g];
             var shaped = new Vector3[target.worldVertices.Length];
             for (int i = 0; i < shaped.Length; i++) shaped[i] = target.worldVertices[i] + shapeMotion[i];
-            var body = MeshSnapshot.FromWorld(shaped, target.triangles, false);
+            // FromWorld's normals, derived again only around the skin the frame moves (the same bits).
+            var body = MeshSnapshot.MovedSurface(shapeSurface, shaped);
             body.hiddenTriangles = target.hiddenTriangles;
             // The covered skin's hierarchy follows the frame where it moves the skin: the same answers as one built anew.
-            var coveredIndex = shapeCoveredIndex.Clone();
-            coveredIndex.RefitTriangles(shaped, target.triangles, MeshSnapshot.MovedTriangles(target.triangles, shapeMotion));
+            var coveredIndex = shapeCoveredIndex.Clone(shaped);
+            coveredIndex.RefitTriangles(MeshSnapshot.MovedTriangles(target.triangles, shapeMotion));
             var result = Relax(start, body, shapeCovered, report, "'" + shapeName + "'", null, shapeCandidates, allowed: true, coveredIndex: coveredIndex);
             var motionResult = new Vector3[groupCount];
             for (int g = 0; g < groupCount; g++) motionResult[g] = result[g] - fitted[g];
@@ -348,20 +355,20 @@ namespace Orbiters.ReFit
         /// <param name="coveredIndex">The hierarchy of <paramref name="body"/>'s covered triangles, or null to build it.</param>
         private Vector3[] Relax(Vector3[] start, MeshSnapshot body, bool[] coveredVertex, ReFitReport report,
             string label, Action<float> progress, int[] candidates = null, bool measure = false, bool allowed = false,
-            SurfaceBvh coveredIndex = null)
+            MeshBvh coveredIndex = null)
         {
             var surface = MeshSnapshot.FromWorld(start, groupTriangles, false);
             var bodyNormals = body.FaceNormals ?? body.CacheFaceNormals();
             // The covered skin alone: a fabric point looks for it among those triangles, not past the rest of the body.
-            coveredIndex ??= SurfaceBvh.Build(body, CoveredTriangles(body, coveredVertex));
+            coveredIndex ??= MeshSnapshot.BuildIndex(body, CoveredTriangles(body, coveredVertex));
             var vertexNormals = new Vector3[groupCount];
             var heap = new ConeHeap(groupCount);
             if (candidates == null)
             {
-                var index0 = SurfaceBvh.Build(surface);
+                var index0 = MeshSnapshot.BuildIndex(surface);
                 var list = new List<int>();
                 var near = new bool[body.worldVertices.Length];
-                Parallel.For(0, near.Length, t => near[t] = coveredVertex[t] && index0.ClosestPoint(body.worldVertices[t], CoverReach).found);
+                Parallel.For(0, near.Length, t => near[t] = coveredVertex[t] && index0.ClosestPoint(body.worldVertices[t], CoverReach).Found);
                 for (int t = 0; t < near.Length; t++) if (near[t]) list.Add(t);
                 candidates = list.ToArray();
             }
@@ -376,11 +383,11 @@ namespace Orbiters.ReFit
             // The largest push each group asked for so far, and the cone the pushes may lift the fabric around them.
             var needed = new float[groupCount];
             var cap = new float[groupCount];
-            SurfaceBvh index = null;
+            MeshBvh index = null;
             int pushedLast = 0, iterations = 0;
             float deepest = 0f;
             // Each point's answer in the pass before: a point moves at most MaxPush a pass, so its search starts bounded by it
-            // (the answer is the unseeded one, see SurfaceBvh).
+            // (the answer is the unseeded one, see MeshBvh).
             var skinSeed = new int[groupCount];
             var fabricSeed = new int[candidates.Length];
             for (int g = 0; g < groupCount; g++) skinSeed[g] = -1;
@@ -397,7 +404,7 @@ namespace Orbiters.ReFit
                 surface.worldVertices = position;
                 surface.worldNormals = Normals(position, groupTriangles, groupCount, vertexNormals);
                 var surfaceNormals = surface.CacheFaceNormals();
-                if (index == null) index = SurfaceBvh.Build(surface); else index.Refit(surface);
+                if (index == null) index = MeshSnapshot.BuildIndex(surface); else index.Refit(surface.worldVertices);
                 surfaceMs += watch.ElapsedMilliseconds;
                 watch.Restart();
                 Array.Clear(push, 0, groupCount);
@@ -410,11 +417,11 @@ namespace Orbiters.ReFit
                     var p = position[g];
                     var n = normals[g];
                     // Covered skin turned the fabric's way (a positive dot: float.Epsilon is the smallest one).
-                    var hit = coveredIndex.ClosestPoint(p, NearReach, new FacingFilter(bodyNormals, n, float.Epsilon), skinSeed[g]);
-                    if (!hit.found) return;
-                    skinSeed[g] = hit.triangle;
-                    var skinNormal = body.BaryNormal(hit.triangle, hit.bary);
-                    float height = Vector3.Dot(p - hit.position, skinNormal);
+                    var hit = coveredIndex.ClosestPoint(p, NearReach, SurfaceRules.Facing(bodyNormals, n, float.Epsilon), skinSeed[g]);
+                    if (!hit.Found) return;
+                    skinSeed[g] = hit.TriangleOrNone;
+                    var skinNormal = body.BaryNormal(hit.TriangleOrNone, hit.Bary);
+                    float height = Vector3.Dot(p - hit.Position, skinNormal);
                     float need = clearance[g] - height;
                     if (measure) { fabricAllowance[g] = Mathf.Max(0f, need); return; }
                     if (allowed) need -= fabricAllowance[g];
@@ -430,20 +437,20 @@ namespace Orbiters.ReFit
                     for (int k = 0; k < 3; k++) skinPushGroup[c * 3 + k] = -1;
                     var p = body.worldVertices[t];
                     var n = body.worldNormals[t];
-                    var hit = index.ClosestPoint(p, NearReach, new FacingFilter(surfaceNormals, n, Facing), fabricSeed[c]);
-                    if (!hit.found) return;
-                    fabricSeed[c] = hit.triangle;
-                    var faceNormal = surfaceNormals[hit.triangle];
-                    int i0 = groupTriangles[hit.triangle * 3], i1 = groupTriangles[hit.triangle * 3 + 1], i2 = groupTriangles[hit.triangle * 3 + 2];
-                    float room = clearance[i0] * hit.bary.x + clearance[i1] * hit.bary.y + clearance[i2] * hit.bary.z;
-                    float need = Vector3.Dot(p - hit.position, faceNormal) + room;
+                    var hit = index.ClosestPoint(p, NearReach, SurfaceRules.Facing(surfaceNormals, n, Facing), fabricSeed[c]);
+                    if (!hit.Found) return;
+                    fabricSeed[c] = hit.TriangleOrNone;
+                    var faceNormal = surfaceNormals[hit.TriangleOrNone];
+                    int i0 = groupTriangles[hit.TriangleOrNone * 3], i1 = groupTriangles[hit.TriangleOrNone * 3 + 1], i2 = groupTriangles[hit.TriangleOrNone * 3 + 2];
+                    float room = clearance[i0] * hit.Bary.x + clearance[i1] * hit.Bary.y + clearance[i2] * hit.Bary.z;
+                    float need = Vector3.Dot(p - hit.Position, faceNormal) + room;
                     if (measure) { skinAllowance[c] = Mathf.Max(0f, need); return; }
                     if (allowed) need -= skinAllowance[c];
                     if (need <= 0f) return;
-                    float most = Mathf.Max(hit.bary.x, Mathf.Max(hit.bary.y, hit.bary.z));
-                    skinPushGroup[c * 3] = i0; skinPush[c * 3] = faceNormal * (need * hit.bary.x / most);
-                    skinPushGroup[c * 3 + 1] = i1; skinPush[c * 3 + 1] = faceNormal * (need * hit.bary.y / most);
-                    skinPushGroup[c * 3 + 2] = i2; skinPush[c * 3 + 2] = faceNormal * (need * hit.bary.z / most);
+                    float most = Mathf.Max(hit.Bary.x, Mathf.Max(hit.Bary.y, hit.Bary.z));
+                    skinPushGroup[c * 3] = i0; skinPush[c * 3] = faceNormal * (need * hit.Bary.x / most);
+                    skinPushGroup[c * 3 + 1] = i1; skinPush[c * 3 + 1] = faceNormal * (need * hit.Bary.y / most);
+                    skinPushGroup[c * 3 + 2] = i2; skinPush[c * 3 + 2] = faceNormal * (need * hit.Bary.z / most);
                 });
                 if (measure) return start;
                 queryMs += watch.ElapsedMilliseconds;
@@ -595,56 +602,35 @@ namespace Orbiters.ReFit
             }
         }
 
-        private void Smooth(Vector3[] field, Vector3[] buffer, float strength)
-        {
-            // Ranges of groups per task, not a delegate call per group: every group's result is its own.
-            const int range = 1024;
-            int ranges = (groupCount + range - 1) / range;
-            for (int pass = 0; pass < SmoothPasses; pass++)
-            {
-                Parallel.For(0, ranges, r =>
-                {
-                    int end = Math.Min(groupCount, (r + 1) * range);
-                    for (int g = r * range; g < end; g++)
-                    {
-                        var around = adjacency[g];
-                        if (around.Count == 0) { buffer[g] = field[g]; continue; }
-                        var mean = Vector3.zero;
-                        foreach (int other in around) mean += field[other];
-                        mean /= around.Count;
-                        buffer[g] = Vector3.Lerp(field[g], mean, strength);
-                    }
-                });
-                Array.Copy(buffer, field, groupCount);
-            }
-        }
+        // Each group towards the mean of its neighbours, SmoothPasses times (Burst, see ReFitFieldKernels).
+        private void Smooth(Vector3[] field, Vector3[] buffer, float strength) => ReFitFieldLoops.Smooth(field, buffer, graph, SmoothPasses, strength);
 
         // Target skin with no counterpart on the source, in front of the fabric covering the skin around it.
         private int Through(Vector3[] positions, MeshSnapshot target, bool[] unmatched)
         {
             var surface = MeshSnapshot.FromWorld(positions, groupTriangles, false);
-            var index = SurfaceBvh.Build(surface);
+            var index = MeshSnapshot.BuildIndex(surface);
             int count = 0;
             for (int t = 0; t < unmatched.Length; t++)
             {
                 if (!unmatched[t]) continue;
                 var p = target.worldVertices[t];
                 var n = target.worldNormals[t];
-                var hit = index.ClosestPoint(p, .03f, new FacingFilter(surface.FaceNormals, n, Facing));
-                if (hit.found && Vector3.Dot(p - hit.position, surface.FaceNormal(hit.triangle)) > .001f) count++;
+                var hit = index.ClosestPoint(p, .03f, SurfaceRules.Facing(surface.FaceNormals, n, Facing));
+                if (hit.Found && Vector3.Dot(p - hit.Position, surface.FaceNormal(hit.TriangleOrNone)) > .001f) count++;
             }
             return count;
         }
 
         // How far skin at a point (turned up) comes through the fabric over it, plus the room the fabric keeps there; at most
         // zero where it does not come through or no fabric is over it.
-        private float SkinNeed(Vector3 point, Vector3 up, MeshSnapshot fabric, SurfaceBvh index)
+        private float SkinNeed(Vector3 point, Vector3 up, MeshSnapshot fabric, MeshBvh index)
         {
-            var hit = index.ClosestPoint(point, NearReach, new FacingFilter(fabric.FaceNormals, up, Facing));
-            if (!hit.found) return 0f;
-            int i0 = groupTriangles[hit.triangle * 3], i1 = groupTriangles[hit.triangle * 3 + 1], i2 = groupTriangles[hit.triangle * 3 + 2];
-            float room = clearance[i0] * hit.bary.x + clearance[i1] * hit.bary.y + clearance[i2] * hit.bary.z;
-            return Vector3.Dot(point - hit.position, fabric.FaceNormal(hit.triangle)) + room;
+            var hit = index.ClosestPoint(point, NearReach, SurfaceRules.Facing(fabric.FaceNormals, up, Facing));
+            if (!hit.Found) return 0f;
+            int i0 = groupTriangles[hit.TriangleOrNone * 3], i1 = groupTriangles[hit.TriangleOrNone * 3 + 1], i2 = groupTriangles[hit.TriangleOrNone * 3 + 2];
+            float room = clearance[i0] * hit.Bary.x + clearance[i1] * hit.Bary.y + clearance[i2] * hit.Bary.z;
+            return Vector3.Dot(point - hit.Position, fabric.FaceNormal(hit.TriangleOrNone)) + room;
         }
 
         /// <summary>
@@ -652,11 +638,11 @@ namespace Orbiters.ReFit
         /// two of four rays tilted around it (skin in a fold of the body, where the fabric bridges the fold). Skin past a hem
         /// is not under it, however close.
         /// </summary>
-        private static bool Covered(Vector3 point, Vector3 up, MeshSnapshot fabric, SurfaceBvh index)
+        private static bool Covered(Vector3 point, Vector3 up, MeshSnapshot fabric, MeshBvh index)
         {
-            var facing = new FacingFilter(fabric.FaceNormals, up, Facing);
+            var facing = SurfaceRules.Facing(fabric.FaceNormals, up, Facing);
             var origin = point + up * .0005f;
-            if (index.Raycast(origin, up, CoverReach, facing).found) return true;
+            if (index.Ray(origin, up, CoverReach, true, facing).Found) return true;
             var side = MeshSnapshot.Unit(Vector3.Cross(up, Mathf.Abs(up.y) < .9f ? Vector3.up : Vector3.right));
             var other = Vector3.Cross(up, side);
             float c = Mathf.Cos(RayTilt), s = Mathf.Sin(RayTilt);
@@ -665,7 +651,7 @@ namespace Orbiters.ReFit
             for (int k = 0; k < 4; k++)
             {
                 var around = k == 0 ? side : k == 1 ? -side : k == 2 ? other : -other;
-                if (index.Raycast(origin, straight + around * s, CoverReach, facing).found && ++hits >= 2) return true;
+                if (index.Ray(origin, straight + around * s, CoverReach, true, facing).Found && ++hits >= 2) return true;
             }
             return false;
         }
@@ -678,7 +664,7 @@ namespace Orbiters.ReFit
         /// Per group, the body points whose motion it takes and their weights: points turned towards it, of a compatible region,
         /// within a reach growing with its distance to the body, weighted down from the nearest.
         /// </summary>
-        private void Samples(Vector3[] points, BodyPoints body, SurfaceBvh bodyIndex, out int[][] samples, out float[][] weights)
+        private void Samples(Vector3[] points, BodyPoints body, MeshBvh bodyIndex, out int[][] samples, out float[][] weights)
         {
             var sampleList = new int[groupCount][];
             var weightList = new float[groupCount][];
@@ -686,7 +672,7 @@ namespace Orbiters.ReFit
             {
                 var p = points[g];
                 var nearest = bodyIndex.ClosestPoint(p, MaxReach);
-                float distance = nearest.found ? nearest.distance : MaxReach;
+                float distance = nearest.Found ? nearest.Distance : MaxReach;
                 float spread = Mathf.Max(MinSpread, distance * SpreadPerDistance);
                 float reach = Mathf.Min(MaxReach, distance + spread * 2.5f);
                 var region = regions != null ? regions[g] : BodyRegion.Unknown;
@@ -707,10 +693,10 @@ namespace Orbiters.ReFit
                 });
                 // Skin the fabric covers moves it; fluff through it or skin past a hem only where none is under it.
                 if (under.Count > 0) found = under;
-                if (found.Count == 0 && nearest.found)
+                if (found.Count == 0 && nearest.Found)
                 {
                     // Nothing turned its way: the nearest body point.
-                    int corner = body.NearestCorner(nearest.triangle, nearest.bary);
+                    int corner = body.NearestCorner(nearest.TriangleOrNone, nearest.Bary);
                     if (corner >= 0) found.Add((corner, 1f));
                 }
                 if (found.Count > MaxSamples)

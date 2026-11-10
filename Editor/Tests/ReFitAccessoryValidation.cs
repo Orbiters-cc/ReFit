@@ -6,6 +6,7 @@ using System.Reflection;
 using UnityEditor;
 using UnityEngine;
 using Object = UnityEngine.Object;
+using Orbiters.Toolkit.Meshes;
 
 namespace Orbiters.ReFit.Editor.Tests
 {
@@ -526,7 +527,7 @@ namespace Orbiters.ReFit.Editor.Tests
         {
             var a = new MeshSnapshot { worldVertices = baseBody.vertices, triangles = baseBody.triangles };
             var b = new MeshSnapshot { worldVertices = shapedBody.vertices, triangles = shapedBody.triangles };
-            var ia = SurfaceBvh.Build(a); var ib = SurfaceBvh.Build(b);
+            var ia = MeshSnapshot.BuildIndex(a); var ib = MeshSnapshot.BuildIndex(b);
             var na = SurfaceNormals(a); var nb = SurfaceNormals(b);
             var p = original.vertices; var q = after.vertices; var triangles = original.triangles;
             int checkedCount = 0, crossings = 0, preexisting = 0, unconfirmed = 0; float worst = 0;
@@ -542,11 +543,11 @@ namespace Orbiters.ReFit.Editor.Tests
                     x = (p[triangles[t]] + p[triangles[t + 1]] + p[triangles[t + 2]]) / 3;
                     y = (q[triangles[t]] + q[triangles[t + 1]] + q[triangles[t + 2]]) / 3;
                 }
-                var ha = ia.ClosestPoint(x, .15f, t => na[t].sqrMagnitude > .5f);
-                var hb = ib.ClosestPoint(y, .15f, t => nb[t].sqrMagnitude > .5f);
-                if (!ha.found || !hb.found) continue;
-                float ga = Vector3.Dot(x - ha.position, na[ha.triangle]);
-                float gb = Vector3.Dot(y - hb.position, nb[hb.triangle]);
+                var ha = ia.ClosestPoint(x, .15f, ReFitTestRules.Where(ia, t => na[t].sqrMagnitude > .5f));
+                var hb = ib.ClosestPoint(y, .15f, ReFitTestRules.Where(ib, t => nb[t].sqrMagnitude > .5f));
+                if (!ha.Found || !hb.Found) continue;
+                float ga = Vector3.Dot(x - ha.Position, na[ha.TriangleOrNone]);
+                float gb = Vector3.Dot(y - hb.Position, nb[hb.TriangleOrNone]);
                 if (ga < .001f) continue;
                 checkedCount++;
                 if (gb < -.001f)
@@ -558,7 +559,7 @@ namespace Orbiters.ReFit.Editor.Tests
                     if (wa > .5) { preexisting++; continue; }
                     if (wb <= .5) { unconfirmed++; continue; }
                     crossings++; worst = Mathf.Max(worst, -gb);
-                    if (details.Count < 16) details.Add($"sample={sample} pos={x:F4}->{y:F4}, gap={ga * 1000:F3}->{gb * 1000:F3}mm, bodyTri={ha.triangle}->{hb.triangle}");
+                    if (details.Count < 16) details.Add($"sample={sample} pos={x:F4}->{y:F4}, gap={ga * 1000:F3}->{gb * 1000:F3}mm, bodyTri={ha.TriangleOrNone}->{hb.TriangleOrNone}");
                 }
             }
             if (assertNoNewPenetration && crossings > 0) throw new InvalidOperationException("New tube penetration: " + string.Join("\n", details));

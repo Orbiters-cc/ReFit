@@ -11,6 +11,7 @@ using Orbiters.Toolkit.Editor.VRChat.Posing;
 using UnityEditor;
 using UnityEngine;
 using Object = UnityEngine.Object;
+using Orbiters.Toolkit.Meshes;
 
 namespace Orbiters.ReFit.Editor
 {
@@ -151,23 +152,6 @@ namespace Orbiters.ReFit.Editor
         }
 
 #if REFIT_VRCHAT_AVATARS
-
-        // Accepts triangles turned along or against a direction.
-        private readonly struct EitherFacing : ITriangleFilter
-        {
-            private readonly Vector3[] normals;
-            private readonly Vector3 direction;
-            private readonly float minimum;
-
-            public EitherFacing(Vector3[] normals, Vector3 direction, float minimum)
-            {
-                this.normals = normals;
-                this.direction = direction;
-                this.minimum = minimum;
-            }
-
-            public bool Accept(int triangle) => Mathf.Abs(Vector3.Dot(normals[triangle], direction)) >= minimum;
-        }
 
         private sealed class Session
         {
@@ -319,7 +303,7 @@ namespace Orbiters.ReFit.Editor
                 Bake(clothing, bakedClothing, out var restCloth, out _);
                 PoseBaked?.Invoke("rest", restBody, bodyTriangles, restCloth, clothTriangles);
                 var cloth = MeshSnapshot.FromWorld(restCloth, clothTriangles, false);
-                var clothIndex = SurfaceBvh.Build(cloth);
+                var clothIndex = MeshSnapshot.BuildIndex(cloth);
                 var main = MeshSnapshot.FromWorld(restBody, bodyTriangles, false).MainSurface();
                 var faceNormals = cloth.FaceNormals;
                 int bodyCount = restBody.Length;
@@ -331,15 +315,15 @@ namespace Orbiters.ReFit.Editor
                     if (!main[v]) return;
                     var p = restBody[v];
                     var n = restBodyNormals[v];
-                    var hit = clothIndex.ClosestPoint(p, CoverReach, new EitherFacing(faceNormals, n, Facing));
-                    if (!hit.found) return;
-                    var offset = p - hit.position;
-                    float along = Vector3.Dot(offset, faceNormals[hit.triangle]);
+                    var hit = clothIndex.ClosestPoint(p, CoverReach, TriangleRule.All.Facing(faceNormals, n, Facing, FacingTest.EitherAtLeast));
+                    if (!hit.Found) return;
+                    var offset = p - hit.Position;
+                    float along = Vector3.Dot(offset, faceNormals[hit.TriangleOrNone]);
                     float d2 = offset.sqrMagnitude;
                     // Straight out of the skin, not beside it (past a hem).
                     if (d2 - along * along > Mathf.Max(1e-8f, .25f * d2)) return;
-                    coveredBy[v] = hit.triangle;
-                    facing[v] = Mathf.Sign(Vector3.Dot(faceNormals[hit.triangle], n));
+                    coveredBy[v] = hit.TriangleOrNone;
+                    facing[v] = Mathf.Sign(Vector3.Dot(faceNormals[hit.TriangleOrNone], n));
                 });
                 skinVertices = Enumerable.Range(0, bodyCount).Where(v => coveredBy[v] >= 0).ToArray();
                 result.covered = skinVertices.Length;
@@ -402,7 +386,7 @@ namespace Orbiters.ReFit.Editor
                     foreach (int t in patchOf[k])
                     {
                         Vector3 a = fabric[clothTriangles[t * 3]], b = fabric[clothTriangles[t * 3 + 1]], c = fabric[clothTriangles[t * 3 + 2]];
-                        var q = SurfaceBvh.ClosestPointOnTriangle(p, a, b, c, out _);
+                        var q = MeshBvh.ClosestPointOnTriangle(p, a, b, c, out _);
                         float d = (q - p).sqrMagnitude;
                         if (d >= best) continue;
                         var n = MeshSnapshot.Unit(Vector3.Cross(b - a, c - a));

@@ -8,6 +8,7 @@ using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
 using Object = UnityEngine.Object;
+using Orbiters.Toolkit.Meshes;
 
 namespace Orbiters.ReFit.Editor.Tests
 {
@@ -692,7 +693,7 @@ namespace Orbiters.ReFit.Editor.Tests
                 try { new ReFitEngine().Run(request); }
                 finally { ReFitClothFit.CoverageCaptured = null; }
                 if (debug == null) return "no cloth fit";
-                var index = SurfaceBvh.Build(debug.authored);
+                var index = MeshSnapshot.BuildIndex(debug.authored);
                 var bounds = new Bounds(); bounds.SetMinMax(min, max);
                 int inside = 0, covered = 0, unmatched = 0, open = 0, outHit = 0, inHit = 0, neither = 0;
                 var samples = new List<string>();
@@ -706,11 +707,11 @@ namespace Orbiters.ReFit.Editor.Tests
                     var sp = debug.counterpartPoint[t]; var sn = debug.counterpartNormal[t];
                     var outward = index.Raycast(sp + sn * .0005f, sn, .1f);
                     var inward = index.Raycast(sp - sn * .0005f, -sn, .1f);
-                    if (outward.found) outHit++; else if (inward.found) inHit++; else neither++;
+                    if (outward.Found) outHit++; else if (inward.Found) inHit++; else neither++;
                     if (samples.Count < 12 && t % 7 == 0)
                         samples.Add($"t{t} at={debug.target.worldVertices[t]:F3} src={sp:F3} n={sn:F2} out=" +
-                                    (outward.found ? $"{outward.distance * 1000:F0}mm facing {Vector3.Dot(debug.authored.FaceNormal(outward.triangle), sn):F2}" : "-") +
-                                    " in=" + (inward.found ? $"{inward.distance * 1000:F0}mm facing {Vector3.Dot(debug.authored.FaceNormal(inward.triangle), sn):F2}" : "-"));
+                                    (outward.Found ? $"{outward.Distance * 1000:F0}mm facing {Vector3.Dot(debug.authored.FaceNormal(outward.TriangleOrNone), sn):F2}" : "-") +
+                                    " in=" + (inward.Found ? $"{inward.Distance * 1000:F0}mm facing {Vector3.Dot(debug.authored.FaceNormal(inward.TriangleOrNone), sn):F2}" : "-"));
                 }
                 return $"in box {inside}: covered {covered}, unmatched {unmatched}, uncovered {open} (fabric out along the counterpart's normal {outHit}, " +
                        $"only in {inHit}, neither {neither})\n" + string.Join("\n", samples);
@@ -788,14 +789,14 @@ namespace Orbiters.ReFit.Editor.Tests
         {
             var a = new MeshSnapshot { worldVertices = authoredBody.vertices, triangles = authoredBody.triangles };
             var b = new MeshSnapshot { worldVertices = body.vertices, triangles = body.triangles };
-            var ia = SurfaceBvh.Build(a); var ib = SurfaceBvh.Build(b);
+            var ia = MeshSnapshot.BuildIndex(a); var ib = MeshSnapshot.BuildIndex(b);
             var p = authored.vertices; var q = clothing.vertices; var tris = clothing.triangles;
             var depth = new float[q.Length]; var before = new float[q.Length];
             for (int i = 0; i < q.Length; i++)
             {
-                var hb = ib.ClosestPoint(q[i], .1f, null); var ha = ia.ClosestPoint(p[i], .1f, null);
-                depth[i] = hb.found ? -Vector3.Dot(q[i] - hb.position, b.FaceNormal(hb.triangle)) : 0;
-                before[i] = ha.found ? -Vector3.Dot(p[i] - ha.position, a.FaceNormal(ha.triangle)) : 0;
+                var hb = ib.ClosestPoint(q[i], .1f); var ha = ia.ClosestPoint(p[i], .1f);
+                depth[i] = hb.Found ? -Vector3.Dot(q[i] - hb.Position, b.FaceNormal(hb.TriangleOrNone)) : 0;
+                before[i] = ha.Found ? -Vector3.Dot(p[i] - ha.Position, a.FaceNormal(ha.TriangleOrNone)) : 0;
             }
             var key = new Dictionary<Vector3Int, int>(); var weld = new int[q.Length];
             for (int i = 0; i < q.Length; i++) { var k = Vector3Int.RoundToInt(p[i] * 100000f); if (!key.TryGetValue(k, out int w)) key[k] = w = i; weld[i] = w; }
@@ -858,7 +859,7 @@ namespace Orbiters.ReFit.Editor.Tests
                     var fitted = Bake(fixture.clothing, comp.mesh, OutputBones(comp, fixture), Mirrored(comp, bodyWeights, null)); owned.Add(fitted);
                     var b = new MeshSnapshot { worldVertices = body.vertices, triangles = body.triangles };
                     var c = new MeshSnapshot { worldVertices = fitted.vertices, triangles = fitted.triangles };
-                    var ib = SurfaceBvh.Build(b); var ic = SurfaceBvh.Build(c);
+                    var ib = MeshSnapshot.BuildIndex(b); var ic = MeshSnapshot.BuildIndex(c);
                     var groups = MeshSnapshot.Capture(fixture.clothing, true, null, null).groupOfVertex;
                     var seen = new HashSet<int>();
                     var axis = Mathf.Abs(view.x) > .5f ? 0 : Mathf.Abs(view.y) > .5f ? 1 : 2;
@@ -867,18 +868,18 @@ namespace Orbiters.ReFit.Editor.Tests
                         {
                             var origin = Vector3.zero; origin[(axis + 1) % 3] = u; origin[(axis + 2) % 3] = w; origin[axis] = view[axis] > 0 ? -3 : 3;
                             var hb = ib.Raycast(origin, view, 6); var hc = ic.Raycast(origin, view, 6);
-                            if (!hb.found || (hc.found && hc.distance <= hb.distance)) continue;
-                            int t3 = hb.triangle * 3;
-                            int vertex = b.triangles[t3 + (hb.bary.x >= hb.bary.y && hb.bary.x >= hb.bary.z ? 0 : hb.bary.y >= hb.bary.z ? 1 : 2)];
+                            if (!hb.Found || (hc.Found && hc.Distance <= hb.Distance)) continue;
+                            int t3 = hb.TriangleOrNone * 3;
+                            int vertex = b.triangles[t3 + (hb.Bary.x >= hb.Bary.y && hb.Bary.x >= hb.Bary.z ? 0 : hb.Bary.y >= hb.Bary.z ? 1 : 2)];
                             if (!seen.Add(vertex) || lines.Count > 40) continue;
                             string cloth = "none";
-                            if (hc.found)
+                            if (hc.Found)
                             {
-                                int c3 = hc.triangle * 3;
-                                cloth = $"behind {(hc.distance - hb.distance) * 1000:F0}mm groups " +
+                                int c3 = hc.TriangleOrNone * 3;
+                                cloth = $"behind {(hc.Distance - hb.Distance) * 1000:F0}mm groups " +
                                         string.Join(",", Enumerable.Range(0, 3).Select(k => groups[c.triangles[c3 + k]]));
                             }
-                            lines.Add($"skin v{vertex} at {hb.position:F3} n={body.normals[vertex]:F2} | {cloth}");
+                            lines.Add($"skin v{vertex} at {hb.Position:F3} n={body.normals[vertex]:F2} | {cloth}");
                         }
                 }
                 finally { foreach (var o in owned) if (o != null) Object.DestroyImmediate(o); }
@@ -924,14 +925,14 @@ namespace Orbiters.ReFit.Editor.Tests
         internal static string Exposed(Mesh body, Mesh clothing)
         {
             var cloth = new MeshSnapshot { worldVertices = clothing.vertices, triangles = clothing.triangles };
-            var index = SurfaceBvh.Build(cloth);
+            var index = MeshSnapshot.BuildIndex(cloth);
             var v = body.vertices; var n = body.normals; var tris = body.triangles;
             var depth = new float[v.Length];
             System.Threading.Tasks.Parallel.For(0, v.Length, i =>
             {
                 var normal = n[i];
-                var hit = index.Raycast(v[i] - normal * .0005f, -normal, .15f, t => Vector3.Dot(cloth.FaceNormal(t), normal) >= .35f);
-                if (hit.found) depth[i] = hit.distance;
+                var hit = index.Raycast(v[i] - normal * .0005f, -normal, .15f, true, TriangleRule.All.Facing(cloth.KnownFaceNormals(), normal, .35f));
+                if (hit.Found) depth[i] = hit.Distance;
             });
             var key = new Dictionary<Vector3Int, int>(); var parent = Enumerable.Range(0, v.Length).ToArray();
             int Find(int x) { while (parent[x] != x) x = parent[x] = parent[parent[x]]; return x; }
@@ -957,13 +958,13 @@ namespace Orbiters.ReFit.Editor.Tests
         {
             var b = new MeshSnapshot { worldVertices = surface.vertices, triangles = surface.triangles };
             b.CacheFaceNormals();
-            var index = SurfaceBvh.Build(b);
+            var index = MeshSnapshot.BuildIndex(b);
             var q = clothing.vertices;
             var depth = new float[q.Length];
             System.Threading.Tasks.Parallel.For(0, q.Length, i =>
             {
                 var hit = index.ClosestPoint(q[i], .05f);
-                if (hit.found) depth[i] = -Vector3.Dot(q[i] - hit.position, b.FaceNormal(hit.triangle));
+                if (hit.Found) depth[i] = -Vector3.Dot(q[i] - hit.Position, b.FaceNormal(hit.TriangleOrNone));
             });
             worstMm = Mathf.Max(0f, depth.Length > 0 ? depth.Max() * 1000f : 0f);
             return depth.Count(d => d > .003f);
@@ -1145,7 +1146,7 @@ namespace Orbiters.ReFit.Editor.Tests
         {
             var a = new MeshSnapshot { worldVertices = authoredBody.vertices, triangles = authoredBody.triangles };
             var b = new MeshSnapshot { worldVertices = body.vertices, triangles = body.triangles };
-            var ia = SurfaceBvh.Build(a); var ib = SurfaceBvh.Build(b);
+            var ia = MeshSnapshot.BuildIndex(a); var ib = MeshSnapshot.BuildIndex(b);
             var p = authored.vertices; var q = clothing.vertices; var tris = clothing.triangles;
             var metrics = new Metrics();
             var deepest = new List<(float depth, Vector3 at)>();
@@ -1154,11 +1155,11 @@ namespace Orbiters.ReFit.Editor.Tests
                 int t = (s - p.Length) * 3;
                 var x = s < p.Length ? p[s] : (p[tris[t]] + p[tris[t + 1]] + p[tris[t + 2]]) / 3f;
                 var y = s < p.Length ? q[s] : (q[tris[t]] + q[tris[t + 1]] + q[tris[t + 2]]) / 3f;
-                var ha = ia.ClosestPoint(x, .1f, null); var hb = ib.ClosestPoint(y, .1f, null);
-                if (!ha.found || !hb.found) continue;
-                if (Vector3.Dot(x - ha.position, a.FaceNormal(ha.triangle)) < 0) continue;
+                var ha = ia.ClosestPoint(x, .1f); var hb = ib.ClosestPoint(y, .1f);
+                if (!ha.Found || !hb.Found) continue;
+                if (Vector3.Dot(x - ha.Position, a.FaceNormal(ha.TriangleOrNone)) < 0) continue;
                 metrics.samples++;
-                float gap = Vector3.Dot(y - hb.position, b.FaceNormal(hb.triangle));
+                float gap = Vector3.Dot(y - hb.Position, b.FaceNormal(hb.TriangleOrNone));
                 if (gap < -.001f) { metrics.inside1mm++; deepest.Add((-gap, y)); }
                 if (gap < -.003f) metrics.inside3mm++;
                 metrics.worstMm = Mathf.Max(metrics.worstMm, -gap * 1000);
@@ -1204,19 +1205,19 @@ namespace Orbiters.ReFit.Editor.Tests
         internal static string ShapeLag(Mesh body, Mesh shapedBody, Mesh clothing, Mesh shapedClothing)
         {
             var b = new MeshSnapshot { worldVertices = body.vertices, triangles = body.triangles };
-            var index = SurfaceBvh.Build(b);
+            var index = MeshSnapshot.BuildIndex(b);
             var bodyDelta = shapedBody.vertices.Select((v, i) => v - b.worldVertices[i]).ToArray();
             var p = clothing.vertices; var q = shapedClothing.vertices;
             int near = 0, lagging = 0; float worst = 0;
             var worstAt = new List<(float lag, Vector3 at)>();
             for (int i = 0; i < p.Length; i++)
             {
-                var hit = index.ClosestPoint(p[i], .02f, null);
-                if (!hit.found) continue;
+                var hit = index.ClosestPoint(p[i], .02f);
+                if (!hit.Found) continue;
                 near++;
-                int t = hit.triangle * 3;
-                var d = bodyDelta[b.triangles[t]] * hit.bary.x + bodyDelta[b.triangles[t + 1]] * hit.bary.y + bodyDelta[b.triangles[t + 2]] * hit.bary.z;
-                var n = b.FaceNormal(hit.triangle);
+                int t = hit.TriangleOrNone * 3;
+                var d = bodyDelta[b.triangles[t]] * hit.Bary.x + bodyDelta[b.triangles[t + 1]] * hit.Bary.y + bodyDelta[b.triangles[t + 2]] * hit.Bary.z;
+                var n = b.FaceNormal(hit.TriangleOrNone);
                 float lag = Vector3.Dot(d - (q[i] - p[i]), n);
                 if (lag > .003f) { lagging++; worstAt.Add((lag, p[i])); }
                 worst = Mathf.Max(worst, lag);
@@ -1320,19 +1321,19 @@ namespace Orbiters.ReFit.Editor.Tests
             var bounds = new Bounds(clothing.worldVertices[0], Vector3.zero);
             foreach (var v in clothing.worldVertices) bounds.Encapsulate(v);
             bounds.Expand(.03f);
-            var targetIndex = SurfaceBvh.Build(target);
+            var targetIndex = MeshSnapshot.BuildIndex(target);
             var distances = new List<float>(); int mismatch = 0;
             var counts = new Dictionary<string, int>();
             for (int t = 0; t < source.triangles.Length / 3; t++)
             {
                 var c = (source.worldVertices[source.triangles[t * 3]] + source.worldVertices[source.triangles[t * 3 + 1]] + source.worldVertices[source.triangles[t * 3 + 2]]) / 3;
                 if (!bounds.Contains(c)) continue;
-                var hit = targetIndex.ClosestPoint(c, .1f, null);
-                if (!hit.found) continue;
-                distances.Add(hit.distance);
-                string key = sourceRegions[t] + "->" + targetRegions[hit.triangle];
+                var hit = targetIndex.ClosestPoint(c, .1f);
+                if (!hit.Found) continue;
+                distances.Add(hit.Distance);
+                string key = sourceRegions[t] + "->" + targetRegions[hit.TriangleOrNone];
                 counts[key] = (counts.TryGetValue(key, out int n) ? n : 0) + 1;
-                if (sourceRegions[t] != targetRegions[hit.triangle]) mismatch++;
+                if (sourceRegions[t] != targetRegions[hit.TriangleOrNone]) mismatch++;
             }
             if (distances.Count == 0) return "body: no source triangle near the clothing";
             distances.Sort();

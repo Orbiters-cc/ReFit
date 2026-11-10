@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using UnityEngine;
+using Orbiters.Toolkit.Meshes;
 
 namespace Orbiters.ReFit
 {
@@ -121,10 +122,10 @@ namespace Orbiters.ReFit
         }
 
         /// <summary>The body's field over <paramref name="fabric"/> (world bounds of the fabric) and a margin, unsealed.</summary>
-        public static ReFitBodyField Field(MeshSnapshot body, SurfaceBvh index, Bounds fabric, CancellationToken cancellation) =>
+        public static ReFitBodyField Field(MeshSnapshot body, MeshBvh index, Bounds fabric, CancellationToken cancellation) =>
             Field(body, index, fabric, FieldMargin, cancellation);
 
-        private static ReFitBodyField Field(MeshSnapshot body, SurfaceBvh index, Bounds fabric, float margin, CancellationToken cancellation)
+        private static ReFitBodyField Field(MeshSnapshot body, MeshBvh index, Bounds fabric, float margin, CancellationToken cancellation)
         {
             fabric.Expand(2f * margin);
             // Unsealed: tight trousers wrap each thigh, and a sealed gap between them would push the inner-leg fabric out of it.
@@ -155,7 +156,7 @@ namespace Orbiters.ReFit
         /// <paramref name="room"/>, or, with <paramref name="keepAuthored"/>, no more than the authored centre had over the body it
         /// was made on (nearest skin, signed by its normal): a coarse face sagged into a curved body as made keeps that sag.
         /// </summary>
-        public static float[] CentreRooms(MeshSnapshot asset, MeshSnapshot madeOn, SurfaceBvh madeOnIndex, float room, bool keepAuthored)
+        public static float[] CentreRooms(MeshSnapshot asset, MeshSnapshot madeOn, MeshBvh madeOnIndex, float room, bool keepAuthored)
         {
             var triangles = GroupTriangles(asset);
             var rooms = new float[triangles.Length / 3];
@@ -166,9 +167,9 @@ namespace Orbiters.ReFit
                 var centre = (asset.worldVertices[asset.groupRep[triangles[t * 3]]] + asset.worldVertices[asset.groupRep[triangles[t * 3 + 1]]] +
                               asset.worldVertices[asset.groupRep[triangles[t * 3 + 2]]]) / 3f;
                 var hit = madeOnIndex.ClosestPoint(centre, MaxPush);
-                if (!hit.found) return;
-                bool under = Vector3.Dot(centre - hit.position, madeOn.BaryNormal(hit.triangle, hit.bary)) < 0f;
-                rooms[t] = Mathf.Min(room, under ? -hit.distance : hit.distance);
+                if (!hit.Found) return;
+                bool under = Vector3.Dot(centre - hit.Position, madeOn.BaryNormal(hit.TriangleOrNone, hit.Bary)) < 0f;
+                rooms[t] = Mathf.Min(room, under ? -hit.Distance : hit.Distance);
             });
             return rooms;
         }
@@ -181,7 +182,7 @@ namespace Orbiters.ReFit
         /// </summary>
         /// <param name="index">The body's hierarchy (reused from the fit).</param>
         /// <param name="centreRooms">The room of each triangle centre (<see cref="CentreRooms"/>), or null: its corners' least room.</param>
-        public static Result Apply(MeshSnapshot asset, Vector3[] groupDeltas, MeshSnapshot body, SurfaceBvh index, float[] rooms,
+        public static Result Apply(MeshSnapshot asset, Vector3[] groupDeltas, MeshSnapshot body, MeshBvh index, float[] rooms,
             float[] centreRooms, int iterations, CancellationToken cancellation)
         {
             var watch = System.Diagnostics.Stopwatch.StartNew();
@@ -392,12 +393,12 @@ namespace Orbiters.ReFit
         }
 
         // Inside the skin by the nearest skin's normal, or no farther from it than the room and a field cell.
-        private static bool Near(MeshSnapshot body, SurfaceBvh index, Vector3 point, float room)
+        private static bool Near(MeshSnapshot body, MeshBvh index, Vector3 point, float room)
         {
             var hit = index.ClosestPoint(point, MaxPush);
-            if (!hit.found) return false;
-            return hit.distance < room - MinNeed + CandidateSlack ||
-                   Vector3.Dot(point - hit.position, body.BaryNormal(hit.triangle, hit.bary)) < 0f;
+            if (!hit.Found) return false;
+            return hit.Distance < room - MinNeed + CandidateSlack ||
+                   Vector3.Dot(point - hit.Position, body.BaryNormal(hit.TriangleOrNone, hit.Bary)) < 0f;
         }
 
         /// <summary>
@@ -539,7 +540,7 @@ namespace Orbiters.ReFit
             public string timing;
             // The body, to check the field's way out against the nearest skin.
             public MeshSnapshot body;
-            public SurfaceBvh index;
+            public MeshBvh index;
 
             // The field of the cluster nearest the point (a field covers its cluster and a margin larger than any push).
             public float Sample(Vector3 p, out Vector3 gradient)
@@ -565,7 +566,7 @@ namespace Orbiters.ReFit
                 var way = Way(distance, gradient, room, out need);
                 if (way == Vector3.zero || index == null) return way;
                 var hit = index.ClosestPoint(point, TrustReach);
-                if (hit.found && Vector3.Dot(way, body.BaryNormal(hit.triangle, hit.bary)) < 0f) return Vector3.zero;
+                if (hit.Found && Vector3.Dot(way, body.BaryNormal(hit.TriangleOrNone, hit.Bary)) < 0f) return Vector3.zero;
                 return way;
             }
 
@@ -573,12 +574,12 @@ namespace Orbiters.ReFit
             public float Nearest(Vector3 point)
             {
                 var hit = index.ClosestPoint(point, MaxPush);
-                if (!hit.found) return MaxPush;
-                return Vector3.Dot(point - hit.position, body.BaryNormal(hit.triangle, hit.bary)) < 0f ? -hit.distance : hit.distance;
+                if (!hit.Found) return MaxPush;
+                return Vector3.Dot(point - hit.Position, body.BaryNormal(hit.TriangleOrNone, hit.Bary)) < 0f ? -hit.Distance : hit.Distance;
             }
         }
 
-        private static Fields BuildFields(MeshSnapshot body, SurfaceBvh index, List<Vector3> points, CancellationToken cancellation)
+        private static Fields BuildFields(MeshSnapshot body, MeshBvh index, List<Vector3> points, CancellationToken cancellation)
         {
             var set = new Fields();
             var parts = new List<List<Vector3>>();

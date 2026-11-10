@@ -14,6 +14,7 @@ using Orbiters.Toolkit.VRChat;
 #endif
 using Orbiters.Toolkit.Editor.Refit;
 using Object = UnityEngine.Object;
+using Orbiters.Toolkit.Meshes;
 
 namespace Orbiters.ReFit.Editor.Tests
 {
@@ -157,7 +158,7 @@ namespace Orbiters.ReFit.Editor.Tests
             var asset = Snapshot(vertices, triangles, true);
             var belt = new bool[asset.GroupCount];
             foreach (int v in beltVertices) belt[asset.groupOfVertex[v]] = true;
-            var drape = new ReFitDrape(asset, null, source, SurfaceBvh.Build(source), target, null, null, belt, null);
+            var drape = new ReFitDrape(asset, null, source, MeshSnapshot.BuildIndex(source), target, null, null, belt, null);
             return new DrapeFixture { asset = asset, source = source, target = target, belt = belt, sleeveVertices = sleeve, drape = drape };
         }
 
@@ -294,21 +295,21 @@ namespace Orbiters.ReFit.Editor.Tests
             AddBox(vertices, triangles, Vector3.zero, new Vector3(.2f, .3f, .2f), 6);
             AddCylinder(vertices, triangles, 24, 6, -.2f, .2f, (a, y) => .15f);
             var built = Snapshot(vertices, triangles, false);
-            var bvh = SurfaceBvh.Build(built);
+            var bvh = MeshSnapshot.BuildIndex(built);
             var moved = new Vector3[vertices.Count];
             for (int i = 0; i < moved.Length; i++)
                 moved[i] = vertices[i] * 1.1f + new Vector3(Mathf.Sin(i * 1.7f), Mathf.Cos(i * 2.3f), Mathf.Sin(i * .9f)) * .01f + Vector3.right * .02f;
             var movedSnapshot = new MeshSnapshot { worldVertices = moved, triangles = triangles.ToArray() };
-            bvh.Refit(movedSnapshot);
-            var rebuilt = SurfaceBvh.Build(movedSnapshot);
+            bvh.Refit(movedSnapshot.worldVertices);
+            var rebuilt = MeshSnapshot.BuildIndex(movedSnapshot);
             for (int q = 0; q < 300; q++)
             {
                 var point = new Vector3(Mathf.Sin(q * 12.9898f), Mathf.Sin(q * 78.233f), Mathf.Sin(q * 37.719f)) * .3f;
                 var a = bvh.ClosestPoint(point, .5f); var b = rebuilt.ClosestPoint(point, .5f);
-                AssertTrue(a.found == b.found && (!a.found || Mathf.Abs(a.distance - b.distance) < 1e-5f), "A refitted BVH found another closest point.");
+                AssertTrue(a.Found == b.Found && (!a.Found || Mathf.Abs(a.Distance - b.Distance) < 1e-5f), "A refitted BVH found another closest point.");
                 var direction = (-point).normalized;
                 var ra = bvh.Raycast(point, direction, 1f); var rb = rebuilt.Raycast(point, direction, 1f);
-                AssertTrue(ra.found == rb.found && (!ra.found || Mathf.Abs(ra.distance - rb.distance) < 1e-5f), "A refitted BVH found another ray hit.");
+                AssertTrue(ra.Found == rb.Found && (!ra.Found || Mathf.Abs(ra.Distance - rb.Distance) < 1e-5f), "A refitted BVH found another ray hit.");
             }
         }
 

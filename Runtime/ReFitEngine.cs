@@ -1767,8 +1767,12 @@ namespace Orbiters.ReFit
             // frame is what that moves the clothing, reversed and per frame (see PerFrame).
             float motion = shape.shown > 0f ? -shape.shown : 1f;
             var worldShapeDelta = new Vector3[bodyVerts];
-            Parallel.For(0, bodyVerts, i =>
-                worldShapeDelta[i] = TargetShapeDeltaToWorld(worker, targetBasis, i, frame.deltas[i]) * motion);
+            // Ranges of body vertices per task, not a delegate call per vertex.
+            Parallel.For(0, (bodyVerts + 4095) / 4096, range =>
+            {
+                for (int i = range * 4096, end = Math.Min(bodyVerts, (range + 1) * 4096); i < end; i++)
+                    worldShapeDelta[i] = TargetShapeDeltaToWorld(worker, targetBasis, i, frame.deltas[i]) * motion;
+            });
             if (!FrameReaches(targetBasis, worldShapeDelta, worker.coverageLayers, frame.layerDeltas, garmentMin, garmentMax, frameReach))
             {
                 // A viseme under trousers: nothing the frame moves is within reach of any stage, so the clothing stays

@@ -597,16 +597,23 @@ namespace Orbiters.ReFit
 
         private void Smooth(Vector3[] field, Vector3[] buffer, float strength)
         {
+            // Ranges of groups per task, not a delegate call per group: every group's result is its own.
+            const int range = 1024;
+            int ranges = (groupCount + range - 1) / range;
             for (int pass = 0; pass < SmoothPasses; pass++)
             {
-                Parallel.For(0, groupCount, g =>
+                Parallel.For(0, ranges, r =>
                 {
-                    var around = adjacency[g];
-                    if (around.Count == 0) { buffer[g] = field[g]; return; }
-                    var mean = Vector3.zero;
-                    foreach (int other in around) mean += field[other];
-                    mean /= around.Count;
-                    buffer[g] = Vector3.Lerp(field[g], mean, strength);
+                    int end = Math.Min(groupCount, (r + 1) * range);
+                    for (int g = r * range; g < end; g++)
+                    {
+                        var around = adjacency[g];
+                        if (around.Count == 0) { buffer[g] = field[g]; continue; }
+                        var mean = Vector3.zero;
+                        foreach (int other in around) mean += field[other];
+                        mean /= around.Count;
+                        buffer[g] = Vector3.Lerp(field[g], mean, strength);
+                    }
                 });
                 Array.Copy(buffer, field, groupCount);
             }

@@ -193,8 +193,8 @@ namespace Orbiters.ReFit
                     // Grown skin: the skin beneath it on the laid source, or above it where the target is smaller, whichever is
                     // nearer (as ReFitDrape.CounterpartCovered): a ray in through a thigh smaller than the source's goes on to the
                     // other thigh.
-                    var inward = registeredIndex.Raycast(p, -n, GrownReach, true, facing);
-                    var outward = registeredIndex.Raycast(p, n, ShrunkReach, true, facing);
+                    var inward = registeredIndex.Ray(p, -n, GrownReach, true, facing);
+                    var outward = registeredIndex.Ray(p, n, ShrunkReach, true, facing);
                     counterpart = outward.Found && (!inward.Found || outward.Distance < inward.Distance) ? outward : inward;
                 }
                 if (!counterpart.Found) { unmatched[t] = true; return; }
@@ -642,7 +642,7 @@ namespace Orbiters.ReFit
         {
             var facing = SurfaceRules.Facing(fabric.FaceNormals, up, Facing);
             var origin = point + up * .0005f;
-            if (index.Raycast(origin, up, CoverReach, true, facing).Found) return true;
+            if (index.Ray(origin, up, CoverReach, true, facing).Found) return true;
             var side = MeshSnapshot.Unit(Vector3.Cross(up, Mathf.Abs(up.y) < .9f ? Vector3.up : Vector3.right));
             var other = Vector3.Cross(up, side);
             float c = Mathf.Cos(RayTilt), s = Mathf.Sin(RayTilt);
@@ -651,7 +651,7 @@ namespace Orbiters.ReFit
             for (int k = 0; k < 4; k++)
             {
                 var around = k == 0 ? side : k == 1 ? -side : k == 2 ? other : -other;
-                if (index.Raycast(origin, straight + around * s, CoverReach, true, facing).Found && ++hits >= 2) return true;
+                if (index.Ray(origin, straight + around * s, CoverReach, true, facing).Found && ++hits >= 2) return true;
             }
             return false;
         }

@@ -25,6 +25,17 @@ namespace Orbiters.ReFit
             return rule;
         }
 
+        /// <summary>
+        /// The first triangle <paramref name="rule"/> accepts along a ray, a triangle the origin lies on met at distance 0: the
+        /// rule every ReFit stage was written for (a point already on a surface is on it, not projected onto the next layer).
+        /// </summary>
+        public static MeshBvh.Hit Ray(this MeshBvh index, Vector3 origin, Vector3 direction, float maxDistance, bool backfaces, in TriangleRule rule) =>
+            index.Raycast(origin, direction, maxDistance, backfaces, rule, contact: true);
+
+        /// <summary><see cref="Ray(MeshBvh, Vector3, Vector3, float, bool, in TriangleRule)"/> over every triangle, either face.</summary>
+        public static MeshBvh.Hit Ray(this MeshBvh index, Vector3 origin, Vector3 direction, float maxDistance) =>
+            index.Raycast(origin, direction, maxDistance, true, TriangleRule.All, contact: true);
+
         /// <summary>Faces turned against <paramref name="direction"/> (a negative dot product with it).</summary>
         public static TriangleRule Against(Vector3[] faceNormals, Vector3 direction) => TriangleRule.All.Against(faceNormals, direction);
 

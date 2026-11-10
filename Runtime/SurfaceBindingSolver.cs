@@ -173,8 +173,8 @@ namespace Orbiters.ReFit
             bool useRegion = bodyTriRegions != null && region != BodyRegion.Unknown;
             var facing = Rule(body, normal, cosMaxAngle, useRegion, region, bodyTriRegions, bodyTriRegionMasks);
             float reach = nearest.valid ? Mathf.Min(maxDistance, nearest.distance * ProjectionReach + ProjectionSlack) : maxDistance;
-            var outward = bvh.Raycast(point, normal, reach, true, facing);
-            var inward = bvh.Raycast(point, -normal, outward.Found ? outward.Distance : reach, true, facing);
+            var outward = bvh.Ray(point, normal, reach, true, facing);
+            var inward = bvh.Ray(point, -normal, outward.Found ? outward.Distance : reach, true, facing);
             var along = inward.Found ? inward : outward;
             if (!along.Found) return nearest;
             return new SurfaceBinding

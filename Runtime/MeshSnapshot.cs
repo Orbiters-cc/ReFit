@@ -640,7 +640,7 @@ namespace Orbiters.ReFit
                 var normal = Unit(Vector3.Cross(worldVertices[triangles[i + 1]] - a, worldVertices[triangles[i + 2]] - a));
                 if (normal == Vector3.zero) return;
                 var center = (a + worldVertices[triangles[i + 1]] + worldVertices[triangles[i + 2]]) / 3f;
-                var hit = index.Raycast(center + normal * .0005f, normal, EnclosedReach, true, TriangleRule.All.Except(t));
+                var hit = index.Ray(center + normal * .0005f, normal, EnclosedReach, true, TriangleRule.All.Except(t));
                 if (!hit.Found || hit.Distance < EnclosedDepth || Vector3.Dot(FaceNormal(hit.TriangleOrNone), normal) <= 0) return;
                 hidden[t] = Inside(index, center + normal * (hit.Distance * .5f), normal);
             });
@@ -672,7 +672,7 @@ namespace Orbiters.ReFit
 
         private bool Exits(MeshBvh index, Vector3 point, Vector3 direction)
         {
-            var exit = index.Raycast(point, direction, EnclosedReach);
+            var exit = index.Ray(point, direction, EnclosedReach);
             return exit.Found && Vector3.Dot(FaceNormal(exit.TriangleOrNone), direction) > 0;
         }
 

@@ -140,7 +140,7 @@ namespace Orbiters.ReFit
                 var normal = madeNormals[rep];
                 if (normal.sqrMagnitude < 1e-12f) return;
                 // Out of the fabric, the first skin met is the way out of the body: the fabric was made under it.
-                var hit = sourceIndex.Raycast(madeVertices[rep], normal, Reach);
+                var hit = sourceIndex.Ray(madeVertices[rep], normal, Reach);
                 // Skin the target lacks there (the base's tail lying over the back) does not keep the fabric under it.
                 under[g] = hit.Found && Vector3.Dot(source.FaceNormal(hit.TriangleOrNone), normal) > 0 &&
                            targetIndex.ClosestPoint(hit.Position, Unmatched).Found;
@@ -154,27 +154,27 @@ namespace Orbiters.ReFit
             bool Covered(Vector3 position, Vector3 up, BodyRegion region)
             {
                 var facing = SurfaceRules.Facing(authoredNormals, up, Facing);
-                bool under = authoredIndex.Raycast(position + up * .0005f, up, AuthoredCover, true, facing).Found;
+                bool under = authoredIndex.Ray(position + up * .0005f, up, AuthoredCover, true, facing).Found;
                 // In a fold of the body (the gluteal crease) the skin faces other skin, and the fabric bridges the fold.
-                if (!under && sourceIndex.Raycast(position + up * .001f, up, AuthoredCover, true, SurfaceRules.Against(sourceNormals, up)).Found)
+                if (!under && sourceIndex.Ray(position + up * .001f, up, AuthoredCover, true, SurfaceRules.Against(sourceNormals, up)).Found)
                     under = authoredIndex.ClosestPoint(position, FoldCover).Found;
                 if (!under && limbFabric != null && IsLimb(region) && Through(position, up, facing, region))
                 {
                     Interlocked.Increment(ref limbCovered);
                     return true;
                 }
-                if (!under || !authoredIndex.Raycast(position - up * .0005f, -up, Reach, true, facing).Found) return under;
+                if (!under || !authoredIndex.Ray(position - up * .0005f, -up, Reach, true, facing).Found) return under;
                 // Through the fabric where another part of the source hides it, one the target lacks (the base's tail
                 // over the gluteal crease): the target shows that skin, so it is covered.
-                var over = sourceIndex.Raycast(position + up * .001f, up, AuthoredCover, true, SurfaceRules.Against(sourceNormals, up));
+                var over = sourceIndex.Ray(position + up * .001f, up, AuthoredCover, true, SurfaceRules.Against(sourceNormals, up));
                 return over.Found && !targetIndex.ClosestPoint(over.Position, Unmatched).Found;
             }
             // Through the fabric: fabric over the same limb, away from its hem, lies beneath the skin turned its way, inside the limb.
             bool Through(Vector3 position, Vector3 up, in TriangleRule facing, BodyRegion region)
             {
                 var origin = position - up * .0005f;
-                var fabric = authoredIndex.Raycast(origin, -up, LimbReach, true, facing);
-                if (!fabric.Found || sourceIndex.Raycast(origin, -up, fabric.Distance, true, SurfaceRules.Against(sourceNormals, up)).Found) return false;
+                var fabric = authoredIndex.Ray(origin, -up, LimbReach, true, facing);
+                if (!fabric.Found || sourceIndex.Ray(origin, -up, fabric.Distance, true, SurfaceRules.Against(sourceNormals, up)).Found) return false;
                 int t3 = fabric.TriangleOrNone * 3;
                 for (int k = 0; k < 3; k++)
                     if (fabricPart[asset.groupOfVertex[asset.triangles[t3 + k]]] != region) return false;
@@ -219,8 +219,8 @@ namespace Orbiters.ReFit
                 var counterpart = sourceIndex.ClosestPoint(point, Overlap, same);
                 if (counterpart.Found) return Covered(counterpart.Position, source.FaceNormal(counterpart.TriangleOrNone), region);
                 // The target is smaller here: the source skin just outside it.
-                var outward = sourceIndex.Raycast(point, normal, Shrink, true, same);
-                var inward = sourceIndex.Raycast(point, -normal, CounterpartReach, true, same);
+                var outward = sourceIndex.Ray(point, normal, Shrink, true, same);
+                var inward = sourceIndex.Ray(point, -normal, CounterpartReach, true, same);
                 if (outward.Found && (!inward.Found || outward.Distance < inward.Distance))
                     return Covered(outward.Position, source.FaceNormal(outward.TriangleOrNone), region);
                 if (!inward.Found)
@@ -236,7 +236,7 @@ namespace Orbiters.ReFit
                     // buttocks) has no counterpart on the target: look past it.
                     if (covers || targetIndex.ClosestPoint(inward.Position, Unmatched).Found) return covers;
                     float travelled = (inward.Position - point).magnitude + .001f;
-                    inward = sourceIndex.Raycast(point - normal * travelled, -normal, CounterpartReach - travelled, true, same);
+                    inward = sourceIndex.Ray(point - normal * travelled, -normal, CounterpartReach - travelled, true, same);
                 }
                 return null;
             }
@@ -304,7 +304,7 @@ namespace Orbiters.ReFit
         private static bool FoldWall(MeshSnapshot body, MeshBvh index, int vertex)
         {
             var normal = body.worldNormals[vertex];
-            return index.Raycast(body.worldVertices[vertex] + normal * .001f, normal, FoldWidth,
+            return index.Ray(body.worldVertices[vertex] + normal * .001f, normal, FoldWidth,
                 true, SurfaceRules.Against(body.FaceNormals ?? body.CacheFaceNormals(), normal)).Found;
         }
 
@@ -459,12 +459,12 @@ namespace Orbiters.ReFit
                     var origin = skin.worldVertices[i] - normal * .0005f;
                     // Fabric turned the skin's way, or across it (fabric bridging a fold deeper than the fold's walls); not
                     // fabric facing the skin (a lining, the inside of the same tube).
-                    var hit = index.Raycast(origin, -normal, Reach, true, SurfaceRules.Facing(clothNormals, normal, -Facing, strict: true));
+                    var hit = index.Ray(origin, -normal, Reach, true, SurfaceRules.Facing(clothNormals, normal, -Facing, strict: true));
                     if (!hit.Found) return false;
                     // The fabric must be inside the same part of the body, and nearer this side of it than the other: not past the
                     // other side of a limb, nor past its middle (the skin over there pushes it out the short way: the top of the
                     // shoulder, not the armpit, for a vest's strap inside a muscled shoulder).
-                    var exit = wholeSkin.Raycast(origin, -normal, 2f * hit.Distance, true, SurfaceRules.Against(skinNormals, normal));
+                    var exit = wholeSkin.Ray(origin, -normal, 2f * hit.Distance, true, SurfaceRules.Against(skinNormals, normal));
                     if (exit.Found) return false;
                     int t3 = hit.TriangleOrNone * 3;
                     int a = asset.groupOfVertex[asset.triangles[t3]], b = asset.groupOfVertex[asset.triangles[t3 + 1]], c = asset.groupOfVertex[asset.triangles[t3 + 2]];
@@ -591,7 +591,7 @@ namespace Orbiters.ReFit
                     var a = positions[ga]; var direction = positions[gb] - a;
                     float length = direction.magnitude;
                     if (length < 1e-6f) return;
-                    var hit = index.Raycast(a, direction / length, length, true, TriangleRule.All.AwayFrom(asset.triangles, asset.groupOfVertex, ga, gb));
+                    var hit = index.Ray(a, direction / length, length, true, TriangleRule.All.AwayFrom(asset.triangles, asset.groupOfVertex, ga, gb));
                     if (!hit.Found) return;
                     int t3 = hit.TriangleOrNone * 3;
                     int x = asset.groupOfVertex[asset.triangles[t3]], y = asset.groupOfVertex[asset.triangles[t3 + 1]], z = asset.groupOfVertex[asset.triangles[t3 + 2]];
@@ -669,7 +669,7 @@ namespace Orbiters.ReFit
                 var nearest = skinIndex.ClosestPoint(position, BridgeReach);
                 if (!nearest.Found) return;
                 var normal = skin.BaryNormal(nearest.TriangleOrNone, nearest.Bary);
-                if (foldsOnly && !skinIndex.Raycast(nearest.Position + normal * .001f, normal, FoldWidth, true,
+                if (foldsOnly && !skinIndex.Ray(nearest.Position + normal * .001f, normal, FoldWidth, true,
                         SurfaceRules.Against(skin.KnownFaceNormals(), normal)).Found) return;
                 normals[g] = normal;
             });

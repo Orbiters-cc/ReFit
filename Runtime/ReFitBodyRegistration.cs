@@ -144,6 +144,9 @@ namespace Orbiters.ReFit
             // The same bodies laid onto each other again (the next piece of an outfit, a refit run again): the last results are
             // kept by the content of everything the registration reads.
             ulong key = Key(source, sourceTriangleMasks, target, targetTriangleMasks, start);
+            // With Burst compilation off the hierarchy's queries run as managed float code, whose last bits may differ: such a
+            // registration is kept (in memory and in Library/ReFit) under a key of its own, never served to a run with Burst on.
+            if (!Unity.Burst.BurstCompiler.IsEnabled) key = unchecked((key ^ 0x6275727374206F66UL) * 1099511628211UL);
             lock (Cache)
                 foreach (var entry in Cache)
                     if (entry.key == key && entry.registered.Length == source.worldVertices.Length)
@@ -314,6 +317,24 @@ namespace Orbiters.ReFit
             return hash;
         }
 
+        /// <summary>
+        /// Where a source point (unit <paramref name="normal"/>) lands on the target in a pass: on the surface it already touches;
+        /// otherwise the facing surface met along its normal (inward first, then outward) within a reach set by the nearest
+        /// facing point, else that nearest point. <paramref name="seed"/> carries the nearest triangle from pass to pass.
+        /// </summary>
+        internal static MeshBvh.Hit Match(MeshBvh targetIndex, Vector3 p, Vector3 normal, float reach, in TriangleRule facing, ref int seed)
+        {
+            var nearest = targetIndex.ClosestPoint(p, reach, facing, seed);
+            if (nearest.Found) seed = nearest.TriangleOrNone;
+            // Already on the target: projecting along the normal could only move it onto another layer.
+            if (nearest.Found && nearest.Distance == 0f) return nearest;
+            float limit = nearest.Found ? Mathf.Min(reach, nearest.Distance * AlongFactor + AlongSlack) : reach;
+            var outward = targetIndex.Ray(p, normal, limit, true, facing);
+            var inward = targetIndex.Ray(p, -normal, outward.Found ? outward.Distance : limit, true, facing);
+            var along = inward.Found ? inward : outward;
+            return along.Found ? along : nearest;
+        }
+
         private static ReFitBodyRegistration Compute(MeshSnapshot source, int[] sourceTriangleMasks, MeshSnapshot target, MeshBvh targetIndex,
             int[] targetTriangleMasks, CancellationToken cancellation, Action<float> progress, Vector3[] start)
         {
@@ -370,13 +391,7 @@ namespace Orbiters.ReFit
                     var p = position[n];
                     var normal = normals[n];
                     var facing = SurfaceRules.Facing(faceNormals, normal, Facing, masks[n], targetTriangleMasks);
-                    var nearest = targetIndex.ClosestPoint(p, reach, facing, seed[n]);
-                    if (nearest.Found) seed[n] = nearest.TriangleOrNone;
-                    float limit = nearest.Found ? Mathf.Min(reach, nearest.Distance * AlongFactor + AlongSlack) : reach;
-                    var outward = targetIndex.Raycast(p, normal, limit, true, facing);
-                    var inward = targetIndex.Raycast(p, -normal, outward.Found ? outward.Distance : limit, true, facing);
-                    var along = inward.Found ? inward : outward;
-                    MeshBvh.Hit hit = along.Found ? along : nearest;
+                    var hit = Match(targetIndex, p, normal, reach, facing, ref seed[n]);
                     if (!hit.Found) return;
                     float agreement = Vector3.Dot(faceNormals[hit.TriangleOrNone], normal);
                     float d = hit.Distance / falloff;

@@ -429,10 +429,12 @@ namespace Orbiters.ReFit
             var report = state.Report;
 
             if (!ValidateRequest(request, report)) { state.failed = true; return state; }
-            // The hierarchy queries and solver loops are Burst code; with Burst compilation off they run as managed code,
-            // whose last bits may differ: the fit is then not the one a machine with Burst on makes.
+            // With Burst compilation off the [BurstCompile] entries run as managed code. The solver and smoothing kernels compute
+            // in double with bit-equal managed twins, so they agree; the hierarchy's queries (float, Toolkit's BvhKernels) may round
+            // differently in the last bit, and every stage reads them: the fit is then not exactly the one a machine with Burst
+            // on makes. Registrations computed so are cached under a key of their own (ReFitBodyRegistration.Build).
             if (!Unity.Burst.BurstCompiler.IsEnabled)
-                report.Warn("burst-off", "Burst compilation is off (Jobs > Burst): ReFit runs slower, and its results may differ slightly from a machine with it on.");
+                report.Warn("burst-off", "Burst compilation is off (Jobs > Burst): ReFit runs slower, and its surface queries may round differently, so results can differ slightly from a machine with Burst on.");
 
             progress?.Invoke(0.02f, "Staging avatars");
             using (var stage = PoseNormalizer.CreateStage(request, report))

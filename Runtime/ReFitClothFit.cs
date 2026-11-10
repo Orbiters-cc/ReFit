@@ -80,6 +80,8 @@ namespace Orbiters.ReFit
         // The target's covered skin alone (the triangles all of whose corners are covered), for shapes: each frame refits it
         // where the frame moves the skin instead of building it again.
         private MeshBvh shapeCoveredIndex;
+        // The target as FromWorld derives it, for shaped bodies derived again only where a frame moves the skin.
+        private MeshSnapshot.WorldSurface shapeSurface;
         // How far the fitted clothing still lets the skin through (per group, per candidate skin vertex): a shape's drape
         // corrects only what the shape adds. Shapes are summed when several are on, so each fixing what the fit left would
         // apply that correction once per shape.
@@ -293,6 +295,7 @@ namespace Orbiters.ReFit
             fabricAllowance = new float[groupCount];
             skinAllowance = new float[shapeCandidates.Length];
             shapeCoveredIndex = MeshSnapshot.BuildIndex(target, CoveredTriangles(target, shapeCovered));
+            shapeSurface = MeshSnapshot.WorldSurface.Of(target.worldVertices, target.triangles);
             Relax(fitted, target, shapeCovered, null, null, null, shapeCandidates, measure: true, coveredIndex: shapeCoveredIndex);
         }
 
@@ -327,7 +330,8 @@ namespace Orbiters.ReFit
             for (int g = 0; g < groupCount; g++) start[g] = fitted[g] + motions[g];
             var shaped = new Vector3[target.worldVertices.Length];
             for (int i = 0; i < shaped.Length; i++) shaped[i] = target.worldVertices[i] + shapeMotion[i];
-            var body = MeshSnapshot.FromWorld(shaped, target.triangles, false);
+            // FromWorld's normals, derived again only around the skin the frame moves (the same bits).
+            var body = MeshSnapshot.MovedSurface(shapeSurface, shaped);
             body.hiddenTriangles = target.hiddenTriangles;
             // The covered skin's hierarchy follows the frame where it moves the skin: the same answers as one built anew.
             var coveredIndex = shapeCoveredIndex.Clone(shaped);

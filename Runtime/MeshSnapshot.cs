@@ -301,6 +301,107 @@ namespace Orbiters.ReFit
         }
 
         /// <summary>
+        /// What <see cref="FromWorld"/> derives from a surface, kept to derive a moved copy of it again where it moved
+        /// (<see cref="MovedSurface"/>): its geometric vertex normals, face normals and the triangles around each vertex.
+        /// </summary>
+        internal sealed class WorldSurface
+        {
+            public MeshSnapshot rest;
+            // Per vertex its triangles, ascending (the order ComputeVertexNormals adds them in).
+            public int[] triangleStart, trianglesOf;
+
+            public static WorldSurface Of(Vector3[] worldVertices, int[] triangles)
+            {
+                var rest = FromWorld(worldVertices, triangles, false);
+                int n = worldVertices.Length;
+                var start = new int[n + 1];
+                for (int i = 0; i < triangles.Length; i++) start[triangles[i] + 1]++;
+                for (int v = 0; v < n; v++) start[v + 1] += start[v];
+                var fill = (int[])start.Clone();
+                var around = new int[triangles.Length];
+                for (int t = 0; t + 2 < triangles.Length; t += 3)
+                    for (int k = 0; k < 3; k++)
+                    {
+                        int v = triangles[t + k];
+                        // A triangle using a vertex twice adds its normal there twice, as ComputeVertexNormals does.
+                        around[fill[v]++] = t / 3;
+                    }
+                return new WorldSurface { rest = rest, triangleStart = start, trianglesOf = around };
+            }
+        }
+
+        /// <summary>
+        /// <see cref="FromWorld"/> of <paramref name="vertices"/> (the surface of <paramref name="surface"/> moved), bit for bit.
+        /// A vertex moved when any bit of its position differs from the rest's; a triangle moved when a corner did. Only the
+        /// corners of moved triangles get their vertex normals again (from the triangles around each, in the ascending order a
+        /// full computation adds them in), and only triangles touching such a corner their face normals (a degenerate one takes
+        /// its corners' normals); everything else is the rest's, computed from the same bits. The vertex array is taken, not copied.
+        /// </summary>
+        internal static MeshSnapshot MovedSurface(WorldSurface surface, Vector3[] vertices)
+        {
+            var rest = surface.rest;
+            var triangles = rest.triangles;
+            var restVertices = rest.worldVertices;
+            if (vertices.Length != restVertices.Length) throw new System.ArgumentException("One position per vertex.", nameof(vertices));
+            var normals = (Vector3[])rest.worldNormals.Clone();
+            var corners = new List<int>();
+            var marked = new bool[vertices.Length];
+            for (int moved = 0; moved < vertices.Length; moved++)
+            {
+                if (SameBits(vertices[moved], restVertices[moved])) continue;
+                for (int e = surface.triangleStart[moved]; e < surface.triangleStart[moved + 1]; e++)
+                {
+                    int t = surface.trianglesOf[e] * 3;
+                    for (int k = 0; k < 3; k++)
+                    {
+                        int v = triangles[t + k];
+                        if (!marked[v]) { marked[v] = true; corners.Add(v); }
+                    }
+                }
+            }
+            foreach (int v in corners)
+            {
+                var sum = Vector3.zero;
+                for (int e = surface.triangleStart[v]; e < surface.triangleStart[v + 1]; e++)
+                {
+                    int t = surface.trianglesOf[e] * 3;
+                    int a = triangles[t], b = triangles[t + 1], c = triangles[t + 2];
+                    sum += Vector3.Cross(vertices[b] - vertices[a], vertices[c] - vertices[a]);
+                }
+                var unit = Unit(sum);
+                normals[v] = unit != Vector3.zero ? unit : Vector3.up;
+            }
+            var snap = new MeshSnapshot
+            {
+                localVertices = vertices,
+                worldVertices = vertices,
+                triangles = triangles,
+                rigid = true,
+                rendererLocalToWorld = Matrix4x4.identity,
+                rendererWorldToLocal = Matrix4x4.identity,
+                worldNormals = normals,
+                baseNormals = normals,
+            };
+            var faceNormals = (Vector3[])rest.FaceNormals.Clone();
+            var done = new bool[faceNormals.Length];
+            foreach (int v in corners)
+                for (int e = surface.triangleStart[v]; e < surface.triangleStart[v + 1]; e++)
+                {
+                    int t = surface.trianglesOf[e];
+                    if (done[t]) continue;
+                    done[t] = true;
+                    faceNormals[t] = snap.ComputeFaceNormal(t);
+                }
+            snap.FaceNormals = faceNormals;
+            return snap;
+        }
+
+        private static bool SameBits(Vector3 a, Vector3 b) =>
+            System.BitConverter.SingleToInt32Bits(a.x) == System.BitConverter.SingleToInt32Bits(b.x) &&
+            System.BitConverter.SingleToInt32Bits(a.y) == System.BitConverter.SingleToInt32Bits(b.y) &&
+            System.BitConverter.SingleToInt32Bits(a.z) == System.BitConverter.SingleToInt32Bits(b.z);
+
+        /// <summary>
         /// Unit face normals by triangle (see <see cref="FaceNormal"/>), as of the last <see cref="CacheFaceNormals"/>, or null.
         /// Captured and <see cref="FromWorld"/> snapshots have them; code moving a snapshot's vertices afterwards caches them again.
         /// </summary>

@@ -1673,6 +1673,7 @@ namespace Orbiters.ReFit
             public List<ReFitSurfaceCoverage> layerCoverage;
             public Vector3 garmentMin, garmentMax;
             public float frameReach;
+            public WeldedNormalsCache normals;
         }
 
         // Every frame of every requested shape, transferred on its own, at most shapeWorkers at once.
@@ -1696,6 +1697,7 @@ namespace Orbiters.ReFit
                 vertexCount = asset.localVertices.Length, bodyVerts = bodyVerts, falloff = c.falloff, clearanceProfile = c.clearanceProfile,
                 primaryGroupDeltas = primaryGroupDeltas, transferBindings = fit.transferBindings, coverage = fit.coverage,
                 layerCoverage = fit.layerCoverage, garmentMin = garmentMin, garmentMax = garmentMax, frameReach = frameReach,
+                normals = new WeldedNormalsCache(asset, state.primaryLocalDeltas),
             };
             SetBackgroundProgress(state, 0.5f, $"Transferring blendshapes: 0/{work.Length}");
             // Frames own their arrays. Shared snapshots, BVHs and coverage supports are read-only.
@@ -1795,7 +1797,7 @@ namespace Orbiters.ReFit
                 frame.rawLocalDeltas = PerFrame(ToLocalDeltas(worker, draped, false), motion);
                 frame.localDeltas = frame.rawLocalDeltas;
                 if (settings.recalculateNormalDeltas)
-                    (frame.normalDeltas, frame.tangentDeltas) = SurfaceDeltas(asset, frame.localDeltas, FrameBase(worker.primaryLocalDeltas, frame.localDeltas, shape.shown));
+                    (frame.normalDeltas, frame.tangentDeltas) = SurfaceDeltas(asset, frame.localDeltas, FrameBase(worker.primaryLocalDeltas, frame.localDeltas, shape.shown), inputs.normals);
                 frame.deltas = null;
                 return;
             }
@@ -1831,7 +1833,7 @@ namespace Orbiters.ReFit
                 worker.Report.Info("target-space-cached-transferred-shape",
                     $"Reused the previously generated tightness-corrected transfer for '{shape.sourceName}'.");
                 if (settings.recalculateNormalDeltas)
-                    (frame.normalDeltas, frame.tangentDeltas) = SurfaceDeltas(asset, frame.localDeltas, FrameBase(worker.primaryLocalDeltas, frame.localDeltas, shape.shown));
+                    (frame.normalDeltas, frame.tangentDeltas) = SurfaceDeltas(asset, frame.localDeltas, FrameBase(worker.primaryLocalDeltas, frame.localDeltas, shape.shown), inputs.normals);
                 frame.deltas = null;
                 return;
             }
@@ -1869,7 +1871,7 @@ namespace Orbiters.ReFit
 
             frame.localDeltas = PerFrame(ToLocalDeltas(worker, groupDeltas, false), motion);
             if (settings.recalculateNormalDeltas)
-                (frame.normalDeltas, frame.tangentDeltas) = SurfaceDeltas(asset, frame.localDeltas, FrameBase(worker.primaryLocalDeltas, frame.localDeltas, shape.shown));
+                (frame.normalDeltas, frame.tangentDeltas) = SurfaceDeltas(asset, frame.localDeltas, FrameBase(worker.primaryLocalDeltas, frame.localDeltas, shape.shown), inputs.normals);
             frame.deltas = null; // free
         }
 
@@ -3789,7 +3791,8 @@ namespace Orbiters.ReFit
         /// shapes stay sparse). <paramref name="baseDeltas"/> is what lies under the frame already (the refit, for stacked
         /// shapes), may be null: the authored normal is first turned by it.
         /// </summary>
-        internal static (Vector3[] normals, Vector3[] tangents) SurfaceDeltas(MeshSnapshot asset, Vector3[] frameDeltas, Vector3[] baseDeltas)
+        internal static (Vector3[] normals, Vector3[] tangents) SurfaceDeltas(MeshSnapshot asset, Vector3[] frameDeltas, Vector3[] baseDeltas,
+            WeldedNormalsCache cache = null)
         {
             int n = asset.localVertices.Length;
             var before = new Vector3[n];
@@ -3801,9 +3804,12 @@ namespace Orbiters.ReFit
                 before[i] = b;
                 after[i] = b + frameDeltas[i];
             }
-            var weldedBefore = WeldedNormals(before, asset);
+            // The normals of the rest and of the fit are the same for every frame: computed once (the same sums, the same bits).
+            var weldedRest = cache != null ? cache.Rest() : null;
+            var weldedBefore = baseDeltas == null ? weldedRest ?? WeldedNormals(before, asset)
+                : cache?.Fitted(baseDeltas, before) ?? WeldedNormals(before, asset);
             var weldedAfter = WeldedNormals(after, asset);
-            var weldedRest = baseDeltas == null ? weldedBefore : WeldedNormals(asset.localVertices, asset);
+            weldedRest ??= baseDeltas == null ? weldedBefore : WeldedNormals(asset.localVertices, asset);
             var tangentsIn = asset.baseTangents;
             var normals = new Vector3[n];
             var tangents = tangentsIn != null ? new Vector3[n] : null;
@@ -3819,6 +3825,36 @@ namespace Orbiters.ReFit
                 tangents[i] = turn * tangent - tangent;
             }
             return (normals, tangents);
+        }
+
+        /// <summary>
+        /// The clothing's welded normals at rest and as fitted (for <see cref="SurfaceDeltas"/>), kept for the frames of one
+        /// transfer: every frame turns its normals from them. Thread safe.
+        /// </summary>
+        internal sealed class WeldedNormalsCache
+        {
+            private readonly MeshSnapshot asset;
+            private readonly Vector3[] fit;
+            private Vector3[] rest, fitted;
+
+            /// <param name="fit">The fit the frames add to (their base deltas when they show no shape), or null.</param>
+            public WeldedNormalsCache(MeshSnapshot asset, Vector3[] fit)
+            {
+                this.asset = asset;
+                this.fit = fit;
+            }
+
+            public Vector3[] Rest()
+            {
+                lock (this) return rest ??= WeldedNormals(asset.localVertices, asset);
+            }
+
+            /// <summary>The normals at <paramref name="positions"/> (rest plus <paramref name="baseDeltas"/>), kept when those are the fit; else null.</summary>
+            public Vector3[] Fitted(Vector3[] baseDeltas, Vector3[] positions)
+            {
+                if (!ReferenceEquals(baseDeltas, fit)) return null;
+                lock (this) return fitted ??= WeldedNormals(positions, asset);
+            }
         }
 
         private static Vector3[] WeldedNormals(Vector3[] verts, MeshSnapshot asset)

@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using UnityEngine;
+using Orbiters.Toolkit.Meshes;
 
 namespace Orbiters.ReFit
 {
@@ -200,14 +201,14 @@ namespace Orbiters.ReFit
                     included++;
             // Thigh skin is not told apart by its skinning: spread them as before.
             if (included == 0) return true;
-            var rightIndex = SurfaceBvh.Build(snapshot, include);
+            var rightIndex = MeshSnapshot.BuildIndex(snapshot, include);
             var faces = snapshot.CacheFaceNormals();
             int touching = 0;
             for (int v = 0; v < vertexSide.Length; v++)
             {
                 if (vertexSide[v] != 1) continue;
                 var hit = rightIndex.ClosestPoint(snapshot.worldVertices[v], ThighContact);
-                if (hit.found && hit.distance > ThighSeam && Vector3.Dot(snapshot.worldNormals[v], faces[hit.triangle]) < -.5f &&
+                if (hit.Found && hit.Distance > ThighSeam && Vector3.Dot(snapshot.worldNormals[v], faces[hit.TriangleOrNone]) < -.5f &&
                     ++touching >= ContactPoints) return true;
             }
             return false;
@@ -1023,7 +1024,7 @@ namespace Orbiters.ReFit
             return count;
         }
 
-        private static Vector2 MeasurePoseSurfaceDistance(Vector3[] positions, SurfaceBvh source)
+        private static Vector2 MeasurePoseSurfaceDistance(Vector3[] positions, MeshBvh source)
         {
             int count = Mathf.Min(positions.Length, 512);
             if (count == 0) return Vector2.zero;
@@ -1032,7 +1033,7 @@ namespace Orbiters.ReFit
             for (int i = 0; i < count; i++)
             {
                 int vertex = (int)((long)i * positions.Length / count);
-                distances[i] = source.ClosestPoint(positions[vertex], float.MaxValue).distance;
+                distances[i] = source.ClosestPoint(positions[vertex], float.MaxValue).Distance;
                 sum += distances[i];
             }
             Array.Sort(distances);

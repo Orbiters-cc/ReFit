@@ -111,7 +111,7 @@ namespace Orbiters.ReFit
         /// <paramref name="body"/> (the body as it shows, in world space). Null when the shape moves too little of the skin
         /// under the clothing to tell.
         /// </summary>
-        public static bool? MadeWithShown(Vector3[] cloth, MeshSnapshot body, SurfaceBvh index, Vector3[] motion, float reach = .05f)
+        public static bool? MadeWithShown(Vector3[] cloth, MeshSnapshot body, MeshBvh index, Vector3[] motion, float reach = .05f)
         {
             var shown = new List<float>();
             var without = new List<float>();
@@ -119,13 +119,13 @@ namespace Orbiters.ReFit
             foreach (var point in cloth)
             {
                 var hit = index.ClosestPoint(point, reach);
-                if (!hit.found) continue;
-                int t = hit.triangle * 3;
-                var shift = motion[triangles[t]] * hit.bary.x + motion[triangles[t + 1]] * hit.bary.y + motion[triangles[t + 2]] * hit.bary.z;
-                var normal = body.FaceNormal(hit.triangle);
+                if (!hit.Found) continue;
+                int t = hit.TriangleOrNone * 3;
+                var shift = motion[triangles[t]] * hit.Bary.x + motion[triangles[t + 1]] * hit.Bary.y + motion[triangles[t + 2]] * hit.Bary.z;
+                var normal = body.FaceNormal(hit.TriangleOrNone);
                 float along = Vector3.Dot(shift, normal);
                 if (Mathf.Abs(along) < MovedToTell) continue;
-                float gap = Vector3.Dot(point - hit.position, normal);
+                float gap = Vector3.Dot(point - hit.Position, normal);
                 shown.Add(gap);
                 without.Add(gap + along);
             }

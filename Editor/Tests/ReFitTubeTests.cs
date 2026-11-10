@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using UnityEngine;
 using Object = UnityEngine.Object;
+using Orbiters.Toolkit.Meshes;
 
 namespace Orbiters.ReFit.Editor.Tests
 {
@@ -112,7 +113,7 @@ namespace Orbiters.ReFit.Editor.Tests
             {
                 var body = Cylinder(0.1f, transform, objects);
                 var asset = Tubes(0.112f, 0.004f, transform, objects);
-                var index = SurfaceBvh.Build(body);
+                var index = MeshSnapshot.BuildIndex(body);
                 var tubes = ReFitTubeField.Build(asset, true);
                 Require(tubes.Count == 2, "Equal-sized closed rings were not both detected.");
                 Require(ReFitTubeField.Build(asset, false).Count == 0, "Disable setting was ignored.");

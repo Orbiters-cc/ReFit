@@ -85,7 +85,7 @@ namespace Orbiters.ReFit.Editor.Tests
             Assert.That(visible, Is.Not.SameAs(whole), "Built again without the hidden triangles");
             // The inner sphere is left out: a point at its surface finds the outer one.
             var hit = visible.ClosestPoint(new Vector3(.05f, 0f, 0f), 1f);
-            Assert.That(hit.distance, Is.EqualTo(.05f).Within(.002f));
+            Assert.That(hit.Distance, Is.EqualTo(.05f).Within(.002f));
             body.worldVertices = (Vector3[])body.worldVertices.Clone();
             Assert.That(body.Index(), Is.Not.SameAs(visible), "A new vertex array is another surface");
         }

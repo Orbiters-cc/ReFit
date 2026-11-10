@@ -6,6 +6,7 @@ using System.Threading.Tasks;
 using UnityEditor;
 using UnityEngine;
 using Object = UnityEngine.Object;
+using Orbiters.Toolkit.Meshes;
 
 namespace Orbiters.ReFit.Editor.Tests
 {
@@ -86,22 +87,32 @@ namespace Orbiters.ReFit.Editor.Tests
                 vertices[i] = new Vector3((float)random.NextDouble(), (float)random.NextDouble(), (float)random.NextDouble());
                 triangles[i] = i;
             }
-            var bvh = SurfaceBvh.Build(new MeshSnapshot { worldVertices = vertices, triangles = triangles });
+            var bvh = MeshSnapshot.BuildIndex(new MeshSnapshot { worldVertices = vertices, triangles = triangles });
             Parallel.For(0, 128, i =>
             {
                 var point = new Vector3(i / 127f, 0.6f, 0.3f);
                 float expected = float.MaxValue;
                 for (int t = 0; t < triangles.Length / 3; t += 2)
-                    expected = Mathf.Min(expected, (SurfaceBvh.ClosestPointOnTriangle(point,
+                    expected = Mathf.Min(expected, (MeshBvh.ClosestPointOnTriangle(point,
                         vertices[t * 3], vertices[t * 3 + 1], vertices[t * 3 + 2], out _) - point).magnitude);
-                var hit = bvh.ClosestPoint(point, 10f, t =>
-                {
-                    if (t == 0) AssertTrue(bvh.ClosestPoint(point, 10f).found, "Reentrant query failed.");
-                    return t % 2 == 0;
-                });
-                AssertTrue(hit.found && hit.triangle % 2 == 0, "BVH ignored the filter.");
-                AssertLessOrEqual(Mathf.Abs(hit.distance - expected), 0.000001f, "BVH differs from brute-force distance.");
+                // A managed filter may query the same tree again (the generic walk keeps its stack local).
+                var hit = bvh.ClosestPoint(point, 10f, new EvenReentrant(bvh, point));
+                AssertTrue(hit.Found && hit.TriangleOrNone % 2 == 0, "BVH ignored the filter.");
+                AssertLessOrEqual(Mathf.Abs(hit.Distance - expected), 0.000001f, "BVH differs from brute-force distance.");
             });
+        }
+
+        private readonly struct EvenReentrant : ITriangleFilter
+        {
+            private readonly MeshBvh bvh;
+            private readonly Vector3 point;
+            public EvenReentrant(MeshBvh bvh, Vector3 point) { this.bvh = bvh; this.point = point; }
+
+            public bool Accept(int t)
+            {
+                if (t == 0) AssertTrue(bvh.ClosestPoint(point, 10f).Found, "Reentrant query failed.");
+                return t % 2 == 0;
+            }
         }
 
         private static void Request_OptionsAreSnapshots()

@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using System.Linq;
 using UnityEngine;
+using Orbiters.Toolkit.Meshes;
 
 namespace Orbiters.ReFit.Editor.Tests
 {
@@ -18,21 +19,21 @@ namespace Orbiters.ReFit.Editor.Tests
         {
             var a = new MeshSnapshot { worldVertices = sourceBody.vertices, triangles = sourceBody.triangles };
             var b = new MeshSnapshot { worldVertices = body.vertices, triangles = body.triangles };
-            var ia = SurfaceBvh.Build(a); var ib = SurfaceBvh.Build(b);
+            var ia = MeshSnapshot.BuildIndex(a); var ib = MeshSnapshot.BuildIndex(b);
             var regions = Regions(target, out var arms);
             var p = original.vertices; var q = fitted.vertices; var bodyTriangles = body.triangles;
             var gaps = new Dictionary<string, (List<float> now, List<float> authored, List<float> added)>();
             for (int v = 0; v < q.Length; v++)
             {
-                var hb = ib.ClosestPoint(q[v], Reach, null);
-                if (!hb.found) continue;
-                float now = Vector3.Dot(q[v] - hb.position, b.FaceNormal(hb.triangle));
+                var hb = ib.ClosestPoint(q[v], Reach);
+                if (!hb.Found) continue;
+                float now = Vector3.Dot(q[v] - hb.Position, b.FaceNormal(hb.TriangleOrNone));
                 if (now < 0) continue;
-                var ha = ia.ClosestPoint(p[v], Reach, null);
-                float authored = ha.found ? Vector3.Dot(p[v] - ha.position, a.FaceNormal(ha.triangle)) : float.NaN;
-                string region = regions[bodyTriangles[hb.triangle * 3]];
+                var ha = ia.ClosestPoint(p[v], Reach);
+                float authored = ha.Found ? Vector3.Dot(p[v] - ha.Position, a.FaceNormal(ha.TriangleOrNone)) : float.NaN;
+                string region = regions[bodyTriangles[hb.TriangleOrNone * 3]];
                 foreach (var arm in arms)
-                    if (hb.position.y < arm.y + .01f && (hb.position - arm).magnitude < .08f) region = "armpit";
+                    if (hb.Position.y < arm.y + .01f && (hb.Position - arm).magnitude < .08f) region = "armpit";
                 if (!gaps.TryGetValue(region, out var lists)) gaps[region] = lists = (new List<float>(), new List<float>(), new List<float>());
                 lists.now.Add(now);
                 if (!float.IsNaN(authored) && authored >= 0) { lists.authored.Add(authored); lists.added.Add(now - authored); }
@@ -51,17 +52,17 @@ namespace Orbiters.ReFit.Editor.Tests
         internal static string MeasureStep(MeshSnapshot asset, MeshSnapshot body, Vector3[] groupDeltas, string[] regions, List<Vector3> arms)
         {
             if (regions == null || regions.Length != body.worldVertices.Length) return "regions do not match the body";
-            var index = SurfaceBvh.Build(body);
+            var index = MeshSnapshot.BuildIndex(body);
             var gaps = new Dictionary<string, (List<float> over, int under)>();
             for (int v = 0; v < asset.worldVertices.Length; v++)
             {
                 var q = asset.worldVertices[v] + groupDeltas[asset.groupOfVertex[v]];
-                var hit = index.ClosestPoint(q, Reach, null);
-                if (!hit.found) continue;
-                float now = Vector3.Dot(q - hit.position, body.FaceNormal(hit.triangle));
-                string region = regions[body.triangles[hit.triangle * 3]];
+                var hit = index.ClosestPoint(q, Reach);
+                if (!hit.Found) continue;
+                float now = Vector3.Dot(q - hit.Position, body.FaceNormal(hit.TriangleOrNone));
+                string region = regions[body.triangles[hit.TriangleOrNone * 3]];
                 foreach (var arm in arms)
-                    if (hit.position.y < arm.y + .01f && (hit.position - arm).magnitude < .08f) region = "armpit";
+                    if (hit.Position.y < arm.y + .01f && (hit.Position - arm).magnitude < .08f) region = "armpit";
                 if (!gaps.TryGetValue(region, out var entry)) entry = (new List<float>(), 0);
                 if (now >= 0) entry.over.Add(now); else if (now < -.001f) entry.under++;
                 gaps[region] = entry;

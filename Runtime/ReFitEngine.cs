@@ -5,6 +5,7 @@ using System.Linq;
 using System.Threading;
 using System.Threading.Tasks;
 using UnityEngine;
+using Orbiters.Toolkit.Meshes;
 
 namespace Orbiters.ReFit
 {
@@ -316,7 +317,7 @@ namespace Orbiters.ReFit
             // The clothing was made for another body than the source (see AuthoredUnder): its limbs cover what came through them.
             public bool madeForAnother;
             public ReFitSurfaceCoverage.Cover?[] hiddenCovers;
-            public SurfaceBvh targetBvh;
+            public MeshBvh targetBvh;
             /// <summary>The source body laid onto the target (mesh refits between two bodies), or null.</summary>
             public ReFitBodyRegistration registration;
             /// <summary>Per source body bone, the transform carrying it onto the target skeleton (see SkeletonRetarget), or null.</summary>
@@ -410,8 +411,10 @@ namespace Orbiters.ReFit
         private sealed class DetachedSurfaceSupport
         {
             public MeshSnapshot surface;
-            public SurfaceBvh bvh;
+            public MeshBvh bvh;
             public int[] triangleComponents;
+            // Per triangle, its component's size (int.MinValue for no component): the support rule's rank.
+            public int[] triangleRanks;
             public BodyRegion[] triangleRegions;
         }
 
@@ -426,6 +429,10 @@ namespace Orbiters.ReFit
             var report = state.Report;
 
             if (!ValidateRequest(request, report)) { state.failed = true; return state; }
+            // The hierarchy queries and solver loops are Burst code; with Burst compilation off they run as managed code,
+            // whose last bits may differ: the fit is then not the one a machine with Burst on makes.
+            if (!Unity.Burst.BurstCompiler.IsEnabled)
+                report.Warn("burst-off", "Burst compilation is off (Jobs > Burst): ReFit runs slower, and its results may differ slightly from a machine with it on.");
 
             progress?.Invoke(0.02f, "Staging avatars");
             using (var stage = PoseNormalizer.CreateStage(request, report))
@@ -1094,7 +1101,7 @@ namespace Orbiters.ReFit
         }
 
         // Each group's counterpart on a target, met along the source's normal (see SurfaceBindingSolver.ChainPoint).
-        private static SurfaceBinding[] Chained(State state, SurfaceBinding[] bindings, MeshSnapshot firstSnap, MeshSnapshot target, SurfaceBvh index)
+        private static SurfaceBinding[] Chained(State state, SurfaceBinding[] bindings, MeshSnapshot firstSnap, MeshSnapshot target, MeshBvh index)
         {
             var settings = state.settings;
             float cosMax = Mathf.Cos(settings.maxNormalAngle * Mathf.Deg2Rad);
@@ -1180,13 +1187,13 @@ namespace Orbiters.ReFit
         {
             /// <summary>The surface the clothing is bound to first (the source body for a mesh refit, else the target) and its hierarchy.</summary>
             public MeshSnapshot firstSnap;
-            public SurfaceBvh firstBvh;
+            public MeshBvh firstBvh;
             /// <summary>Each welded group's point on the first surface, and its counterpart on the target.</summary>
             public SurfaceBinding[] bindings, targetBindings;
             /// <summary>How the followed shapes the target shows move it, and the target without them it is laid onto (or the target).</summary>
             public Vector3[] shownMotion;
             public MeshSnapshot laidOnto;
-            public SurfaceBvh laidIndex;
+            public MeshBvh laidIndex;
             /// <summary>The source laid onto <see cref="laidOnto"/>, before the shown shapes carry it (or null).</summary>
             public ReFitBodyRegistration laid;
             /// <summary>Per group, how much of the motion it takes (its distance to the first surface).</summary>
@@ -1327,7 +1334,7 @@ namespace Orbiters.ReFit
                         // Every point near the skin is measured, reached or not, up to the limit.
                         var laid = registration.Point(localBindings[g].triangle, localBindings[g].bary);
                         var onTarget = bvhTarget.ClosestPoint(laid, RegistrationReachLimit);
-                        reach[g] = onTarget.found ? onTarget.distance : RegistrationReachLimit;
+                        reach[g] = onTarget.Found ? onTarget.Distance : RegistrationReachLimit;
                     }
                 });
                 if (registration != null)
@@ -1663,7 +1670,7 @@ namespace Orbiters.ReFit
         {
             public ReFitSettings settings;
             public MeshSnapshot asset, targetBasis;
-            public SurfaceBvh bvhTarget;
+            public MeshBvh bvhTarget;
             public int groupCount, vertexCount, bodyVerts;
             public float[] falloff;
             public ReFitClearanceCorrection.Profile clearanceProfile;
@@ -2002,7 +2009,7 @@ namespace Orbiters.ReFit
         /// <summary>Debug: the clothing's group deltas after each step covering the target, on that target (tests only).</summary>
         internal static Action<string, MeshSnapshot, MeshSnapshot, Vector3[]> CoverStepCaptured;
 
-        private static void CoverBody(State state, MeshSnapshot firstSnap, SurfaceBvh firstBvh, SurfaceBvh bvhTarget, Vector3[] primaryGroupDeltas,
+        private static void CoverBody(State state, MeshSnapshot firstSnap, MeshBvh firstBvh, MeshBvh bvhTarget, Vector3[] primaryGroupDeltas,
             StepTimer steps)
         {
             CoverStepCaptured?.Invoke("before", state.asset, state.targetBasis, primaryGroupDeltas);
@@ -2048,8 +2055,8 @@ namespace Orbiters.ReFit
         // deltas are the rest mesh's only: the shapes, their coverage and the saved binding keep the fit as it was, so each shape
         // moves the clothing as without the fix, from a rest that only moved out (draped from the fixed fit instead, the latex
         // corset clipped more under its shapes: 219 -> 293). Returns the fixed copy, or the deltas themselves when off.
-        private static Vector3[] Declip(State state, Vector3[] primaryGroupDeltas, SurfaceBinding[] bindings, MeshSnapshot madeOn, SurfaceBvh madeOnIndex,
-            SurfaceBvh bvhTarget)
+        private static Vector3[] Declip(State state, Vector3[] primaryGroupDeltas, SurfaceBinding[] bindings, MeshSnapshot madeOn, MeshBvh madeOnIndex,
+            MeshBvh bvhTarget)
         {
             var settings = state.settings;
             if (!settings.declipAfterFit || primaryGroupDeltas == null) return primaryGroupDeltas;
@@ -2112,14 +2119,14 @@ namespace Orbiters.ReFit
         private const float RetargetGain = 0.002f;
 
         // Mean distance of (a sample of) points to a surface, up to 30 cm each.
-        private static float MeanDistance(Vector3[] points, SurfaceBvh surface)
+        private static float MeanDistance(Vector3[] points, MeshBvh surface)
         {
             int step = Mathf.Max(1, points.Length / 4000), count = 0;
             double total = 0;
             for (int i = 0; i < points.Length; i += step)
             {
                 var hit = surface.ClosestPoint(points[i], .3f);
-                total += hit.found ? hit.distance : .3f;
+                total += hit.Found ? hit.Distance : .3f;
                 count++;
             }
             return count > 0 ? (float)(total / count) : 0f;
@@ -2144,23 +2151,23 @@ namespace Orbiters.ReFit
         /// The target counterpart of a source binding through the registration: the registered point, pressed onto the target
         /// skin nearest to it along that skin's normal. False when no target skin is near (the caller falls back to chaining).
         /// </summary>
-        private static bool RegisteredPoint(ReFitBodyRegistration registration, SurfaceBinding source, MeshSnapshot target, SurfaceBvh targetIndex,
+        private static bool RegisteredPoint(ReFitBodyRegistration registration, SurfaceBinding source, MeshSnapshot target, MeshBvh targetIndex,
             BodyRegion[] targetRegions, BodyRegion region, out SurfaceBinding binding)
         {
             binding = default;
             var point = registration.Point(source.triangle, source.bary);
             var hit = targetIndex.ClosestPoint(point, RegisteredReach);
-            if (!hit.found) return false;
-            var normal = target.FaceNormal(hit.triangle);
+            if (!hit.Found) return false;
+            var normal = target.FaceNormal(hit.TriangleOrNone);
             binding = new SurfaceBinding
             {
                 valid = true,
-                triangle = hit.triangle,
-                bary = hit.bary,
-                point = point + normal * Vector3.Dot(hit.position - point, normal),
-                distance = hit.distance,
+                triangle = hit.TriangleOrNone,
+                bary = hit.Bary,
+                point = point + normal * Vector3.Dot(hit.Position - point, normal),
+                distance = hit.Distance,
                 requestedRegion = region,
-                hitRegion = targetRegions != null && hit.triangle < targetRegions.Length ? targetRegions[hit.triangle] : BodyRegion.Unknown,
+                hitRegion = targetRegions != null && hit.TriangleOrNone < targetRegions.Length ? targetRegions[hit.TriangleOrNone] : BodyRegion.Unknown,
                 normalDot = Vector3.Dot(registration.Turn(source.triangle) * registration.source.FaceNormal(source.triangle), normal)
             };
             return true;
@@ -2663,6 +2670,10 @@ namespace Orbiters.ReFit
                 return null;
 
             var triangles = donorTriangles.ToArray();
+            var components = donorComponents.ToArray();
+            var ranks = new int[components.Length];
+            for (int t = 0; t < ranks.Length; t++)
+                ranks[t] = components[t] >= 0 && components[t] < componentSizes.Length ? componentSizes[components[t]] : int.MinValue;
             var surface = new MeshSnapshot
             {
                 worldVertices = reference,
@@ -2673,8 +2684,9 @@ namespace Orbiters.ReFit
             return new DetachedSurfaceSupport
             {
                 surface = surface,
-                bvh = SurfaceBvh.Build(surface),
-                triangleComponents = donorComponents.ToArray(),
+                bvh = MeshSnapshot.BuildIndex(surface),
+                triangleComponents = components,
+                triangleRanks = ranks,
                 triangleRegions = donorRegions.ToArray()
             };
         }
@@ -2699,7 +2711,11 @@ namespace Orbiters.ReFit
                 searchDistance <= 1e-5f)
                 return null;
 
-            var clusterSet = new HashSet<int>(clusterComponents);
+            // The components a receiver may follow: any but the cluster's own (a component outside the table: none).
+            var outsideCluster = new bool[componentSizes.Length];
+            for (int c = 0; c < outsideCluster.Length; c++) outsideCluster[c] = true;
+            foreach (int c in clusterComponents)
+                if (c >= 0 && c < outsideCluster.Length) outsideCluster[c] = false;
             var localIndex = BuildLocalGroupIndex(groups, componentByGroup.Length);
             var targets = new Vector3[groups.Count];
             var valid = new bool[groups.Count];
@@ -2715,27 +2731,15 @@ namespace Orbiters.ReFit
                     ? componentSizes[receiverComponent]
                     : 0;
                 var receiverRegion = DetachedGroupRegion(state, g);
-                var hit = support.bvh.ClosestPoint(reference[g], searchDistance, triangle =>
-                {
-                    if (triangle < 0 || triangle >= support.triangleComponents.Length)
-                        return false;
+                // Donor triangles of a component outside the cluster, no smaller than the receiver's, of a compatible region.
+                var rule = TriangleRule.All.Labelled(support.triangleComponents, outsideCluster).Ranked(support.triangleRanks, receiverSize);
+                if (support.triangleRegions != null) rule = rule.CompatibleRegion(support.triangleRegions, receiverRegion, second: true);
+                var hit = support.bvh.ClosestPoint(reference[g], searchDistance, rule);
 
-                    int donorComponent = support.triangleComponents[triangle];
-                    if (donorComponent < 0 || donorComponent >= componentSizes.Length ||
-                        clusterSet.Contains(donorComponent) ||
-                        componentSizes[donorComponent] < receiverSize)
-                        return false;
-
-                    var donorRegion = support.triangleRegions != null && triangle < support.triangleRegions.Length
-                        ? support.triangleRegions[triangle]
-                        : BodyRegion.Unknown;
-                    return HumanoidBoneMapper.RegionsCompatible(receiverRegion, donorRegion);
-                });
-
-                if (!hit.found || !IsStableDetachedSurfaceSupport(reference[g], support.surface, hit))
+                if (!hit.Found || !IsStableDetachedSurfaceSupport(reference[g], support.surface, hit))
                     continue;
 
-                int tri = hit.triangle * 3;
+                int tri = hit.TriangleOrNone * 3;
                 if (tri + 2 >= support.surface.triangles.Length)
                     continue;
 
@@ -2746,11 +2750,11 @@ namespace Orbiters.ReFit
                     ga >= currentDeltas.Length || gb >= currentDeltas.Length || gc >= currentDeltas.Length)
                     continue;
 
-                var surfaceDelta = currentDeltas[ga] * hit.bary.x +
-                                   currentDeltas[gb] * hit.bary.y +
-                                   currentDeltas[gc] * hit.bary.z;
+                var surfaceDelta = currentDeltas[ga] * hit.Bary.x +
+                                   currentDeltas[gb] * hit.Bary.y +
+                                   currentDeltas[gc] * hit.Bary.z;
                 float follow = DetachedCoherenceSurfaceFollowStrength *
-                               Mathf.Lerp(1f, 0.95f, Smooth01(0f, searchDistance, hit.distance));
+                               Mathf.Lerp(1f, 0.95f, Smooth01(0f, searchDistance, hit.Distance));
                 targets[i] = Vector3.Lerp(rigidTarget, surfaceDelta, Mathf.Clamp01(follow));
                 valid[i] = true;
                 supportedGroups++;
@@ -2944,17 +2948,17 @@ namespace Orbiters.ReFit
             }
         }
 
-        private static bool IsStableDetachedSurfaceSupport(Vector3 receiverPoint, MeshSnapshot donorSurface, SurfaceBvh.Hit hit)
+        private static bool IsStableDetachedSurfaceSupport(Vector3 receiverPoint, MeshSnapshot donorSurface, MeshBvh.Hit hit)
         {
-            if (donorSurface == null || !hit.found)
+            if (donorSurface == null || !hit.Found)
                 return false;
 
-            var supportNormal = donorSurface.BaryNormal(hit.triangle, hit.bary);
+            var supportNormal = donorSurface.BaryNormal(hit.TriangleOrNone, hit.Bary);
             if (supportNormal.sqrMagnitude <= 1e-12f)
                 return false;
 
-            float side = Vector3.Dot(receiverPoint - hit.position, supportNormal);
-            float backfaceTolerance = Mathf.Max(0.005f, hit.distance * 0.25f);
+            float side = Vector3.Dot(receiverPoint - hit.Position, supportNormal);
+            float backfaceTolerance = Mathf.Max(0.005f, hit.Distance * 0.25f);
             return side >= -backfaceTolerance;
         }
 
@@ -3312,7 +3316,7 @@ namespace Orbiters.ReFit
 
         private static SurfaceBinding[] BindRefittedAssetToTarget(
             State state,
-            SurfaceBvh bvhTarget,
+            MeshBvh bvhTarget,
             Vector3[] primaryGroupDeltas,
             SurfaceBinding[] fallbackBindings)
         {

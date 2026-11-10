@@ -14,6 +14,7 @@ using UnityEditor;
 using UnityEditor.SceneManagement;
 using UnityEngine;
 using Object = UnityEngine.Object;
+using Orbiters.Toolkit.Meshes;
 
 namespace Orbiters.ReFit.Editor
 {
@@ -54,7 +55,7 @@ namespace Orbiters.ReFit.Editor
             public List<int>[] neighbours;
             public Vector3[] position;
             public MeshSnapshot surface;
-            public SurfaceBvh index;
+            public MeshBvh index;
             // Per vertex: world to mesh space (the inverse of its skinning when the brush started).
             public Matrix4x4[] toMesh;
             public Vector3[] meshVertices;
@@ -149,7 +150,7 @@ namespace Orbiters.ReFit.Editor
                 s.building = Task.Run(() =>
                 {
                     var body = MeshSnapshot.FromWorld(bodyWorld, bodyTriangles, false);
-                    return ReFitDeclip.Field(body, SurfaceBvh.Build(body), bounds, token);
+                    return ReFitDeclip.Field(body, MeshSnapshot.BuildIndex(body), bounds, token);
                 }, token);
                 EditorApplication.update += WaitForField;
             }
@@ -214,7 +215,7 @@ namespace Orbiters.ReFit.Editor
             s.neighbours = new List<int>[sets.Length];
             for (int g = 0; g < sets.Length; g++) { sets[g].Remove(g); s.neighbours[g] = new List<int>(sets[g]); }
             s.surface = MeshSnapshot.FromWorld(s.position, groupTriangles, false);
-            s.index = SurfaceBvh.Build(s.surface);
+            s.index = MeshSnapshot.BuildIndex(s.surface);
         }
 
         // World to mesh space per vertex: the inverse of its skinning matrix (bones weighted), or of the renderer's matrix.
@@ -340,10 +341,10 @@ namespace Orbiters.ReFit.Editor
         {
             var ray = HandleUtility.GUIPointToWorldRay(mouse);
             var hit = s.index.Raycast(ray.origin, ray.direction.normalized, 1000f);
-            s.hasHit = hit.found;
-            if (!hit.found) return;
-            s.hitPoint = hit.position;
-            var n = s.surface.FaceNormal(hit.triangle);
+            s.hasHit = hit.Found;
+            if (!hit.Found) return;
+            s.hitPoint = hit.Position;
+            var n = s.surface.FaceNormal(hit.TriangleOrNone);
             s.hitNormal = Vector3.Dot(n, ray.direction) > 0f ? -n : n;
         }
 
@@ -527,7 +528,7 @@ namespace Orbiters.ReFit.Editor
             EditorUtility.SetDirty(s.mesh);
             s.surface.worldVertices = s.position;
             s.surface.CacheFaceNormals();
-            s.index.Refit(s.surface);
+            s.index.Refit(s.surface.worldVertices);
         }
 
         private static void Draw(Session s, SceneView view)

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.Linq;
 using System.Threading.Tasks;
 using UnityEngine;
+using Orbiters.Toolkit.Meshes;
 
 namespace Orbiters.ReFit
 {
@@ -126,24 +127,24 @@ namespace Orbiters.ReFit
                 Parallel.For(0, result.basis.Length, g =>
                 {
                     var nearest = bodyIndex.ClosestPoint(result.basis[g], .2f);
-                    if (!nearest.found) return;
-                    result.outward[g] = body.BaryNormal(nearest.triangle, nearest.bary);
-                    if (bodyRegions != null && bodyRegions[nearest.triangle] == BodyRegion.Head) result.protectedGroups[g] = true;
-                    var offset = result.basis[g] - nearest.position;
-                    var faceNormal = body.FaceNormal(nearest.triangle);
+                    if (!nearest.Found) return;
+                    result.outward[g] = body.BaryNormal(nearest.TriangleOrNone, nearest.Bary);
+                    if (bodyRegions != null && bodyRegions[nearest.TriangleOrNone] == BodyRegion.Head) result.protectedGroups[g] = true;
+                    var offset = result.basis[g] - nearest.Position;
+                    var faceNormal = body.FaceNormal(nearest.TriangleOrNone);
                     var tangent = offset - faceNormal * Vector3.Dot(offset, faceNormal);
-                    float authoredGap = authored != null ? AuthoredGap(asset.worldVertices[asset.groupRep[g]], authored, body.triangles, nearest.triangle, nearest.bary) : 0;
+                    float authoredGap = authored != null ? AuthoredGap(asset.worldVertices[asset.groupRep[g]], authored, body.triangles, nearest.TriangleOrNone, nearest.Bary) : 0;
                     if (authored != null && authoredGap < -AuthoredTolerance) return;
-                    if (!result.protectedGroups[g] && nearest.distance <= .1f && tangent.sqrMagnitude <= .005f * .005f)
-                        contacts[g] = new VertexSupport { group = g, triangle = nearest.triangle, bary = nearest.bary,
-                            normal = result.outward[g], gap = authored != null ? Mathf.Clamp(authoredGap, 0, LayerClearance) : Mathf.Max(0, Vector3.Dot(result.basis[g] - nearest.position, result.outward[g])),
-                            signedGap = Vector3.Dot(result.basis[g] - nearest.position, result.outward[g]) };
+                    if (!result.protectedGroups[g] && nearest.Distance <= .1f && tangent.sqrMagnitude <= .005f * .005f)
+                        contacts[g] = new VertexSupport { group = g, triangle = nearest.TriangleOrNone, bary = nearest.Bary,
+                            normal = result.outward[g], gap = authored != null ? Mathf.Clamp(authoredGap, 0, LayerClearance) : Mathf.Max(0, Vector3.Dot(result.basis[g] - nearest.Position, result.outward[g])),
+                            signedGap = Vector3.Dot(result.basis[g] - nearest.Position, result.outward[g]) };
                 });
                 foreach (var contact in contacts) if (contact.HasValue) result.vertexSupports.Add(contact.Value);
             }
             var cloth = new MeshSnapshot { worldVertices = vertices, triangles = asset.triangles };
             var clothNormals = cloth.CacheFaceNormals();
-            var index = SurfaceBvh.Build(cloth);
+            var index = MeshSnapshot.BuildIndex(cloth);
             // Different bases can begin several centimetres inside the body (notably at the crotch).
             // Keep the nearest face and opening tests: a larger search must not bridge an open hem.
             float range = result.repair ? .08f : Mathf.Min(settings.falloffStartDistance, .06f);
@@ -155,33 +156,33 @@ namespace Orbiters.ReFit
                 if (enclosed != null && enclosed[i]) return;
                 var bodyNormal = body.worldNormals[i];
                 // Never search past a nearby opening/lining for a distant outward-facing triangle.
-                var facing = new FacingFilter(clothNormals, bodyNormal, .35f);
+                var facing = SurfaceRules.Facing(clothNormals, bodyNormal, .35f);
                 var hit = result.repair ? index.ClosestPoint(body.worldVertices[i], range) : index.ClosestPoint(body.worldVertices[i], range, facing);
-                if (!hit.found) return;
-                if (result.repair && Vector3.Dot(cloth.FaceNormal(hit.triangle), bodyNormal) < .35f)
+                if (!hit.Found) return;
+                if (result.repair && Vector3.Dot(cloth.FaceNormal(hit.TriangleOrNone), bodyNormal) < .35f)
                 {
                     // Look past a thin inward lining only to its immediately adjacent outer fabric.
-                    hit = index.ClosestPoint(body.worldVertices[i], Mathf.Min(range, hit.distance + .005f), facing);
-                    if (!hit.found) return;
+                    hit = index.ClosestPoint(body.worldVertices[i], Mathf.Min(range, hit.Distance + .005f), facing);
+                    if (!hit.Found) return;
                 }
-                int t = hit.triangle * 3;
+                int t = hit.TriangleOrNone * 3;
                 int a = asset.groupOfVertex[asset.triangles[t]], b = asset.groupOfVertex[asset.triangles[t + 1]], c = asset.groupOfVertex[asset.triangles[t + 2]];
                 if (result.protectedGroups != null && (result.protectedGroups[a] || result.protectedGroups[b] || result.protectedGroups[c])) return;
-                var normal = cloth.FaceNormal(hit.triangle);
-                float gap = Vector3.Dot(hit.position - body.worldVertices[i], normal);
+                var normal = cloth.FaceNormal(hit.TriangleOrNone);
+                float gap = Vector3.Dot(hit.Position - body.worldVertices[i], normal);
                 // Reject skin beyond an opening instead of extending the hem to cover it.
-                var tangent = hit.position - body.worldVertices[i] - normal * gap;
+                var tangent = hit.Position - body.worldVertices[i] - normal * gap;
                 if (tangent.sqrMagnitude > .001f * .001f || (!result.repair && gap < -.001f) || gap > range) return;
                 if (authored != null)
                 {
                     var p0 = asset.worldVertices[asset.triangles[t]]; var p1 = asset.worldVertices[asset.triangles[t + 1]]; var p2 = asset.worldVertices[asset.triangles[t + 2]];
-                    var clothAuthored = p0 * hit.bary.x + p1 * hit.bary.y + p2 * hit.bary.z;
+                    var clothAuthored = p0 * hit.Bary.x + p1 * hit.Bary.y + p2 * hit.Bary.z;
                     // The garment passed under this layer here as authored (a collar over a lapel): leave it there.
                     float authoredGap = Vector3.Dot(clothAuthored - authored[i], MeshSnapshot.Unit(Vector3.Cross(p1 - p0, p2 - p0)));
                     if (authoredGap < -AuthoredTolerance) return;
                     gap = Mathf.Min(gap, Mathf.Clamp(authoredGap, 0, LayerClearance));
                 }
-                samples[i] = new Support { vertex = i, a = a, b = b, c = c, bary = hit.bary, gap = Mathf.Max(0, gap), signedGap = gap };
+                samples[i] = new Support { vertex = i, a = a, b = b, c = c, bary = hit.Bary, gap = Mathf.Max(0, gap), signedGap = gap };
             });
             // The solver accumulates constraints in vertex order, regardless of query completion order.
             foreach (var sample in samples) if (sample.HasValue) result.supports.Add(sample.Value);
@@ -202,7 +203,7 @@ namespace Orbiters.ReFit
         /// shirt's). Their clipping was never visible; pushing them out of the body would bring them through what covers them.
         /// </summary>
         /// <param name="others">The outfit's other parts: refitted ones cover only from outside the body.</param>
-        public static bool[] HiddenGroups(MeshSnapshot asset, MeshSnapshot body, SurfaceBvh bodyIndex, IList<(MeshSnapshot surface, bool refitted)> others) =>
+        public static bool[] HiddenGroups(MeshSnapshot asset, MeshSnapshot body, MeshBvh bodyIndex, IList<(MeshSnapshot surface, bool refitted)> others) =>
             HiddenGroups(asset, body, bodyIndex, others, null, null);
 
         /// <summary>What lies over a group straight out of the body: a layer's triangle, or the asset's own (layer -1).</summary>
@@ -213,27 +214,27 @@ namespace Orbiters.ReFit
         }
 
         /// <param name="by">Diagnostics: -1 hidden by the asset's own fabric, otherwise the index of the covering garment.</param>
-        internal static bool[] HiddenGroups(MeshSnapshot asset, MeshSnapshot body, SurfaceBvh bodyIndex, IList<(MeshSnapshot surface, bool refitted)> others, int[] byGroup,
+        internal static bool[] HiddenGroups(MeshSnapshot asset, MeshSnapshot body, MeshBvh bodyIndex, IList<(MeshSnapshot surface, bool refitted)> others, int[] byGroup,
             Cover?[] covers)
         {
             var hidden = new bool[asset.GroupCount];
-            var self = SurfaceBvh.Build(asset);
+            var self = MeshSnapshot.BuildIndex(asset);
             // A button or a pocket square does not hide the fabric it sits on.
             var details = DetailGroups(asset, null);
             var indices = others.Where(o => o.surface != null)
-                .Select(o => (index: SurfaceBvh.Build(o.surface), normals: o.surface.FaceNormals ?? o.surface.CacheFaceNormals(), o.refitted)).ToList();
+                .Select(o => (index: MeshSnapshot.BuildIndex(o.surface), normals: o.surface.FaceNormals ?? o.surface.CacheFaceNormals(), o.refitted)).ToList();
             var assetNormals = asset.FaceNormals ?? asset.CacheFaceNormals();
             Parallel.For(0, asset.GroupCount, g =>
             {
                 var point = asset.worldVertices[asset.groupRep[g]];
                 var nearest = bodyIndex.ClosestPoint(point, .1f);
-                if (!nearest.found) return;
-                var up = body.BaryNormal(nearest.triangle, nearest.bary);
+                if (!nearest.Found) return;
+                var up = body.BaryNormal(nearest.TriangleOrNone, nearest.Bary);
                 HashSet<int> near = null;
                 // Whatever lies over it, clipped or not: in shapes it must not pass through that.
                 if (covers != null) covers[g] = CoverOf(point, up);
                 // Only clipping is left in place: a hidden group outside the body still moves with the fabric around it.
-                if (Vector3.Dot(point - nearest.position, up) >= -AuthoredTolerance) return;
+                if (Vector3.Dot(point - nearest.Position, up) >= -AuthoredTolerance) return;
                 // Covered from every side, not only straight out: a hem's edge near the line does not hide what is below it.
                 var side = Vector3.Cross(up, Mathf.Abs(up.y) < .9f ? Vector3.up : Vector3.right).normalized;
                 var other = Vector3.Cross(up, side);
@@ -255,12 +256,12 @@ namespace Orbiters.ReFit
                         for (int o = 0; o < indices.Count; o++)
                         {
                             if (!indices[o].refitted) continue;
-                            var hit = indices[o].index.ClosestPoint(probe, CoverReach, new FacingFilter(indices[o].normals, outward, CoverFacing));
+                            var hit = indices[o].index.ClosestPoint(probe, CoverReach, SurfaceRules.Facing(indices[o].normals, outward, CoverFacing));
                             // A part not refitted yet does not move with the shapes: it will be refitted over this one later.
-                            if (indices[o].refitted && hit.found && Outside(hit.position)) return new Cover { layer = o, triangle = hit.triangle, bary = hit.bary, normal = outward };
+                            if (indices[o].refitted && hit.Found && Outside(hit.Position)) return new Cover { layer = o, triangle = hit.TriangleOrNone, bary = hit.Bary, normal = outward };
                         }
-                        var own = self.ClosestPoint(probe, CoverReach, new FacingFilter(assetNormals, outward, CoverFacing));
-                        if (own.found && Far(own.triangle)) return new Cover { layer = -1, triangle = own.triangle, bary = own.bary, normal = outward };
+                        var own = self.ClosestPoint(probe, CoverReach, SurfaceRules.Facing(assetNormals, outward, CoverFacing));
+                        if (own.Found && Far(own.TriangleOrNone)) return new Cover { layer = -1, triangle = own.TriangleOrNone, bary = own.Bary, normal = outward };
                     }
                     return null;
                 }
@@ -282,11 +283,11 @@ namespace Orbiters.ReFit
                         for (int o = 0; o < indices.Count; o++)
                         {
                             // Past a lining or the inner side of a collar to the outer fabric facing out.
-                            var hit = indices[o].index.ClosestPoint(probe, CoverReach, new FacingFilter(indices[o].normals, outward, CoverFacing));
-                            if (hit.found && (!indices[o].refitted || Outside(hit.position))) return o;
+                            var hit = indices[o].index.ClosestPoint(probe, CoverReach, SurfaceRules.Facing(indices[o].normals, outward, CoverFacing));
+                            if (hit.Found && (!indices[o].refitted || Outside(hit.Position))) return o;
                         }
-                        var own = self.ClosestPoint(probe, CoverReach, new FacingFilter(assetNormals, outward, CoverFacing));
-                        if (own.found && Far(own.triangle)) return -1;
+                        var own = self.ClosestPoint(probe, CoverReach, SurfaceRules.Facing(assetNormals, outward, CoverFacing));
+                        if (own.Found && Far(own.TriangleOrNone)) return -1;
                     }
                     return int.MinValue;
                 }
@@ -295,7 +296,7 @@ namespace Orbiters.ReFit
                 bool Outside(Vector3 position)
                 {
                     var skin = bodyIndex.ClosestPoint(position, .1f);
-                    return !skin.found || Vector3.Dot(position - skin.position, body.BaryNormal(skin.triangle, skin.bary)) >= 0;
+                    return !skin.Found || Vector3.Dot(position - skin.Position, body.BaryNormal(skin.TriangleOrNone, skin.Bary)) >= 0;
                 }
             });
             return hidden;

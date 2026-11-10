@@ -4,6 +4,7 @@ using System.Reflection;
 using UnityEditor;
 using UnityEngine;
 using Object = UnityEngine.Object;
+using Orbiters.Toolkit.Meshes;
 
 namespace Orbiters.ReFit.Editor.Tests
 {
@@ -824,7 +825,7 @@ namespace Orbiters.ReFit.Editor.Tests
         {
             var body = MeshSnapshot.Capture(fixture.target.renderer, false,
                 new Dictionary<int, float> { { fixture.target.mesh.GetBlendShapeIndex(BodyShapeName), weight / 100f } }, null);
-            var bodyIndex = SurfaceBvh.Build(body);
+            var bodyIndex = MeshSnapshot.BuildIndex(body);
             var asset = MeshSnapshot.Capture(fixture.sourceSpaceAccessory.renderer, false, null, null);
             var primary = GetBlendShapeDeltas(comp.mesh, comp.primaryShapeName);
             var shape = GetBlendShapeDeltas(comp.mesh, SingleSecondaryShape(comp));
@@ -833,9 +834,9 @@ namespace Orbiters.ReFit.Editor.Tests
             for (int i = 0; i < asset.worldVertices.Length; i++)
             {
                 var p = asset.worldVertices[i] + asset.skinMatrices[i].MultiplyVector(primary[i] + shape[i] * (weight / 100f));
-                var hit = bodyIndex.ClosestPoint(p, 0.1f, null);
-                if (!hit.found) continue;
-                float depth = -Vector3.Dot(p - hit.position, body.BaryNormal(hit.triangle, hit.bary));
+                var hit = bodyIndex.ClosestPoint(p, 0.1f);
+                if (!hit.Found) continue;
+                float depth = -Vector3.Dot(p - hit.Position, body.BaryNormal(hit.TriangleOrNone, hit.Bary));
                 if (depth <= 0.001f) continue;
                 under++;
                 deepest = Mathf.Max(deepest, depth);
@@ -2951,7 +2952,7 @@ namespace Orbiters.ReFit.Editor.Tests
                 },
                 triangles = new[] { 0, 1, 2, 2, 1, 3, 4, 5, 6 }
             };
-            var bvh = SurfaceBvh.Build(body);
+            var bvh = MeshSnapshot.BuildIndex(body);
             float cos = Mathf.Cos(80f * Mathf.Deg2Rad);
             var grown = SurfaceBindingSolver.ChainPoint(Vector3.zero, Vector3.forward, body, bvh, 0.5f, BodyRegion.Torso,
                 new[] { BodyRegion.Torso, BodyRegion.Torso, BodyRegion.Torso }, cos, true);
@@ -3017,7 +3018,7 @@ namespace Orbiters.ReFit.Editor.Tests
                     3, 4, 5  // Farther, but matching the reference normal.
                 }
             };
-            var bvh = SurfaceBvh.Build(body);
+            var bvh = MeshSnapshot.BuildIndex(body);
             var hit = SurfaceBindingSolver.BindPoint(
                 new Vector3(0.2f, 0.2f, 0f),
                 body,
@@ -4818,7 +4819,7 @@ namespace Orbiters.ReFit.Editor.Tests
             var report = new ReFitReport();
             var targetBasis = MeshSnapshot.Capture(fixture.target.renderer, false, targetOverrides, report);
             var assetBasis = MeshSnapshot.Capture(fixture.sourceSpaceAccessory.renderer, false, null, report);
-            var targetBvh = SurfaceBvh.Build(targetBasis);
+            var targetBvh = MeshSnapshot.BuildIndex(targetBasis);
             var worldBodyDeltas = WorldShapeDeltas(targetBasis, bodyShapeDeltas);
             var metrics = new ClearanceMetrics
             {
@@ -4833,15 +4834,15 @@ namespace Orbiters.ReFit.Editor.Tests
                 if (contains != null && !contains(assetBasis.localVertices[i]))
                     continue;
 
-                var hit = targetBvh.ClosestPoint(assetBasis.worldVertices[i], 0.4f, null);
-                if (!hit.found) continue;
+                var hit = targetBvh.ClosestPoint(assetBasis.worldVertices[i], 0.4f);
+                if (!hit.Found) continue;
 
-                var normal = targetBasis.BaryNormal(hit.triangle, hit.bary);
-                float sourceClearance = Vector3.Dot(assetBasis.worldVertices[i] - hit.position, normal);
+                var normal = targetBasis.BaryNormal(hit.TriangleOrNone, hit.Bary);
+                float sourceClearance = Vector3.Dot(assetBasis.worldVertices[i] - hit.Position, normal);
                 if (sourceClearance < 0.015f) continue;
 
-                var bodyDelta = SampleWorldShapeDelta(targetBasis, worldBodyDeltas, hit.triangle, hit.bary);
-                var shapedBodyPoint = hit.position + bodyDelta;
+                var bodyDelta = SampleWorldShapeDelta(targetBasis, worldBodyDeltas, hit.TriangleOrNone, hit.Bary);
+                var shapedBodyPoint = hit.Position + bodyDelta;
                 var primaryDelta = primaryDeltas != null
                     ? assetBasis.skinMatrices[i].MultiplyVector(primaryDeltas[i])
                     : Vector3.zero;
@@ -4931,7 +4932,7 @@ namespace Orbiters.ReFit.Editor.Tests
             var report = new ReFitReport();
             var fromSnap = MeshSnapshot.Capture(from, false, null, report);
             var toSnap = MeshSnapshot.Capture(to, false, null, report);
-            var toBvh = SurfaceBvh.Build(toSnap);
+            var toBvh = MeshSnapshot.BuildIndex(toSnap);
             var fromBounds = BoundsOf(fromSnap.worldVertices);
             var toBounds = BoundsOf(toSnap.worldVertices);
             var distances = new List<float>(fromSnap.worldVertices.Length);
@@ -4941,14 +4942,14 @@ namespace Orbiters.ReFit.Editor.Tests
 
             for (int i = 0; i < fromSnap.worldVertices.Length; i++)
             {
-                var hit = toBvh.ClosestPoint(fromSnap.worldVertices[i], 20f, null);
-                AssertTrue(hit.found,
+                var hit = toBvh.ClosestPoint(fromSnap.worldVertices[i], 20f);
+                AssertTrue(hit.Found,
                     $"No closest point found for vertex {i} on '{from.name}'. " +
                     $"From bounds {FormatBounds(fromBounds)}, to bounds {FormatBounds(toBounds)}.");
-                distances.Add(hit.distance);
-                sum += hit.distance;
-                sumSq += hit.distance * hit.distance;
-                max = Mathf.Max(max, hit.distance);
+                distances.Add(hit.Distance);
+                sum += hit.Distance;
+                sumSq += hit.Distance * hit.Distance;
+                max = Mathf.Max(max, hit.Distance);
             }
 
             distances.Sort();

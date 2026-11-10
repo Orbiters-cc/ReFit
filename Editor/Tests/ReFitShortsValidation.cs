@@ -5,6 +5,7 @@ using System.Linq;
 using UnityEditor;
 using UnityEngine;
 using Object = UnityEngine.Object;
+using Orbiters.Toolkit.Meshes;
 
 namespace Orbiters.ReFit.Editor.Tests
 {
@@ -161,7 +162,7 @@ namespace Orbiters.ReFit.Editor.Tests
         {
             var a = new MeshSnapshot { worldVertices = bodyBase.vertices, triangles = bodyBase.triangles };
             var b = new MeshSnapshot { worldVertices = body.vertices, triangles = body.triangles };
-            var ia = SurfaceBvh.Build(a); var ib = SurfaceBvh.Build(b);
+            var ia = MeshSnapshot.BuildIndex(a); var ib = MeshSnapshot.BuildIndex(b);
             var p = clothingBase.vertices; var q = clothing.vertices; var tris = clothing.triangles;
             int eligible = 0, inside = 0, preexisting = 0, confirmed = 0, alreadyInside = 0; float worst = 0;
             var details = new List<string>();
@@ -170,10 +171,10 @@ namespace Orbiters.ReFit.Editor.Tests
                 int t = (s - p.Length) * 3;
                 var x = s < p.Length ? p[s] : (p[tris[t]] + p[tris[t + 1]] + p[tris[t + 2]]) / 3f;
                 var y = s < p.Length ? q[s] : (q[tris[t]] + q[tris[t + 1]] + q[tris[t + 2]]) / 3f;
-                var ha = ia.ClosestPoint(x, .2f, null); var hb = ib.ClosestPoint(y, .2f, null);
-                if (!ha.found || !hb.found) continue;
-                float ga = Vector3.Dot(x - ha.position, a.FaceNormal(ha.triangle));
-                float gb = Vector3.Dot(y - hb.position, b.FaceNormal(hb.triangle));
+                var ha = ia.ClosestPoint(x, .2f); var hb = ib.ClosestPoint(y, .2f);
+                if (!ha.Found || !hb.Found) continue;
+                float ga = Vector3.Dot(x - ha.Position, a.FaceNormal(ha.TriangleOrNone));
+                float gb = Vector3.Dot(y - hb.Position, b.FaceNormal(hb.TriangleOrNone));
                 if (ga < 0) { preexisting++; continue; }
                 eligible++;
                 if (gb < -.001f)

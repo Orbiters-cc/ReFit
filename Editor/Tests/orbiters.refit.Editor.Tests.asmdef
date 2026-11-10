@@ -8,7 +8,8 @@
     "Orbiters.Toolkit.VRChat",
     "Orbiters.Toolkit.Editor.VRChat",
     "Orbiters.Toolkit.Editor",
-    "Unity.Burst"
+    "Unity.Burst",
+    "Unity.Mathematics"
   ],
   "includePlatforms": [
     "Editor"

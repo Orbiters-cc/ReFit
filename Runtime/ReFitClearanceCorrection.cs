@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Threading.Tasks;
 using UnityEngine;
+using Orbiters.Toolkit.Meshes;
 
 namespace Orbiters.ReFit
 {
@@ -94,7 +95,7 @@ namespace Orbiters.ReFit
             MeshSnapshot sourceBody,
             SurfaceBinding[] sourceBindings,
             ReFitSettings settings,
-            SurfaceBvh sourceBvh = null)
+            MeshBvh sourceBvh = null)
         {
             if (asset == null || sourceBody == null || sourceBindings == null || settings == null ||
                 !settings.enableClearanceCorrection || asset.GroupCount == 0)
@@ -134,7 +135,7 @@ namespace Orbiters.ReFit
         }
 
         // The guard's samples on the authored clothing, measured against the body it was made for.
-        private static float[] AuthoredSampleClearances(MeshSnapshot asset, MeshSnapshot sourceBody, SurfaceBvh sourceBvh, ReFitSettings settings)
+        private static float[] AuthoredSampleClearances(MeshSnapshot asset, MeshSnapshot sourceBody, MeshBvh sourceBvh, ReFitSettings settings)
         {
             int triangleCount = asset.triangles.Length / 3;
             var clearances = new float[triangleCount * GuardSamplesPerTriangle];
@@ -160,9 +161,9 @@ namespace Orbiters.ReFit
 
             float Clearance(Vector3 point)
             {
-                var hit = sourceBvh.ClosestPoint(point, range, null);
-                if (!hit.found) return float.NaN;
-                return Vector3.Dot(point - hit.position, sourceBody.BaryNormal(hit.triangle, hit.bary));
+                var hit = sourceBvh.ClosestPoint(point, range);
+                if (!hit.Found) return float.NaN;
+                return Vector3.Dot(point - hit.Position, sourceBody.BaryNormal(hit.TriangleOrNone, hit.Bary));
             }
         }
 
@@ -483,7 +484,7 @@ namespace Orbiters.ReFit
             bool[] allowedGroups,
             ReFitClearanceCorrectionStats stats,
             MeshSnapshot bodySurface,
-            SurfaceBvh bvh)
+            MeshBvh bvh)
         {
             if (asset == null || targetBody == null || profile == null || mutableGroupDeltas == null ||
                 settings == null || stats == null || asset.triangles == null || asset.groupOfVertex == null)
@@ -686,7 +687,16 @@ namespace Orbiters.ReFit
                 triangles = donorTriangles.ToArray()
             };
             donorSurface.worldNormals = ComputeWorldNormals(donorSurface.worldVertices, donorSurface.triangles);
-            var donorBvh = SurfaceBvh.Build(donorSurface);
+            var donorBvh = MeshSnapshot.BuildIndex(donorSurface);
+            // What the support rule reads per donor triangle: its component, that component's size and its region.
+            var donorComponents = donorTriangleComponents.ToArray();
+            var donorRegions = donorTriangleRegions.ToArray();
+            var donorRanks = new int[donorComponents.Length];
+            for (int t = 0; t < donorRanks.Length; t++)
+            {
+                int c = donorComponents[t];
+                donorRanks[t] = c >= 0 && c < componentSizes.Length ? componentSizes[c] : int.MaxValue;
+            }
             var componentGroups = BuildComponentGroupLists(componentByGroup, componentSizes);
             var debugPoints = new ReFitIslandPropagationDebugPoint[groupCount];
             var result = new IslandPropagationResult
@@ -726,8 +736,9 @@ namespace Orbiters.ReFit
                             context,
                             donorSurface,
                             donorBvh,
-                            donorTriangleComponents,
-                            donorTriangleRegions,
+                            donorComponents,
+                            donorRanks,
+                            donorRegions,
                             searchDistance,
                             donorThreshold,
                             out var sample,
@@ -961,9 +972,10 @@ namespace Orbiters.ReFit
             ReFitSettings settings,
             Context context,
             MeshSnapshot donorSurface,
-            SurfaceBvh donorBvh,
-            List<int> donorTriangleComponents,
-            List<BodyRegion> donorTriangleRegions,
+            MeshBvh donorBvh,
+            int[] donorTriangleComponents,
+            int[] donorTriangleRanks,
+            BodyRegion[] donorTriangleRegions,
             float searchDistance,
             float donorThreshold,
             out IslandSupportSample sample,
@@ -974,26 +986,16 @@ namespace Orbiters.ReFit
             rejectedStatus = ReFitIslandPropagationStatus.RejectedNoSupport;
             rejectedReason = "no compatible donor surface";
             var receiverRegion = GroupRegion(context, group);
-            var hit = donorBvh.ClosestPoint(supportWorld[group], searchDistance, triangle =>
-            {
-                if (triangle < 0 || triangle >= donorTriangleComponents.Count)
-                    return false;
-
-                int donorComponent = donorTriangleComponents[triangle];
-                if (donorComponent == receiverComponent)
-                    return false;
-
-                if (donorComponent >= 0 && donorComponent < componentSizes.Length &&
-                    componentSizes[donorComponent] < componentSizes[receiverComponent])
-                    return false;
-
-                var donorRegion = donorTriangleRegions[triangle];
-                return HumanoidBoneMapper.RegionsCompatible(receiverRegion, donorRegion);
-            });
-            if (!hit.found)
+            // Donor triangles of another component, no smaller than the receiver's, of a compatible region.
+            var support = TriangleRule.All
+                .Labelled(donorTriangleComponents, null, excluded: receiverComponent)
+                .Ranked(donorTriangleRanks, componentSizes[receiverComponent])
+                .CompatibleRegion(donorTriangleRegions, receiverRegion, second: true);
+            var hit = donorBvh.ClosestPoint(supportWorld[group], searchDistance, support);
+            if (!hit.Found)
                 return false;
 
-            int tri = hit.triangle * 3;
+            int tri = hit.TriangleOrNone * 3;
             if (tri + 2 >= donorSurface.triangles.Length)
                 return false;
 
@@ -1007,9 +1009,9 @@ namespace Orbiters.ReFit
                 return false;
             }
 
-            var targetCorrection = correctionField[ga] * hit.bary.x +
-                                   correctionField[gb] * hit.bary.y +
-                                   correctionField[gc] * hit.bary.z;
+            var targetCorrection = correctionField[ga] * hit.Bary.x +
+                                   correctionField[gb] * hit.Bary.y +
+                                   correctionField[gc] * hit.Bary.z;
             float targetMagnitude = targetCorrection.magnitude;
             if (targetMagnitude < donorThreshold)
             {
@@ -1018,7 +1020,7 @@ namespace Orbiters.ReFit
                 return false;
             }
 
-            float distanceWeight = Mathf.Lerp(1f, 0.25f, Smooth01(0f, searchDistance, hit.distance));
+            float distanceWeight = Mathf.Lerp(1f, 0.25f, Smooth01(0f, searchDistance, hit.Distance));
             float receiverWeight = ReceiverGarmentSupportWeight(falloff, expansions, settings, group);
             if (distanceWeight <= 1e-4f || receiverWeight <= 1e-4f)
             {
@@ -1030,29 +1032,29 @@ namespace Orbiters.ReFit
             sample = new IslandSupportSample
             {
                 receiverGroup = group,
-                supportComponent = donorTriangleComponents[hit.triangle],
+                supportComponent = donorTriangleComponents[hit.TriangleOrNone],
                 supportGroup = ga,
                 targetCorrection = targetCorrection,
                 targetMagnitude = targetMagnitude,
                 currentMagnitude = correctionMagnitude[group],
-                supportDistance = hit.distance,
+                supportDistance = hit.Distance,
                 distanceWeight = distanceWeight,
                 receiverWeight = receiverWeight
             };
             return true;
         }
 
-        private static bool IsStableGarmentSupport(Vector3 receiverPoint, MeshSnapshot donorSurface, SurfaceBvh.Hit hit)
+        private static bool IsStableGarmentSupport(Vector3 receiverPoint, MeshSnapshot donorSurface, MeshBvh.Hit hit)
         {
-            if (donorSurface == null || !hit.found)
+            if (donorSurface == null || !hit.Found)
                 return false;
 
-            var supportNormal = donorSurface.BaryNormal(hit.triangle, hit.bary);
+            var supportNormal = donorSurface.BaryNormal(hit.TriangleOrNone, hit.Bary);
             if (supportNormal.sqrMagnitude <= 1e-12f)
                 return false;
 
-            float side = Vector3.Dot(receiverPoint - hit.position, supportNormal);
-            float backfaceTolerance = Mathf.Max(0.005f, hit.distance * 0.25f);
+            float side = Vector3.Dot(receiverPoint - hit.Position, supportNormal);
+            float backfaceTolerance = Mathf.Max(0.005f, hit.Distance * 0.25f);
             return side >= -backfaceTolerance;
         }
 
@@ -1642,7 +1644,7 @@ namespace Orbiters.ReFit
             float[] expansions,
             ReFitSettings settings,
             MeshSnapshot bodySurface,
-            SurfaceBvh bvh,
+            MeshBvh bvh,
             float queryRange,
             float safety,
             float triggerDistance,
@@ -1680,7 +1682,7 @@ namespace Orbiters.ReFit
             float[] expansions,
             ReFitSettings settings,
             MeshSnapshot bodySurface,
-            SurfaceBvh bvh,
+            MeshBvh bvh,
             float queryRange,
             float safety,
             float triggerDistance,
@@ -1730,7 +1732,7 @@ namespace Orbiters.ReFit
             float[] expansions,
             ReFitSettings settings,
             MeshSnapshot bodySurface,
-            SurfaceBvh bvh,
+            MeshBvh bvh,
             float queryRange,
             float safety,
             float triggerDistance,
@@ -1752,10 +1754,10 @@ namespace Orbiters.ReFit
             var referenceNormal = SampleReferenceNormal(context, g0, w0, g1, w1, g2, w2);
             var region = SampleRegion(context, g0, w0, g1, w1, g2, w2);
             var hit = ClosestCompatiblePoint(point, queryRange, bodySurface, bvh, settings, context, region, referenceNormal);
-            if (!hit.found)
+            if (!hit.Found)
                 return false;
 
-            var normal = bodySurface.BaryNormal(hit.triangle, hit.bary);
+            var normal = bodySurface.BaryNormal(hit.TriangleOrNone, hit.Bary);
             if (referenceNormal.sqrMagnitude > 1e-12f)
             {
                 float normalDot = Vector3.Dot(normal, referenceNormal.normalized);
@@ -1766,7 +1768,7 @@ namespace Orbiters.ReFit
                 if (normalDot > 0f)
                     normal = (normal + referenceNormal.normalized * 0.35f).normalized;
             }
-            float clearance = Vector3.Dot(point - hit.position, normal);
+            float clearance = Vector3.Dot(point - hit.Position, normal);
             if (clearance < 0f)
                 sink.maxPenetration = Mathf.Max(sink.maxPenetration, -clearance);
 
@@ -1831,7 +1833,7 @@ namespace Orbiters.ReFit
             bool[] allowedGroups,
             Vector3[] groupWorld,
             MeshSnapshot bodySurface,
-            SurfaceBvh bvh,
+            MeshBvh bvh,
             float queryRange,
             float safety)
         {
@@ -1872,7 +1874,7 @@ namespace Orbiters.ReFit
             ReFitSettings settings,
             Context context,
             MeshSnapshot bodySurface,
-            SurfaceBvh bvh)
+            MeshBvh bvh)
         {
             if (asset == null || targetBody == null || profile == null || mutableGroupDeltas == null ||
                 settings == null || asset.groupRep == null)
@@ -1926,7 +1928,7 @@ namespace Orbiters.ReFit
             Context context,
             bool[] allowedGroups,
             MeshSnapshot bodySurface,
-            SurfaceBvh bvh,
+            MeshBvh bvh,
             float queryRange,
             float safety)
         {
@@ -1954,7 +1956,7 @@ namespace Orbiters.ReFit
             Context context,
             bool[] allowedGroups,
             MeshSnapshot bodySurface,
-            SurfaceBvh bvh,
+            MeshBvh bvh,
             float queryRange,
             float safety)
         {
@@ -1996,7 +1998,7 @@ namespace Orbiters.ReFit
             Context context,
             bool[] allowedGroups,
             MeshSnapshot bodySurface,
-            SurfaceBvh bvh,
+            MeshBvh bvh,
             float queryRange,
             float safety)
         {
@@ -2008,16 +2010,16 @@ namespace Orbiters.ReFit
             var referenceNormal = SampleReferenceNormal(context, g0, w0, g1, w1, g2, w2);
             var region = SampleRegion(context, g0, w0, g1, w1, g2, w2);
             var hit = ClosestCompatiblePoint(point, queryRange, bodySurface, bvh, settings, context, region, referenceNormal);
-            if (!hit.found)
+            if (!hit.Found)
                 return 0f;
 
-            var normal = bodySurface.BaryNormal(hit.triangle, hit.bary);
+            var normal = bodySurface.BaryNormal(hit.TriangleOrNone, hit.Bary);
             if (referenceNormal.sqrMagnitude > 1e-12f &&
                 settings != null && settings.filterByNormal &&
                 Vector3.Dot(normal, referenceNormal.normalized) < Mathf.Cos(settings.maxNormalAngle * Mathf.Deg2Rad))
                 return 0f;
 
-            float clearance = Vector3.Dot(point - hit.position, normal);
+            float clearance = Vector3.Dot(point - hit.Position, normal);
             return clearance < 0f ? -clearance : 0f;
         }
 
@@ -2173,11 +2175,11 @@ namespace Orbiters.ReFit
                    context.bindingNormalDots[group] < TrustedBindingNormalDot;
         }
 
-        private static SurfaceBvh.Hit ClosestCompatiblePoint(
+        private static MeshBvh.Hit ClosestCompatiblePoint(
             Vector3 point,
             float queryRange,
             MeshSnapshot bodySurface,
-            SurfaceBvh bvh,
+            MeshBvh bvh,
             ReFitSettings settings,
             Context context,
             BodyRegion region,
@@ -2186,56 +2188,29 @@ namespace Orbiters.ReFit
             bool useRegion = context != null && context.targetTriangleRegions != null && region != BodyRegion.Unknown;
             bool useNormal = settings != null && settings.filterByNormal && referenceNormal.sqrMagnitude > 1e-12f;
             if (!useRegion && !useNormal)
-                return bvh.ClosestPoint(point, queryRange, null);
+                return bvh.ClosestPoint(point, queryRange);
 
             var normal = referenceNormal.sqrMagnitude > 1e-12f ? referenceNormal.normalized : Vector3.zero;
             float minDot = settings != null
                 ? Mathf.Cos(settings.maxNormalAngle * Mathf.Deg2Rad)
                 : -1f;
 
-            // One traversal for the filter and both fallbacks: what each filtered query would find (SurfaceBvh.ClosestPoints).
-            Span<SurfaceBvh.Hit> hits = stackalloc SurfaceBvh.Hit[3];
-            bvh.ClosestPoints(point, queryRange,
-                new CompatibleClasses(bodySurface, normal, minDot, useNormal, useRegion, region, context?.targetTriangleRegions), 3, hits);
-            if (hits[0].found)
+            // One traversal for the filter and both fallbacks: what each filtered query would find. Classes: 0 of the region and
+            // facing the way asked, 1 of the region, 2 facing the way (each without its test when it is not asked).
+            var rule = TriangleRule.All;
+            if (useNormal) rule = rule.Facing(bodySurface.KnownFaceNormals(), normal, minDot);
+            if (useRegion) rule = rule.CompatibleRegion(context.targetTriangleRegions, region);
+            var inRegion = useRegion ? TriangleTests.Labels : TriangleTests.None;
+            var facing = useNormal ? TriangleTests.Facing : TriangleTests.None;
+            Span<MeshBvh.Hit> hits = stackalloc MeshBvh.Hit[3];
+            bvh.ClosestPointsByClass(point, queryRange, new TriangleClasses(rule, inRegion | facing, inRegion, facing), hits);
+            if (hits[0].Found)
                 return hits[0];
-            if (useRegion && hits[1].found)
+            if (useRegion && hits[1].Found)
                 return hits[1];
             if (useNormal)
                 return hits[2];
             return hits[0];
-        }
-
-        // A triangle's classes for ClosestCompatiblePoint: 1 of the region and facing the way asked, 2 of the region, 4 facing
-        // the way (each without its filter when it is not asked).
-        private readonly struct CompatibleClasses : ITriangleClassifier
-        {
-            private readonly MeshSnapshot surface;
-            private readonly Vector3 normal;
-            private readonly float minDot;
-            private readonly bool useNormal, useRegion;
-            private readonly BodyRegion region;
-            private readonly BodyRegion[] regions;
-
-            public CompatibleClasses(MeshSnapshot surface, Vector3 normal, float minDot, bool useNormal, bool useRegion, BodyRegion region,
-                BodyRegion[] regions)
-            {
-                this.surface = surface;
-                this.normal = normal;
-                this.minDot = minDot;
-                this.useNormal = useNormal;
-                this.useRegion = useRegion;
-                this.region = region;
-                this.regions = regions;
-            }
-
-            public int Classes(int triangle)
-            {
-                bool inRegion = !useRegion || (triangle >= 0 && triangle < regions.Length &&
-                                               HumanoidBoneMapper.RegionsCompatible(region, regions[triangle]));
-                bool facing = !useNormal || Vector3.Dot(normal, surface.FaceNormal(triangle)) >= minDot;
-                return (inRegion && facing ? 1 : 0) | (inRegion ? 2 : 0) | (facing ? 4 : 0);
-            }
         }
 
         private static Vector3 SampleReferenceNormal(Context context, int g0, float w0, int g1, float w1, int g2, float w2)

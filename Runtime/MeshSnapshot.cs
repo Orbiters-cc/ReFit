@@ -69,7 +69,7 @@ namespace Orbiters.ReFit
 
         /// <summary>
         /// Triangles of skin enclosed in another part of the same body (see <see cref="HideEnclosedSkin"/>), or null.
-        /// <see cref="SurfaceBvh.Build"/> leaves them out, so no query finds them.
+        /// <see cref="MeshBvh.Build"/> leaves them out, so no query finds them.
         /// </summary>
         public bool[] hiddenTriangles;
 
@@ -78,7 +78,7 @@ namespace Orbiters.ReFit
         // A surface moved from another one (a shape frame on the body, see MovedFrom): that one and the triangles that moved.
         private MeshSnapshot movedFrom;
         private int[] movedTriangles;
-        private SurfaceBvh index;
+        private MeshBvh index;
         private Vector3[] indexVertices;
         private bool[] indexHidden;
         private readonly object indexLock = new object();
@@ -88,13 +88,13 @@ namespace Orbiters.ReFit
         /// and the hidden triangles stay the ones it was built on (shared with equal bodies once attached to the body cache).
         /// Stages reading the same body read the same hierarchy. Thread safe. Code moving the vertices in place builds its own.
         /// </summary>
-        public SurfaceBvh Index()
+        public MeshBvh Index()
         {
             lock (indexLock)
             {
                 if (index != null && ReferenceEquals(indexVertices, worldVertices) && ReferenceEquals(indexHidden, hiddenTriangles)) return index;
                 if (MovesFrom()) index = Moved(movedFrom.Index());
-                else index = shared != null ? shared.Index(this) : SurfaceBvh.Build(this);
+                else index = shared != null ? shared.Index(this) : MeshSnapshot.BuildIndex(this);
                 indexVertices = worldVertices;
                 indexHidden = hiddenTriangles;
                 return index;
@@ -306,6 +306,20 @@ namespace Orbiters.ReFit
         /// </summary>
         public Vector3[] FaceNormals { get; private set; }
 
+        private readonly object faceNormalsLock = new object();
+
+        /// <summary>
+        /// <see cref="FaceNormals"/>, computed once when none are cached yet (a shaped body made from positions): what the
+        /// hierarchy's facing rules read. Thread safe; never recomputes cached normals (code moving the vertices calls
+        /// <see cref="CacheFaceNormals"/> itself, before any query reads them).
+        /// </summary>
+        public Vector3[] KnownFaceNormals()
+        {
+            var normals = FaceNormals;
+            if (normals != null) return normals;
+            lock (faceNormalsLock) return FaceNormals ?? CacheFaceNormals();
+        }
+
         /// <summary>
         /// Computes <see cref="FaceNormals"/> for the current vertices (in place when the triangle count is unchanged): queries
         /// filtering by facing read them instead of a cross product and a square root per triangle tested. Not thread safe.
@@ -432,12 +446,12 @@ namespace Orbiters.ReFit
         /// The hierarchy of the whole surface, <see cref="hiddenTriangles"/> included: the way out of a part of the body crosses
         /// enclosed skin too. Shared like <see cref="Index"/> once attached to the body cache.
         /// </summary>
-        public SurfaceBvh WholeIndex()
+        public MeshBvh WholeIndex()
         {
             if (hiddenTriangles == null) return Index();
             if (MovesFrom()) return Moved(movedFrom.WholeIndex());
             if (shared != null) return shared.Index(this, null);
-            return SurfaceBvh.Build(worldVertices, triangles);
+            return MeshSnapshot.BuildIndex(worldVertices, triangles);
         }
 
         /// <summary>
@@ -469,11 +483,31 @@ namespace Orbiters.ReFit
         private bool MovesFrom() => movedFrom != null && ReferenceEquals(triangles, movedFrom.triangles) &&
                                     ReferenceEquals(hiddenTriangles, movedFrom.hiddenTriangles);
 
-        private SurfaceBvh Moved(SurfaceBvh rest)
+        private MeshBvh Moved(MeshBvh rest)
         {
-            var copy = rest.Clone();
-            copy.RefitTriangles(worldVertices, triangles, movedTriangles);
+            var copy = rest.Clone(worldVertices);
+            copy.RefitTriangles(movedTriangles);
             return copy;
+        }
+
+        /// <summary>
+        /// The hierarchy of <paramref name="snapshot"/>'s world triangles but its hidden ones and, with
+        /// <paramref name="include"/>, those it leaves out (queries never visit them: far faster than filtering them out when
+        /// few are left). Hits give the snapshot's own triangle indices.
+        /// </summary>
+        public static MeshBvh BuildIndex(MeshSnapshot snapshot, bool[] include = null) =>
+            BuildIndex(snapshot.worldVertices, snapshot.triangles, snapshot.hiddenTriangles, include);
+
+        /// <summary>The hierarchy of world <paramref name="vertices"/> and <paramref name="triangles"/> (see <see cref="BuildIndex(MeshSnapshot,bool[])"/>).</summary>
+        public static MeshBvh BuildIndex(Vector3[] vertices, int[] triangles, bool[] hidden = null, bool[] include = null)
+        {
+            bool[] kept = null;
+            if (hidden != null || include != null)
+            {
+                kept = new bool[triangles.Length / 3];
+                for (int t = 0; t < kept.Length; t++) kept[t] = (hidden == null || !hidden[t]) && (include == null || include[t]);
+            }
+            return MeshBvh.Build(vertices, triangles, kept);
         }
 
         /// <summary>
@@ -505,9 +539,9 @@ namespace Orbiters.ReFit
                 var normal = Unit(Vector3.Cross(worldVertices[triangles[i + 1]] - a, worldVertices[triangles[i + 2]] - a));
                 if (normal == Vector3.zero) return;
                 var center = (a + worldVertices[triangles[i + 1]] + worldVertices[triangles[i + 2]]) / 3f;
-                var hit = index.Raycast(center + normal * .0005f, normal, EnclosedReach, new AllBut(t));
-                if (!hit.found || hit.distance < EnclosedDepth || Vector3.Dot(FaceNormal(hit.triangle), normal) <= 0) return;
-                hidden[t] = Inside(index, center + normal * (hit.distance * .5f), normal);
+                var hit = index.Raycast(center + normal * .0005f, normal, EnclosedReach, true, TriangleRule.All.Except(t));
+                if (!hit.Found || hit.Distance < EnclosedDepth || Vector3.Dot(FaceNormal(hit.TriangleOrNone), normal) <= 0) return;
+                hidden[t] = Inside(index, center + normal * (hit.Distance * .5f), normal);
             });
             int hiddenCount = Count(hidden);
             hiddenTriangles = hiddenCount > 0 ? hidden : null;
@@ -528,17 +562,17 @@ namespace Orbiters.ReFit
         }
 
         // Inside a closed part at point: along the skin (across normal), each way leaves through a surface facing that way.
-        private bool Inside(SurfaceBvh index, Vector3 point, Vector3 normal)
+        private bool Inside(MeshBvh index, Vector3 point, Vector3 normal)
         {
             var side = Unit(Vector3.Cross(normal, Mathf.Abs(normal.y) < .9f ? Vector3.up : Vector3.right));
             var other = Vector3.Cross(normal, side);
             return Exits(index, point, side) && Exits(index, point, -side) && Exits(index, point, other) && Exits(index, point, -other);
         }
 
-        private bool Exits(SurfaceBvh index, Vector3 point, Vector3 direction)
+        private bool Exits(MeshBvh index, Vector3 point, Vector3 direction)
         {
             var exit = index.Raycast(point, direction, EnclosedReach);
-            return exit.found && Vector3.Dot(FaceNormal(exit.triangle), direction) > 0;
+            return exit.Found && Vector3.Dot(FaceNormal(exit.TriangleOrNone), direction) > 0;
         }
 
         /// <summary>Vertices of hidden triangles only (see <see cref="hiddenTriangles"/>), or null when none is hidden.</summary>

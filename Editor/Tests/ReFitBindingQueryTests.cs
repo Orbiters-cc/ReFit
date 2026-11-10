@@ -1,6 +1,7 @@
 using System;
 using NUnit.Framework;
 using UnityEngine;
+using Orbiters.Toolkit.Meshes;
 
 namespace Orbiters.ReFit.Editor.Tests
 {
@@ -33,41 +34,41 @@ namespace Orbiters.ReFit.Editor.Tests
         }
 
         // The binder as it was: a 1 cm probe, then the filtered query and its fallbacks, one query each.
-        private static SurfaceBinding Reference(Vector3 point, MeshSnapshot body, SurfaceBvh bvh, float maxDistance, BodyRegion region,
+        private static SurfaceBinding Reference(Vector3 point, MeshSnapshot body, MeshBvh bvh, float maxDistance, BodyRegion region,
             BodyRegion[] regions, Vector3 normal, float cosMax, bool useNormal, bool clothNormal)
         {
             bool useRegion = regions != null && region != BodyRegion.Unknown;
-            var near = bvh.ClosestPoint(point, Mathf.Min(maxDistance, .01f), null);
-            if (near.found)
-                return new SurfaceBinding { valid = true, triangle = near.triangle, point = near.position, distance = near.distance, usedRelaxedFallback = useNormal || useRegion };
+            var near = bvh.ClosestPoint(point, Mathf.Min(maxDistance, .01f));
+            if (near.Found)
+                return new SurfaceBinding { valid = true, triangle = near.TriangleOrNone, point = near.Position, distance = near.Distance, usedRelaxedFallback = useNormal || useRegion };
             Func<int, bool> regionOnly = useRegion ? t => HumanoidBoneMapper.RegionsCompatible(region, regions[t]) : (Func<int, bool>)null;
             Func<int, bool> full = useNormal || useRegion
                 ? t => (!useRegion || HumanoidBoneMapper.RegionsCompatible(region, regions[t])) && (!useNormal || Vector3.Dot(normal, body.FaceNormal(t)) >= cosMax)
                 : (Func<int, bool>)null;
             bool relaxed = false;
-            var hit = bvh.ClosestPoint(point, maxDistance, full);
+            var hit = full == null ? bvh.ClosestPoint(point, maxDistance) : bvh.ClosestPoint(point, maxDistance, ReFitTestRules.Where(bvh, full));
             if (useNormal && clothNormal)
             {
-                var facing = bvh.ClosestPoint(point, maxDistance, regionOnly);
-                if (facing.found && Vector3.Dot(-normal, body.FaceNormal(facing.triangle)) >= cosMax &&
-                    (!hit.found || hit.distance > facing.distance + Mathf.Max(.02f, facing.distance)))
+                var facing = regionOnly == null ? bvh.ClosestPoint(point, maxDistance) : bvh.ClosestPoint(point, maxDistance, ReFitTestRules.Where(bvh, regionOnly));
+                if (facing.Found && Vector3.Dot(-normal, body.FaceNormal(facing.TriangleOrNone)) >= cosMax &&
+                    (!hit.Found || hit.Distance > facing.Distance + Mathf.Max(.02f, facing.Distance)))
                     return Binding(facing, false);
             }
-            if (hit.found || full == null) return Binding(hit, false);
+            if (hit.Found || full == null) return Binding(hit, false);
             if (useRegion && useNormal)
             {
-                hit = bvh.ClosestPoint(point, maxDistance, regionOnly);
-                if (hit.found) return Binding(hit, true);
+                hit = bvh.ClosestPoint(point, maxDistance, ReFitTestRules.Where(bvh, regionOnly));
+                if (hit.Found) return Binding(hit, true);
             }
             if (!useRegion || region == BodyRegion.Unknown || region == BodyRegion.Torso)
             {
-                hit = bvh.ClosestPoint(point, maxDistance, null);
-                relaxed = hit.found;
+                hit = bvh.ClosestPoint(point, maxDistance);
+                relaxed = hit.Found;
             }
             return Binding(hit, relaxed);
 
-            SurfaceBinding Binding(SurfaceBvh.Hit h, bool fallback) =>
-                new SurfaceBinding { valid = h.found, triangle = h.triangle, point = h.position, distance = h.distance, usedRelaxedFallback = fallback };
+            SurfaceBinding Binding(MeshBvh.Hit h, bool fallback) =>
+                new SurfaceBinding { valid = h.Found, triangle = h.TriangleOrNone, point = h.Position, distance = h.Distance, usedRelaxedFallback = fallback };
         }
 
         [Test]

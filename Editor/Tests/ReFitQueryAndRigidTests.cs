@@ -2,6 +2,7 @@ using System.Collections.Generic;
 using System.Linq;
 using NUnit.Framework;
 using UnityEngine;
+using Orbiters.Toolkit.Meshes;
 
 namespace Orbiters.ReFit.Editor.Tests
 {
@@ -36,7 +37,7 @@ namespace Orbiters.ReFit.Editor.Tests
             for (int t = 0; t < surface.triangles.Length / 3; t++)
             {
                 if (accept != null && !accept(t)) continue;
-                var q = SurfaceBvh.ClosestPointOnTriangle(p, surface.worldVertices[surface.triangles[t * 3]], surface.worldVertices[surface.triangles[t * 3 + 1]],
+                var q = MeshBvh.ClosestPointOnTriangle(p, surface.worldVertices[surface.triangles[t * 3]], surface.worldVertices[surface.triangles[t * 3 + 1]],
                     surface.worldVertices[surface.triangles[t * 3 + 2]], out _);
                 float d = (q - p).magnitude;
                 if (d < best) { best = d; triangle = t; }
@@ -48,7 +49,7 @@ namespace Orbiters.ReFit.Editor.Tests
         public void ClosestPointMatchesBruteForceWithAndWithoutFilters()
         {
             var surface = Soup(2000, 7);
-            var index = SurfaceBvh.Build(surface);
+            var index = MeshSnapshot.BuildIndex(surface);
             var random = new System.Random(3);
             var up = Vector3.up;
             var faceNormals = surface.FaceNormals;
@@ -58,15 +59,15 @@ namespace Orbiters.ReFit.Editor.Tests
                 var p = new Vector3((float)random.NextDouble(), (float)random.NextDouble(), (float)random.NextDouble()) * 1.2f - Vector3.one * .1f;
                 float expected = BruteClosest(surface, p, null, out _);
                 var hit = index.ClosestPoint(p, 10f);
-                Assert.That(hit.found, Is.True);
-                Assert.That(hit.distance, Is.EqualTo(expected).Within(1e-5f), "Unfiltered closest point " + i);
+                Assert.That(hit.Found, Is.True);
+                Assert.That(hit.Distance, Is.EqualTo(expected).Within(1e-5f), "Unfiltered closest point " + i);
 
                 float facing = BruteClosest(surface, p, t => Vector3.Dot(surface.FaceNormal(t), up) >= .3f, out _);
-                var filtered = index.ClosestPoint(p, 10f, new FacingFilter(faceNormals, up, .3f));
-                var delegated = index.ClosestPoint(p, 10f, t => Vector3.Dot(surface.FaceNormal(t), up) >= .3f);
-                Assert.That(filtered.distance, Is.EqualTo(facing).Within(1e-5f), "Struct filter " + i);
-                Assert.That(delegated.distance, Is.EqualTo(facing).Within(1e-5f), "Delegate filter " + i);
-                Assert.That(filtered.triangle, Is.EqualTo(delegated.triangle));
+                var filtered = index.ClosestPoint(p, 10f, SurfaceRules.Facing(faceNormals, up, .3f));
+                var delegated = index.ClosestPoint(p, 10f, ReFitTestRules.Where(index, t => Vector3.Dot(surface.FaceNormal(t), up) >= .3f));
+                Assert.That(filtered.Distance, Is.EqualTo(facing).Within(1e-5f), "Struct filter " + i);
+                Assert.That(delegated.Distance, Is.EqualTo(facing).Within(1e-5f), "Delegate filter " + i);
+                Assert.That(filtered.TriangleOrNone, Is.EqualTo(delegated.TriangleOrNone));
             }
         }
 
@@ -74,7 +75,7 @@ namespace Orbiters.ReFit.Editor.Tests
         public void RaycastMatchesBruteForce()
         {
             var surface = Soup(1500, 11);
-            var index = SurfaceBvh.Build(surface);
+            var index = MeshSnapshot.BuildIndex(surface);
             var random = new System.Random(5);
             int hits = 0;
             for (int i = 0; i < 300; i++)
@@ -82,7 +83,7 @@ namespace Orbiters.ReFit.Editor.Tests
                 var origin = new Vector3((float)random.NextDouble(), -.2f, (float)random.NextDouble());
                 var direction = new Vector3((float)random.NextDouble() * .2f - .1f, 1f, (float)random.NextDouble() * .2f - .1f).normalized;
                 var hit = index.Raycast(origin, direction, 3f);
-                var filtered = index.Raycast(origin, direction, 3f, new FacingFilter(surface.FaceNormals, Vector3.down, 0f));
+                var filtered = index.Raycast(origin, direction, 3f, true, SurfaceRules.Facing(surface.FaceNormals, Vector3.down, 0f));
                 float best = float.MaxValue, bestFacing = float.MaxValue;
                 for (int t = 0; t < surface.triangles.Length / 3; t++)
                 {
@@ -91,10 +92,10 @@ namespace Orbiters.ReFit.Editor.Tests
                     best = Mathf.Min(best, distance);
                     if (Vector3.Dot(surface.FaceNormal(t), Vector3.down) >= 0f) bestFacing = Mathf.Min(bestFacing, distance);
                 }
-                Assert.That(hit.found, Is.EqualTo(best < float.MaxValue));
-                if (hit.found) { hits++; Assert.That(hit.distance, Is.EqualTo(best).Within(1e-5f)); }
-                Assert.That(filtered.found, Is.EqualTo(bestFacing < float.MaxValue));
-                if (filtered.found) Assert.That(filtered.distance, Is.EqualTo(bestFacing).Within(1e-5f));
+                Assert.That(hit.Found, Is.EqualTo(best < float.MaxValue));
+                if (hit.Found) { hits++; Assert.That(hit.Distance, Is.EqualTo(best).Within(1e-5f)); }
+                Assert.That(filtered.Found, Is.EqualTo(bestFacing < float.MaxValue));
+                if (filtered.Found) Assert.That(filtered.Distance, Is.EqualTo(bestFacing).Within(1e-5f));
             }
             Assert.That(hits, Is.GreaterThan(50), "The rays meet the soup.");
         }
@@ -124,17 +125,17 @@ namespace Orbiters.ReFit.Editor.Tests
             var surface = Soup(1200, 21);
             var random = new System.Random(9);
             var include = Enumerable.Range(0, surface.triangles.Length / 3).Select(_ => random.NextDouble() < .1).ToArray();
-            var subset = SurfaceBvh.Build(surface, include);
-            var whole = SurfaceBvh.Build(surface);
+            var subset = MeshSnapshot.BuildIndex(surface, include);
+            var whole = MeshSnapshot.BuildIndex(surface);
             for (int i = 0; i < 200; i++)
             {
                 var p = new Vector3((float)random.NextDouble(), (float)random.NextDouble(), (float)random.NextDouble());
                 var fast = subset.ClosestPoint(p, 10f);
-                var filtered = whole.ClosestPoint(p, 10f, t => include[t]);
-                Assert.That(fast.found, Is.EqualTo(filtered.found));
-                Assert.That(fast.distance, Is.EqualTo(filtered.distance).Within(1e-6f), "Point " + i);
-                Assert.That(include[fast.triangle], Is.True, "Hits give the snapshot's own triangle indices");
-                Assert.That(fast.distance, Is.EqualTo(BruteClosest(surface, p, t => include[t], out _)).Within(1e-5f));
+                var filtered = whole.ClosestPoint(p, 10f, TriangleRule.All.Among(include));
+                Assert.That(fast.Found, Is.EqualTo(filtered.Found));
+                Assert.That(fast.Distance, Is.EqualTo(filtered.Distance).Within(1e-6f), "Point " + i);
+                Assert.That(include[fast.TriangleOrNone], Is.True, "Hits give the snapshot's own triangle indices");
+                Assert.That(fast.Distance, Is.EqualTo(BruteClosest(surface, p, t => include[t], out _)).Within(1e-5f));
             }
         }
 
@@ -165,7 +166,7 @@ namespace Orbiters.ReFit.Editor.Tests
             for (int t = 0; t < surface.triangles.Length / 3; t++)
             {
                 if (accept != null && !accept(t)) continue;
-                var q = SurfaceBvh.ClosestPointOnTriangle(p, surface.worldVertices[surface.triangles[t * 3]], surface.worldVertices[surface.triangles[t * 3 + 1]],
+                var q = MeshBvh.ClosestPointOnTriangle(p, surface.worldVertices[surface.triangles[t * 3]], surface.worldVertices[surface.triangles[t * 3 + 1]],
                     surface.worldVertices[surface.triangles[t * 3 + 2]], out _);
                 float d = (q - p).sqrMagnitude;
                 if (d < sqr) { sqr = d; triangle = t; }
@@ -176,7 +177,7 @@ namespace Orbiters.ReFit.Editor.Tests
         public void EquallyNearTrianglesBreakTiesByIndex()
         {
             var surface = TiedGrid(12, .01f);
-            var index = SurfaceBvh.Build(surface);
+            var index = MeshSnapshot.BuildIndex(surface);
             var random = new System.Random(17);
             for (int i = 0; i < 400; i++)
             {
@@ -186,25 +187,25 @@ namespace Orbiters.ReFit.Editor.Tests
                     : new Vector3((float)random.NextDouble() * .12f, (float)random.NextDouble() * .01f, (float)random.NextDouble() * .12f);
                 BruteContract(surface, p, 1f, null, out int expected, out float sqr);
                 var hit = index.ClosestPoint(p, 1f);
-                Assert.That(hit.triangle, Is.EqualTo(expected), "Point " + i);
-                Assert.That(hit.distance, Is.EqualTo(Mathf.Sqrt(sqr)), "Point " + i);
-                Assert.That(hit.triangle, Is.LessThan(surface.triangles.Length / 6), "The first copy wins " + i);
+                Assert.That(hit.TriangleOrNone, Is.EqualTo(expected), "Point " + i);
+                Assert.That(hit.Distance, Is.EqualTo(Mathf.Sqrt(sqr)), "Point " + i);
+                Assert.That(hit.TriangleOrNone, Is.LessThan(surface.triangles.Length / 6), "The first copy wins " + i);
             }
             // A ray straight down through a shared edge or vertex meets several triangles at the same distance.
             for (int i = 0; i < 200; i++)
             {
                 var origin = new Vector3(random.Next(1, 12) * .01f, .05f, (i % 3 == 0 ? random.Next(1, 12) : (float)random.NextDouble() * 12f) * .01f);
                 var hit = index.Raycast(origin, Vector3.down, 1f);
-                Assert.That(hit.found, Is.True);
+                Assert.That(hit.Found, Is.True);
                 float best = float.MaxValue;
                 int lowest = -1;
                 for (int t = 0; t < surface.triangles.Length / 3; t++)
                 {
-                    if (!SurfaceBvh.RayTriangle(origin, Vector3.down, surface.worldVertices[surface.triangles[t * 3]], surface.worldVertices[surface.triangles[t * 3 + 1]],
-                            surface.worldVertices[surface.triangles[t * 3 + 2]], out float distance, out _)) continue;
+                    if (!Triangle.Raycast(origin, Vector3.down, surface.worldVertices[surface.triangles[t * 3]], surface.worldVertices[surface.triangles[t * 3 + 1]],
+                            surface.worldVertices[surface.triangles[t * 3 + 2]], true, false, out float distance, out _)) continue;
                     if (distance < best) { best = distance; lowest = t; }
                 }
-                Assert.That(hit.triangle, Is.EqualTo(lowest), "Ray " + i);
+                Assert.That(hit.TriangleOrNone, Is.EqualTo(lowest), "Ray " + i);
             }
         }
 
@@ -212,7 +213,7 @@ namespace Orbiters.ReFit.Editor.Tests
         public void RefittedSeededAndRebuiltHierarchiesAnswerAlike()
         {
             var surface = Soup(3000, 29);
-            var index = SurfaceBvh.Build(surface);
+            var index = MeshSnapshot.BuildIndex(surface);
             // The surface moves: half of it a little, a few triangles far.
             var moved = (Vector3[])surface.worldVertices.Clone();
             var random = new System.Random(31);
@@ -225,69 +226,66 @@ namespace Orbiters.ReFit.Editor.Tests
                 for (int k = 0; k < 3; k++) moved[surface.triangles[t * 3 + k]] += shift;
             }
             var movedSurface = MeshSnapshot.FromWorld(moved, surface.triangles, false);
-            var rebuilt = SurfaceBvh.Build(movedSurface);
-            var refitted = SurfaceBvh.Build(surface);
-            refitted.Refit(movedSurface);
-            index.RefitTriangles(moved, surface.triangles, movedTriangles);
+            var rebuilt = MeshSnapshot.BuildIndex(movedSurface);
+            var refitted = MeshSnapshot.BuildIndex(surface);
+            refitted.Refit(movedSurface.worldVertices);
+            index = index.Clone(moved);
+            index.RefitTriangles(movedTriangles);
             var normals = movedSurface.FaceNormals;
             for (int i = 0; i < 400; i++)
             {
                 var p = new Vector3((float)random.NextDouble(), (float)random.NextDouble(), (float)random.NextDouble()) * 1.2f - Vector3.one * .1f;
-                var facing = new FacingFilter(normals, Vector3.up, .2f);
+                var facing = SurfaceRules.Facing(normals, Vector3.up, .2f);
                 var a = rebuilt.ClosestPoint(p, .3f, facing);
                 var b = refitted.ClosestPoint(p, .3f, facing);
                 var c = index.ClosestPoint(p, .3f, facing);
                 var seeded = rebuilt.ClosestPoint(p, .3f, facing, (i * 7919) % (surface.triangles.Length / 3));
                 BruteContract(movedSurface, p, .3f, t => Vector3.Dot(normals[t], Vector3.up) >= .2f, out int expected, out _);
-                Assert.That(a.triangle, Is.EqualTo(expected), "Rebuilt " + i);
+                Assert.That(a.TriangleOrNone, Is.EqualTo(expected), "Rebuilt " + i);
                 foreach (var other in new[] { b, c, seeded })
                 {
-                    Assert.That(other.found, Is.EqualTo(a.found), "Point " + i);
-                    Assert.That(other.triangle, Is.EqualTo(a.triangle), "Point " + i);
-                    Assert.That(other.distance, Is.EqualTo(a.distance), "Point " + i);
-                    Assert.That(other.bary, Is.EqualTo(a.bary), "Point " + i);
+                    Assert.That(other.Found, Is.EqualTo(a.Found), "Point " + i);
+                    Assert.That(other.TriangleOrNone, Is.EqualTo(a.TriangleOrNone), "Point " + i);
+                    Assert.That(other.Distance, Is.EqualTo(a.Distance), "Point " + i);
+                    Assert.That(other.Bary, Is.EqualTo(a.Bary), "Point " + i);
                 }
                 var direction = new Vector3((float)random.NextDouble() - .5f, (float)random.NextDouble() - .5f, (float)random.NextDouble() - .5f).normalized;
                 var ra = rebuilt.Raycast(p, direction, 2f);
                 var rb = refitted.Raycast(p, direction, 2f);
                 var rc = index.Raycast(p, direction, 2f);
-                Assert.That(rb.triangle, Is.EqualTo(ra.triangle), "Ray " + i);
-                Assert.That(rc.triangle, Is.EqualTo(ra.triangle), "Ray " + i);
-                Assert.That(rc.distance, Is.EqualTo(ra.distance), "Ray " + i);
+                Assert.That(rb.TriangleOrNone, Is.EqualTo(ra.TriangleOrNone), "Ray " + i);
+                Assert.That(rc.TriangleOrNone, Is.EqualTo(ra.TriangleOrNone), "Ray " + i);
+                Assert.That(rc.Distance, Is.EqualTo(ra.Distance), "Ray " + i);
             }
-        }
-
-        private readonly struct ThreeClasses : ITriangleClassifier
-        {
-            private readonly Vector3[] normals;
-            public ThreeClasses(Vector3[] normals) => this.normals = normals;
-            // 0: any; 1: facing up; 2: facing up and of the first half of the triangles.
-            public int Classes(int triangle) => 1 | (normals[triangle].y >= .3f ? 2 | (triangle < normals.Length / 2 ? 4 : 0) : 0);
         }
 
         [Test]
         public void OneTraversalAnswersEveryClassAsItsOwnQuery()
         {
             var surface = Soup(2500, 41);
-            var index = SurfaceBvh.Build(surface);
+            var index = MeshSnapshot.BuildIndex(surface);
             var normals = surface.FaceNormals;
             int half = normals.Length / 2;
+            var firstHalf = Enumerable.Range(0, normals.Length).Select(t => t < half).ToArray();
             var random = new System.Random(43);
-            System.Span<SurfaceBvh.Hit> hits = stackalloc SurfaceBvh.Hit[3];
+            System.Span<MeshBvh.Hit> hits = stackalloc MeshBvh.Hit[3];
             for (int i = 0; i < 300; i++)
             {
                 var p = new Vector3((float)random.NextDouble(), (float)random.NextDouble(), (float)random.NextDouble()) * 1.2f - Vector3.one * .1f;
-                index.ClosestPoints(p, .25f, new ThreeClasses(normals), 3, hits);
+                // 0: any; 1: facing up; 2: facing up and of the first half of the triangles.
+                var rule = TriangleRule.All.Facing(normals, Vector3.up, .3f).Among(firstHalf);
+                index.ClosestPointsByClass(p, .25f, new TriangleClasses(rule, TriangleTests.None, TriangleTests.Facing,
+                    TriangleTests.Facing | TriangleTests.Allowed), hits);
                 var any = index.ClosestPoint(p, .25f);
-                var up = index.ClosestPoint(p, .25f, t => normals[t].y >= .3f);
-                var upFirst = index.ClosestPoint(p, .25f, t => normals[t].y >= .3f && t < half);
+                var up = index.ClosestPoint(p, .25f, TriangleRule.All.Facing(normals, Vector3.up, .3f));
+                var upFirst = index.ClosestPoint(p, .25f, ReFitTestRules.Where(index, t => t < half).Facing(normals, Vector3.up, .3f));
                 int k = 0;
                 foreach (var expected in new[] { any, up, upFirst })
                 {
-                    Assert.That(hits[k].found, Is.EqualTo(expected.found), "Class " + k + " point " + i);
-                    Assert.That(hits[k].triangle, Is.EqualTo(expected.triangle), "Class " + k + " point " + i);
-                    Assert.That(hits[k].distance, Is.EqualTo(expected.distance), "Class " + k + " point " + i);
-                    Assert.That(hits[k].position, Is.EqualTo(expected.position), "Class " + k + " point " + i);
+                    Assert.That(hits[k].Found, Is.EqualTo(expected.Found), "Class " + k + " point " + i);
+                    Assert.That(hits[k].TriangleOrNone, Is.EqualTo(expected.TriangleOrNone), "Class " + k + " point " + i);
+                    Assert.That(hits[k].Distance, Is.EqualTo(expected.Distance), "Class " + k + " point " + i);
+                    Assert.That(hits[k].Position, Is.EqualTo(expected.Position), "Class " + k + " point " + i);
                     k++;
                 }
             }
@@ -298,11 +296,11 @@ namespace Orbiters.ReFit.Editor.Tests
         {
             // Every triangle on one point, then on one line: no split separates their centres.
             var point = MeshSnapshot.FromWorld(Enumerable.Repeat(new Vector3(.1f, .2f, .3f), 300).ToArray(), Enumerable.Range(0, 300).ToArray(), false);
-            var hit = SurfaceBvh.Build(point).ClosestPoint(Vector3.zero, 1f);
-            Assert.That(hit.triangle, Is.EqualTo(0));
+            var hit = MeshSnapshot.BuildIndex(point).ClosestPoint(Vector3.zero, 1f);
+            Assert.That(hit.TriangleOrNone, Is.EqualTo(0));
             var line = MeshSnapshot.FromWorld(Enumerable.Range(0, 300).Select(i => new Vector3(i * .001f, 0f, 0f)).ToArray(), Enumerable.Range(0, 300).ToArray(), false);
             BruteContract(line, new Vector3(.05f, .01f, 0f), 1f, null, out int expected, out _);
-            Assert.That(SurfaceBvh.Build(line).ClosestPoint(new Vector3(.05f, .01f, 0f), 1f).triangle, Is.EqualTo(expected));
+            Assert.That(MeshSnapshot.BuildIndex(line).ClosestPoint(new Vector3(.05f, .01f, 0f), 1f).TriangleOrNone, Is.EqualTo(expected));
         }
 
         [Test]

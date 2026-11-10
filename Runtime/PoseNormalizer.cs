@@ -21,7 +21,6 @@ namespace Orbiters.ReFit
         public SkinnedMeshRenderer sourceBody;
         public SkinnedMeshRenderer targetBody;
         internal MeshSnapshot sourceSurface;
-        internal SurfaceBvh sourceSurfaceIndex;
         internal Mesh ownedAssetMesh;
 
         internal Mesh TakeAssetMesh()
@@ -152,7 +151,7 @@ namespace Orbiters.ReFit
                 return;
             }
             if (SpreadThighs(stage, 20f) == null) return;
-            stage.sourceSurface = null; stage.sourceSurfaceIndex = null;
+            stage.sourceSurface = null;
             report.Info("coverage-star-pose", "Separated both thighs by 20 degrees on temporary copies for cross-base coverage. The clothing keeps its authored pose and skin weights.");
         }
 
@@ -992,11 +991,13 @@ namespace Orbiters.ReFit
             {
                 stage.sourceSurface = MeshSnapshot.Capture(stage.sourceBody, false,
                     ReFitWornShapes.Overrides(stage.sourceBody, stage.wornBodyShapes), report);
-                stage.sourceSurfaceIndex = SurfaceBvh.Build(stage.sourceSurface);
+                // The engine reads this body (and its hierarchy) again, as do the next refits from the same source.
+                ReFitBodyCache.Attach(stage.sourceSurface);
+                var sourceIndex = stage.sourceSurface.Index();
                 var afterPose = MeshSnapshot.Capture(stage.assetRenderer, false,
                     ZeroBlendShapeOverrides(stage.assetRenderer), null);
-                var before = MeasurePoseSurfaceDistance(beforePose, stage.sourceSurfaceIndex);
-                var after = MeasurePoseSurfaceDistance(afterPose, stage.sourceSurfaceIndex);
+                var before = MeasurePoseSurfaceDistance(beforePose, sourceIndex);
+                var after = MeasurePoseSurfaceDistance(afterPose, sourceIndex);
                 // Joint locations are not mesh correspondences. An inserted garment joint can make
                 // snapping named joints fold an already fitted surface. Preserve the scene pose when
                 // both average and upper-tail clearance get worse by more than numerical noise.

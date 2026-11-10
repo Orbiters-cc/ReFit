@@ -84,6 +84,41 @@ namespace Orbiters.ReFit.Editor
             onComplete?.Invoke(result);
         }
 
+        /// <summary>
+        /// Refits <paramref name="requests"/> one after the other (an outfit's pieces), each applied before the next is staged
+        /// so later pieces see the earlier ones, while what ReFit derives from the bodies (enclosed skin, hierarchies, the
+        /// bodies laid onto each other) is kept for the whole batch. <paramref name="onEach"/> receives each result in order;
+        /// a cancelled batch stops after the piece it was in.
+        /// </summary>
+        public static IEnumerator ExecuteBatchCoroutine(IReadOnlyList<ReFitRequest> requests, ReFitProgress progress,
+            Action<int, ReFitResult> onEach, CancellationToken cancellationToken)
+        {
+            var copies = new List<ReFitRequest>();
+            if (requests != null) foreach (var request in requests) copies.Add(request?.Clone());
+            return ExecuteBatchCore(copies, progress, onEach, cancellationToken);
+        }
+
+        private static IEnumerator ExecuteBatchCore(List<ReFitRequest> requests, ReFitProgress progress,
+            Action<int, ReFitResult> onEach, CancellationToken cancellationToken)
+        {
+            using (BeginBatch())
+                for (int i = 0; i < requests.Count && !cancellationToken.IsCancellationRequested; i++)
+                {
+                    int index = i;
+                    float from = (float)i / requests.Count, span = 1f / requests.Count;
+                    ReFitProgress itemProgress = progress == null ? null : (ReFitProgress)((t, label) => progress(from + span * t, label));
+                    var item = ExecuteCoroutineCore(requests[i], itemProgress, r => onEach?.Invoke(index, r), cancellationToken);
+                    using (item as IDisposable)
+                        while (item.MoveNext()) yield return item.Current;
+                }
+        }
+
+        /// <summary>
+        /// Keeps what ReFit derives from the bodies until disposed, for refits run one by one as a batch (the Orbiters tools'
+        /// runner, an outfit's pieces between the same bodies). Dispose it once the batch is done.
+        /// </summary>
+        public static IDisposable BeginBatch() => ReFitCaches.Batch();
+
         private static ReFitResult Complete(ReFitRequest request, ReFitComputation computation,
             ReFitProgress progress, CancellationToken cancellationToken)
         {

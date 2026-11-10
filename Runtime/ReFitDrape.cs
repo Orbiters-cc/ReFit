@@ -121,7 +121,7 @@ namespace Orbiters.ReFit
                 madeNormals = VertexNormals(madeVertices, asset.triangles);
             }
             var under = authoredUnder;
-            var targetIndex = SurfaceBvh.Build(target);
+            var targetIndex = target.Index();
             // Of clothing made for another body, a sleeve or a leg away from its hem never stays under the skin.
             var fabricPart = madeForAnother != null ? LimbFabric(asset, made, source, sourceIndex, madeForAnother) : null;
             bool[] limbFabric = null;
@@ -389,13 +389,11 @@ namespace Orbiters.ReFit
                 skin = new MeshSnapshot { worldVertices = moved, triangles = body.triangles, hiddenTriangles = body.hiddenTriangles };
                 skin.worldNormals = VertexNormals(moved, body.triangles);
             }
-            var skinIndex = SurfaceBvh.Build(skin);
+            var skinIndex = skin.Index();
             // The way out of a part of the body crosses its skin, the skin enclosed in another part too (under the muscles and
             // the mane of a custom base, the top of the shoulder): left out, the skin under the arm found the fabric over the
             // shoulder past it, and pushed it down the arm.
-            var wholeSkin = skin.hiddenTriangles != null
-                ? SurfaceBvh.Build(new MeshSnapshot { worldVertices = skin.worldVertices, triangles = skin.triangles })
-                : skinIndex;
+            var wholeSkin = skin.WholeIndex();
             // Where the fabric started: the pieces on it follow what untangling and bridging do to it.
             var start = (Vector3[])deltas.Clone();
             var startBasis = new Vector3[groups];

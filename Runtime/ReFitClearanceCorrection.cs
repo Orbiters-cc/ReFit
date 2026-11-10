@@ -38,8 +38,6 @@ namespace Orbiters.ReFit
 
         public sealed class Context
         {
-            /// <summary>Optional immutable index of the unshaped target body for reuse across transferred shapes.</summary>
-            public SurfaceBvh targetBodyIndex;
             public bool transferredBlendshape;
             public BodyRegion[] assetGroupRegions;
             public BodyRegion[] targetTriangleRegions;
@@ -306,8 +304,7 @@ namespace Orbiters.ReFit
             var bodySurface = BuildBodySurfaceSnapshot(targetBody, bodyWorldShapeDeltas);
             var bodyBvh = bodySurface != null && bodySurface.worldVertices != null &&
                 bodySurface.worldVertices.Length > 0 && bodySurface.triangles != null
-                ? (context?.targetBodyIndex != null && ReferenceEquals(bodySurface, targetBody)
-                    ? context.targetBodyIndex : SurfaceBvh.Build(bodySurface)) : null;
+                ? bodySurface.Index() : null;
             ApplySurfaceSafetyGuard(
                 asset,
                 targetBody,

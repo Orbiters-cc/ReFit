@@ -68,8 +68,9 @@ in `MCBIntegrationService`, not repeated in commission UI code.
    skin met along the source normal (`registrationDisagreementLimit`) and the laid source is more than 1 cm from the
    target skin under 10 % of that clothing. Laid that close, the registration is trusted over the normal, which meets
    fluff, feathers or another sheet of a body sculpted in layers (the Rexouium jacket on the Ultirex: 68 % disagreed with
-   the source laid within 1 mm). Bodies laid onto each other are kept (three, keyed by every input): refitting several
-   pieces between the same bodies lays them once.
+   the source laid within 1 mm). Bodies laid onto each other are kept (three in memory, twelve in the project's
+   `Library/ReFit`, keyed by every input and the algorithm's revision): refitting several pieces between the same bodies,
+   or again in a later session, lays them once.
 
 ## Deformation and Skinning
 
@@ -350,7 +351,12 @@ integrity checking.
 ## Performance Policy
 
 - Reuse source and target BVHs per operation. Build a shaped-body BVH once per clearance pass, reusing it
-  for repeated guards and final measurement.
+  for repeated guards and final measurement. A snapshot keeps its hierarchy (`MeshSnapshot.Index`, rebuilt only when its
+  vertex array or hidden triangles change), so every stage reading a body reads the same one.
+- Keep what is derived from a body across refits (`ReFitBodyCache`): each run stages and captures its bodies anew, and
+  a captured body with the same positions, normals and triangles as one an earlier run read (the outfit's other pieces, a
+  refit run again) takes that run's enclosed skin, hierarchies and main surface. Three bodies are kept, six while a batch
+  runs (`ReFitService.BeginBatch`, `ExecuteBatchCoroutine`; Orbiters Toolkit's runner holds one around an outfit).
 - Compute final penetration diagnostics after all corrections, not repeatedly when intermediate results
   are overwritten without influencing geometry.
 - Sort BVH subranges in place and use a bounded query-local stack, avoiding per-query allocations and

@@ -316,7 +316,6 @@ namespace Orbiters.ReFit
             // The clothing was made for another body than the source (see AuthoredUnder): its limbs cover what came through them.
             public bool madeForAnother;
             public ReFitSurfaceCoverage.Cover?[] hiddenCovers;
-            public SurfaceBvh stagedSourceBvh;
             public SurfaceBvh targetBvh;
             /// <summary>The source body laid onto the target (mesh refits between two bodies), or null.</summary>
             public ReFitBodyRegistration registration;
@@ -583,7 +582,6 @@ namespace Orbiters.ReFit
                         ? state.targetBasis
                         : stage.sourceSurface ?? MeshSnapshot.Capture(stage.sourceBody, false,
                             ReFitWornShapes.Overrides(stage.sourceBody, request.wornBodyShapes), report);
-                state.stagedSourceBvh = stage.sourceSurfaceIndex;
 
                 // Regions
                 progress?.Invoke(0.16f, "Classifying body regions");
@@ -666,7 +664,7 @@ namespace Orbiters.ReFit
 
             // The clothing as it is worn over the body as it shows those shapes.
             var shownBody = MeshSnapshot.Capture(body, false, ReFitWornShapes.AsShown(body, request.wornBodyShapes, zeroed, made), null);
-            var index = SurfaceBvh.Build(shownBody);
+            var index = shownBody.Index();
             var cloth = MeshSnapshot.Capture(stage.assetRenderer, false, null, null).worldVertices;
             var mesh = body.sharedMesh;
             var frame = new Vector3[mesh.vertexCount];
@@ -1180,15 +1178,18 @@ namespace Orbiters.ReFit
             // Clothing fitted across bases covers the outside of the target: skin enclosed in another part of it (a chest
             // under added breasts) must not be matched, covered or skinned to.
             bool hidesEnclosed = settings.coverDifferentBaseBody && settings.enableClearanceCorrection;
+            // Bodies with the same content as an earlier refit's (the outfit's other pieces) share what was derived from them.
+            ReFitBodyCache.Attach(targetBasis);
+            ReFitBodyCache.Attach(state.targetBare);
+            if (state.wantMesh) ReFitBodyCache.Attach(state.sourceBody);
             int enclosed = hidesEnclosed ? targetBasis.HideEnclosedSkin() : 0;
             // Skin enclosed under large muscles is not enclosed without them.
             if (hidesEnclosed && state.targetBare != null) state.targetBare.HideEnclosedSkin();
             if (enclosed > 0)
                 state.Report.Info("enclosed-skin", $"Target body: {enclosed} triangles of skin enclosed in another part of the body are ignored.");
-            var bvhTarget = SurfaceBvh.Build(targetBasis);
+            var bvhTarget = targetBasis.Index();
             state.targetBvh = bvhTarget;
-            var bvhSource = state.wantMesh && state.sourceBody != targetBasis
-                ? state.stagedSourceBvh ?? SurfaceBvh.Build(state.sourceBody) : bvhTarget;
+            var bvhSource = state.wantMesh && state.sourceBody != targetBasis ? state.sourceBody.Index() : bvhTarget;
 
             // Bindings to the first surface (source body for mesh refit, target body otherwise)
             SetBackgroundProgress(state, 0.15f, "Binding the asset to the body");
@@ -1205,7 +1206,7 @@ namespace Orbiters.ReFit
             // The target without the followed shapes it shows (muscles at 100), or the target: the bodies alike.
             var shownMotion = state.wantMesh && state.targetBare != null ? ShownMotion(targetBasis, state.targetBare) : null;
             var laidOnto = shownMotion != null ? state.targetBare : targetBasis;
-            var laidIndex = shownMotion != null ? SurfaceBvh.Build(laidOnto) : bvhTarget;
+            var laidIndex = shownMotion != null ? laidOnto.Index() : bvhTarget;
             ReFitBodyRegistration laid = null;
             if (state.wantMesh)
             {
@@ -1904,7 +1905,6 @@ namespace Orbiters.ReFit
         {
             return new ReFitClearanceCorrection.Context
             {
-                targetBodyIndex = state.targetBvh,
                 transferredBlendshape = transferredBlendshape,
                 assetGroupRegions = state.assetGroupRegions,
                 targetTriangleRegions = state.targetTriRegions,

@@ -73,6 +73,30 @@ namespace Orbiters.ReFit
         /// </summary>
         public bool[] hiddenTriangles;
 
+        // The body content's shared derived data (ReFitBodyCache.Attach), or null.
+        internal ReFitBodyCache.Entry shared;
+        private SurfaceBvh index;
+        private Vector3[] indexVertices;
+        private bool[] indexHidden;
+        private readonly object indexLock = new object();
+
+        /// <summary>
+        /// The hierarchy of this surface, its <see cref="hiddenTriangles"/> left out, built once and kept while the vertex array
+        /// and the hidden triangles stay the ones it was built on (shared with equal bodies once attached to the body cache).
+        /// Stages reading the same body read the same hierarchy. Thread safe. Code moving the vertices in place builds its own.
+        /// </summary>
+        public SurfaceBvh Index()
+        {
+            lock (indexLock)
+            {
+                if (index != null && ReferenceEquals(indexVertices, worldVertices) && ReferenceEquals(indexHidden, hiddenTriangles)) return index;
+                index = shared != null ? shared.Index(this) : SurfaceBvh.Build(this);
+                indexVertices = worldVertices;
+                indexHidden = hiddenTriangles;
+                return index;
+            }
+        }
+
         /// <summary>
         /// Captures a snapshot of <paramref name="smr"/> in its current pose.
         /// Blendshape weights default to the renderer's current weights; <paramref name="shapeWeightOverrides01"/>
@@ -387,6 +411,17 @@ namespace Orbiters.ReFit
         private const float EnclosedReach = .3f;
 
         /// <summary>
+        /// The hierarchy of the whole surface, <see cref="hiddenTriangles"/> included: the way out of a part of the body crosses
+        /// enclosed skin too. Shared like <see cref="Index"/> once attached to the body cache.
+        /// </summary>
+        public SurfaceBvh WholeIndex()
+        {
+            if (hiddenTriangles == null) return Index();
+            if (shared != null) return shared.Index(this, null);
+            return SurfaceBvh.Build(worldVertices, triangles);
+        }
+
+        /// <summary>
         /// Marks <see cref="hiddenTriangles"/>: skin inside another closed part of the same body, such as the flat chest left
         /// under added breasts or a thigh pressed into the other. Out of such a triangle the first surface met, at least
         /// <see cref="EnclosedDepth"/> away, faces the same way: the way out of the part enclosing it. That part must be
@@ -397,7 +432,15 @@ namespace Orbiters.ReFit
         public int HideEnclosedSkin()
         {
             hiddenTriangles = null;
-            var index = SurfaceBvh.Build(this);
+            var known = shared;
+            if (known != null)
+                lock (known)
+                    if (known.enclosedKnown)
+                    {
+                        hiddenTriangles = known.enclosed;
+                        return Count(hiddenTriangles);
+                    }
+            var index = Index();
             int count = triangles.Length / 3;
             var hidden = new bool[count];
             Parallel.For(0, count, t =>
@@ -407,14 +450,26 @@ namespace Orbiters.ReFit
                 var normal = Unit(Vector3.Cross(worldVertices[triangles[i + 1]] - a, worldVertices[triangles[i + 2]] - a));
                 if (normal == Vector3.zero) return;
                 var center = (a + worldVertices[triangles[i + 1]] + worldVertices[triangles[i + 2]]) / 3f;
-                var hit = index.Raycast(center + normal * .0005f, normal, EnclosedReach, other => other != t);
+                var hit = index.Raycast(center + normal * .0005f, normal, EnclosedReach, new AllBut(t));
                 if (!hit.found || hit.distance < EnclosedDepth || Vector3.Dot(FaceNormal(hit.triangle), normal) <= 0) return;
                 hidden[t] = Inside(index, center + normal * (hit.distance * .5f), normal);
             });
-            int hiddenCount = 0;
-            foreach (bool h in hidden) if (h) hiddenCount++;
+            int hiddenCount = Count(hidden);
             hiddenTriangles = hiddenCount > 0 ? hidden : null;
+            if (known != null)
+                lock (known)
+                {
+                    known.enclosed = hiddenTriangles;
+                    known.enclosedKnown = true;
+                }
             return hiddenCount;
+        }
+
+        private static int Count(bool[] flags)
+        {
+            int count = 0;
+            if (flags != null) foreach (bool flag in flags) if (flag) count++;
+            return count;
         }
 
         // Inside a closed part at point: along the skin (across normal), each way leaves through a surface facing that way.
@@ -422,12 +477,13 @@ namespace Orbiters.ReFit
         {
             var side = Unit(Vector3.Cross(normal, Mathf.Abs(normal.y) < .9f ? Vector3.up : Vector3.right));
             var other = Vector3.Cross(normal, side);
-            foreach (var direction in new[] { side, -side, other, -other })
-            {
-                var exit = index.Raycast(point, direction, EnclosedReach);
-                if (!exit.found || Vector3.Dot(FaceNormal(exit.triangle), direction) <= 0) return false;
-            }
-            return true;
+            return Exits(index, point, side) && Exits(index, point, -side) && Exits(index, point, other) && Exits(index, point, -other);
+        }
+
+        private bool Exits(SurfaceBvh index, Vector3 point, Vector3 direction)
+        {
+            var exit = index.Raycast(point, direction, EnclosedReach);
+            return exit.found && Vector3.Dot(FaceNormal(exit.triangle), direction) > 0;
         }
 
         /// <summary>Vertices of hidden triangles only (see <see cref="hiddenTriangles"/>), or null when none is hidden.</summary>
@@ -445,9 +501,16 @@ namespace Orbiters.ReFit
 
         /// <summary>
         /// The vertices of the largest connected part (vertices at the same place joined): a body's main surface, not its fluff
-        /// cards, horns or hair.
+        /// cards, horns or hair. Read only: a body in the body cache shares it.
         /// </summary>
         public bool[] MainSurface()
+        {
+            var known = shared;
+            if (known == null) return ComputeMainSurface();
+            lock (known) return known.main ??= ComputeMainSurface();
+        }
+
+        private bool[] ComputeMainSurface()
         {
             int count = worldVertices.Length;
             var root = new int[count];

@@ -157,14 +157,99 @@ namespace Orbiters.ReFit
                         Captured?.Invoke(reused, target);
                         return reused;
                     }
-            var built = Compute(source, sourceTriangleMasks, target, targetIndex, targetTriangleMasks, cancellation, progress, start);
+            // Laid by an earlier session (Library/ReFit), or laid now and kept there for the next.
+            var stored = Load(key, source.worldVertices.Length);
+            ReFitBodyRegistration built;
+            if (stored != null)
+            {
+                progress?.Invoke(1f);
+                built = new ReFitBodyRegistration(source, stored.registered, stored.confidence, stored.medianGap, stored.p95Gap)
+                {
+                    timing = "read the bodies laid onto each other by an earlier session (" + stored.timing + ")",
+                };
+                Captured?.Invoke(built, target);
+            }
+            else built = Compute(source, sourceTriangleMasks, target, targetIndex, targetTriangleMasks, cancellation, progress, start);
+            var kept = stored ?? new CacheEntry { key = key, registered = built.registered, confidence = built.confidence, medianGap = built.medianGap,
+                p95Gap = built.p95Gap, timing = built.timing };
             lock (Cache)
             {
-                Cache.Insert(0, new CacheEntry { key = key, registered = built.registered, confidence = built.confidence, medianGap = built.medianGap,
-                    p95Gap = built.p95Gap, timing = built.timing });
+                Cache.Insert(0, kept);
                 if (Cache.Count > CacheSize) Cache.RemoveAt(Cache.Count - 1);
             }
+            if (stored == null) Save(kept);
             return built;
+        }
+
+        // Saved registrations: a file per key, the newest kept. The version changes with the algorithm's revision and the
+        // registration's own steps, so a file of an earlier one is never read.
+        private const int FileVersion = ReFitCacheIdentity.Revision * 100 + 1;
+        private const int FilesKept = 12;
+        private const uint FileMagic = 0x52544652;
+
+        private static string FilePath(ulong key) =>
+            string.IsNullOrEmpty(ReFitCaches.LibraryDirectory) ? null
+                : System.IO.Path.Combine(ReFitCaches.LibraryDirectory, "registration-" + key.ToString("x16") + ".bin");
+
+        private static CacheEntry Load(ulong key, int vertexCount)
+        {
+            string path = FilePath(key);
+            if (path == null || !System.IO.File.Exists(path)) return null;
+            try
+            {
+                using (var reader = new System.IO.BinaryReader(System.IO.File.OpenRead(path)))
+                {
+                    if (reader.ReadUInt32() != FileMagic || reader.ReadInt32() != FileVersion || reader.ReadUInt64() != key) return null;
+                    int count = reader.ReadInt32();
+                    if (count != vertexCount) return null;
+                    var entry = new CacheEntry { key = key, registered = new Vector3[count], confidence = new float[count] };
+                    for (int i = 0; i < count; i++) entry.registered[i] = new Vector3(reader.ReadSingle(), reader.ReadSingle(), reader.ReadSingle());
+                    for (int i = 0; i < count; i++) entry.confidence[i] = reader.ReadSingle();
+                    entry.medianGap = reader.ReadSingle();
+                    entry.p95Gap = reader.ReadSingle();
+                    entry.timing = reader.ReadString();
+                    return entry;
+                }
+            }
+            catch (Exception)
+            {
+                // A file cut short (the editor closed while writing) or of another layout: laid again, and written anew.
+                return null;
+            }
+        }
+
+        private static void Save(CacheEntry entry)
+        {
+            string path = FilePath(entry.key);
+            if (path == null) return;
+            try
+            {
+                string directory = System.IO.Path.GetDirectoryName(path);
+                System.IO.Directory.CreateDirectory(directory);
+                string partial = path + "." + Guid.NewGuid().ToString("N") + ".partial";
+                using (var writer = new System.IO.BinaryWriter(System.IO.File.Create(partial)))
+                {
+                    writer.Write(FileMagic);
+                    writer.Write(FileVersion);
+                    writer.Write(entry.key);
+                    writer.Write(entry.registered.Length);
+                    foreach (var v in entry.registered) { writer.Write(v.x); writer.Write(v.y); writer.Write(v.z); }
+                    foreach (float c in entry.confidence) writer.Write(c);
+                    writer.Write(entry.medianGap);
+                    writer.Write(entry.p95Gap);
+                    writer.Write(entry.timing ?? "");
+                }
+                if (System.IO.File.Exists(path)) System.IO.File.Delete(path);
+                System.IO.File.Move(partial, path);
+                var files = new System.IO.DirectoryInfo(directory).GetFiles("registration-*.bin");
+                if (files.Length <= FilesKept) return;
+                Array.Sort(files, (a, b) => b.LastWriteTimeUtc.CompareTo(a.LastWriteTimeUtc));
+                for (int i = FilesKept; i < files.Length; i++) files[i].Delete();
+            }
+            catch (Exception)
+            {
+                // Only a later session's time depends on the file: the result is in memory.
+            }
         }
 
         // A few registrations: the pieces of one outfit, a source on a couple of targets.
@@ -179,8 +264,25 @@ namespace Orbiters.ReFit
         }
         private static readonly List<CacheEntry> Cache = new List<CacheEntry>();
 
-        /// <summary>Forgets the registrations kept for reuse (tests timing a full run).</summary>
-        internal static void ClearCache() { lock (Cache) Cache.Clear(); }
+        /// <summary>
+        /// Forgets the registrations kept for reuse, in memory and, with <paramref name="files"/>, in Library/ReFit (tests timing
+        /// a full run).
+        /// </summary>
+        internal static void ClearCache(bool files = true)
+        {
+            lock (Cache) Cache.Clear();
+            if (!files) return;
+            try
+            {
+                string directory = ReFitCaches.LibraryDirectory;
+                if (!string.IsNullOrEmpty(directory) && System.IO.Directory.Exists(directory))
+                    foreach (var file in System.IO.Directory.GetFiles(directory, "registration-*.bin")) System.IO.File.Delete(file);
+            }
+            catch (Exception)
+            {
+                // A file in use stays; a later key never matches it wrongly (the key covers every input).
+            }
+        }
 
         // FNV-1a over the bits of every input the registration reads.
         private static ulong Key(MeshSnapshot source, int[] sourceMasks, MeshSnapshot target, int[] targetMasks, Vector3[] start)

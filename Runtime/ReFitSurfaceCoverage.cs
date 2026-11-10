@@ -120,7 +120,7 @@ namespace Orbiters.ReFit
             for (int i = 0; i < vertices.Length; i++) vertices[i] = result.basis[asset.groupOfVertex[i]];
             if (result.repair)
             {
-                var bodyIndex = SurfaceBvh.Build(body);
+                var bodyIndex = body.Index();
                 result.outward = new Vector3[result.basis.Length];
                 var contacts = new VertexSupport?[result.basis.Length];
                 Parallel.For(0, result.basis.Length, g =>

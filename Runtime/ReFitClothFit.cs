@@ -142,7 +142,7 @@ namespace Orbiters.ReFit
             Parallel.For(0, sourceCovered.Length, v =>
                 sourceCovered[v] = Covered(source.worldVertices[v], source.worldNormals[v], authoredSurface, authoredIndex));
             var skin = BodyPoints.FromSource(source, sourceTriangleMasks, registration, sourceCovered);
-            var sourceIndex = SurfaceBvh.Build(source);
+            var sourceIndex = source.Index();
             Samples(authored, skin, sourceIndex, out var samples, out var weights);
             var motions = new Vector3[groupCount];
             Parallel.For(0, groupCount, g =>
@@ -283,7 +283,7 @@ namespace Orbiters.ReFit
             for (int t = 0; t < count; t++) if (shapeCovered[t] && near[t]) candidates.Add(t);
             shapeCandidates = candidates.ToArray();
             var skin = BodyPoints.FromTarget(target, targetTriangleMasks, shapeCovered);
-            Samples(fitted, skin, SurfaceBvh.Build(target), out shapeSamples, out shapeWeights);
+            Samples(fitted, skin, target.Index(), out shapeSamples, out shapeWeights);
             fabricAllowance = new float[groupCount];
             skinAllowance = new float[shapeCandidates.Length];
             Relax(fitted, target, shapeCovered, null, null, null, shapeCandidates, measure: true);
